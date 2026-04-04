@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-04-04 (фаза 3)
+Последнее обновление: 2026-04-04 (фаза 4)
 
 ---
 
@@ -11,11 +11,12 @@
 | `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified) |
 | `RefreshToken` | `refresh_tokens` | JWT refresh-токен (token, expires_at, revoked) |
 | `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at) |
-| `Shift` | `shifts` | Рабочая смена (user_id, started_at, finished_at, status) |
+| `Shift` | `shifts` | Рабочая смена (user_id, organization_id, started_at, finished_at, status) |
 | `Pause` | `pauses` | Пауза внутри смены (shift_id, started_at, finished_at) |
 | `Organization` | `organizations` | Организация (name, owner_id, invite_code, is_deleted) |
 | `OrganizationMember` | `organization_members` | Участник организации (org_id, user_id, role) |
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius) |
+| `OrganizationSettings` | `organization_settings` | Настройки организации (geo, лимиты пауз, auto-finish) |
 
 ---
 
@@ -51,6 +52,10 @@
 | GET | `/api/v1/organizations/{id}/locations` | Список точек | Bearer |
 | PATCH | `/api/v1/organizations/{id}/locations/{loc_id}` | Обновить точку | Bearer |
 | DELETE | `/api/v1/organizations/{id}/locations/{loc_id}` | Удалить точку | Bearer |
+| GET | `/api/v1/organizations/{id}/settings` | Настройки организации | Bearer (owner) |
+| PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
+| GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/stats` | Статистика организации | Bearer (owner/admin) |
 
 ---
 
@@ -62,6 +67,7 @@
 | `services/shift.py` | Lifecycle смен, статистика, автозавершение |
 | `services/organization.py` | CRUD организаций, инвайты, участники |
 | `services/work_location.py` | CRUD рабочих точек |
+| `services/organization_settings.py` | CRUD настроек организации |
 
 ---
 
@@ -83,6 +89,14 @@
 ```
 
 `ApiError`: `{"code": "ERROR_CODE", "message": "...", "validation": [...]}`
+
+---
+
+## Утилиты
+
+| Файл | Описание |
+|------|----------|
+| `utils/geo.py` | Haversine расчёт расстояния, проверка радиуса |
 
 ---
 

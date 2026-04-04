@@ -64,15 +64,15 @@
 
 ---
 
-## Фаза 4 — Правила организации `[ ]`
-- [ ] Модель `OrganizationSettings` (org_id, geo_check_enabled, auto_finish_hours, max_pause_minutes, max_pauses_per_shift)
-- [ ] Геопроверка при начале смены (Haversine, сравнение с WorkLocation)
-- [ ] Применение правил организации к смене (если пользователь в организации)
-- [ ] Автозавершение пауз при превышении лимита
-- [ ] GET /organizations/{id}/shifts — смены сотрудников для админа
-- [ ] GET /organizations/{id}/stats — статистика по организации
-- [ ] Миграция
-- [ ] Тесты: geo-расчёты, применение лимитов, админские эндпоинты
+## Фаза 4 — Правила организации `[x]`
+- [x] Модель `OrganizationSettings` (org_id, geo_check_enabled, auto_finish_hours, max_pause_minutes, max_pauses_per_shift)
+- [x] Геопроверка при начале смены (Haversine, сравнение с WorkLocation)
+- [x] Применение правил организации к смене (если пользователь в организации)
+- [x] Автозавершение пауз при превышении лимита
+- [x] GET /organizations/{id}/shifts — смены сотрудников для админа
+- [x] GET /organizations/{id}/stats — статистика по организации
+- [x] Миграция
+- [x] Тесты: geo-расчёты, применение лимитов, админские эндпоинты
 
 ---
 
