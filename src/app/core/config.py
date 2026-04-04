@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 30
 
+    # Verification
+    verification_code_expire_minutes: int = 15
+    verification_code_length: int = 4
+    verification_code_cooldown_seconds: int = 30
+
     # Shifts
     default_auto_finish_hours: int = 16
 
