@@ -16,17 +16,22 @@
 
 ---
 
-## Фаза 1 — Аутентификация `[ ]`
-- [ ] Модель `User` (id, email, phone, password_hash, name, created_at, is_active)
-- [ ] Модель `RefreshToken` (id, user_id, token, expires_at, revoked)
-- [ ] Регистрация (email + пароль)
-- [ ] Логин → access_token + refresh_token
-- [ ] Refresh-эндпоинт
-- [ ] GET /me — текущий пользователь
-- [ ] Зависимость `get_current_user` в deps.py
-- [ ] SQLAdmin: подключение, отображение User
-- [ ] Alembic-миграция
-- [ ] Тесты: регистрация, логин, refresh, /me, невалидный токен
+## Фаза 1 — Аутентификация `[x]`
+- [x] Модель `User` (id, email, phone, password_hash, name, is_verified, created_at)
+- [x] Модель `RefreshToken` (id, user_id, token, expires_at, revoked)
+- [x] Модель `VerificationCode` (id, user_id, code, expires_at, created_at)
+- [x] Регистрация (email + пароль + name)
+- [x] Верификация email (4-значный код, 15 мин TTL, cooldown 30 сек)
+- [x] Логин → access_token + refresh_token
+- [x] Refresh-эндпоинт (ротация токенов)
+- [x] Logout (отзыв refresh-токена)
+- [x] GET /me — текущий пользователь
+- [x] PATCH /me — обновление профиля (name, phone)
+- [x] Зависимость `get_current_user` в deps.py
+- [ ] SQLAdmin: отложено до стабилизации бека
+- [x] Alembic-миграция
+- [x] Тесты: регистрация, верификация, логин, refresh, logout, /me, невалидный токен
+- [x] Обёртка ответов: `{"data": ..., "error": ...}`
 
 ---
 
