@@ -34,6 +34,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    shifts: Mapped[list["Shift"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class RefreshToken(Base):
