@@ -10,6 +10,7 @@ from src.app.api.v1.router import router as v1_router
 from src.app.core.config import get_settings
 from src.app.schemas.base import ApiResponse
 from src.app.services.auth import AuthError
+from src.app.services.organization import OrgError
 from src.app.services.shift import ShiftError
 
 
@@ -70,6 +71,14 @@ async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
 
 @app.exception_handler(ShiftError)
 async def shift_error_handler(request: Request, exc: ShiftError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(OrgError)
+async def org_error_handler(request: Request, exc: OrgError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
