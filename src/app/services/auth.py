@@ -1,9 +1,10 @@
 import logging
 import secrets
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.config import get_settings
@@ -97,7 +98,7 @@ async def verify_email(
         raise AuthError("INVALID_CODE", "Неверный или просроченный код", 400)
 
     user.is_verified = True
-    await session.delete(verification)
+    await session.execute(delete(VerificationCode).where(VerificationCode.user_id == user.id))
     await session.flush()
 
     access_token = create_access_token(str(user.id))
@@ -218,7 +219,7 @@ async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def _create_refresh_token_db(session: AsyncSession, user_id) -> str:
+async def _create_refresh_token_db(session: AsyncSession, user_id: uuid.UUID) -> str:
     """Create a refresh token JWT and store it in the DB."""
     token_str = create_refresh_token(str(user_id))
     db_token = RefreshToken(
