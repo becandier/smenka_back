@@ -51,16 +51,16 @@
 
 ---
 
-## Фаза 3 — Организации `[ ]`
-- [ ] Модель `Organization` (id, name, owner_id, created_at, invite_code)
-- [ ] Модель `OrganizationMember` (id, org_id, user_id, role: admin/employee, joined_at)
-- [ ] Модель `WorkLocation` (id, org_id, name, latitude, longitude, radius_meters)
-- [ ] CRUD организации (создание, обновление, удаление)
-- [ ] Генерация и ротация инвайт-кода
-- [ ] Присоединение по инвайт-коду
-- [ ] Управление сотрудниками (список, удаление из организации)
-- [ ] Миграция
-- [ ] Тесты: создание орг, инвайт, роли, CRUD точек
+## Фаза 3 — Организации `[x]`
+- [x] Модель `Organization` (id, name, owner_id, created_at, invite_code)
+- [x] Модель `OrganizationMember` (id, org_id, user_id, role: admin/employee, joined_at)
+- [x] Модель `WorkLocation` (id, org_id, name, latitude, longitude, radius_meters)
+- [x] CRUD организации (создание, обновление, удаление)
+- [x] Генерация и ротация инвайт-кода
+- [x] Присоединение по инвайт-коду
+- [x] Управление сотрудниками (список, удаление из организации)
+- [x] Миграция
+- [x] Тесты: создание орг, инвайт, роли, CRUD точек
 
 ---
 
