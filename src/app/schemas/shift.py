@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PauseResponse(BaseModel):
@@ -15,6 +15,7 @@ class PauseResponse(BaseModel):
 class ShiftResponse(BaseModel):
     id: str
     user_id: str
+    organization_id: str | None
     started_at: datetime
     finished_at: datetime | None
     status: str
@@ -36,3 +37,9 @@ class ShiftStatsResponse(BaseModel):
     total_worked_seconds: int
     shift_count: int
     average_shift_seconds: int
+
+
+class ShiftStartRequest(BaseModel):
+    organization_id: str | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)

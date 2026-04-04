@@ -17,6 +17,7 @@ def _shift_to_response(shift) -> dict:
     return ShiftResponse(
         id=str(shift.id),
         user_id=str(shift.user_id),
+        organization_id=str(shift.organization_id) if shift.organization_id else None,
         started_at=shift.started_at,
         finished_at=shift.finished_at,
         status=shift.status.value,

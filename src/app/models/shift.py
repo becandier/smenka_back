@@ -28,6 +28,12 @@ class Shift(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         index=True,
     )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -42,6 +48,7 @@ class Shift(Base):
     )
 
     user: Mapped["User"] = relationship(back_populates="shifts")
+    organization: Mapped["Organization | None"] = relationship()
     pauses: Mapped[list["Pause"]] = relationship(
         back_populates="shift",
         cascade="all, delete-orphan",
