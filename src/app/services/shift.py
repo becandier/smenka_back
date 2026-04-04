@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -144,6 +144,91 @@ async def resume_shift(
     await session.flush()
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
+
+
+VALID_PERIODS = {"day", "week", "month"}
+
+
+async def get_shifts(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    status: ShiftStatus | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[Shift], int]:
+    """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
+    await _auto_finish_stale_shifts(session, user_id)
+
+    conditions = [Shift.user_id == user_id]
+
+    if status is not None:
+        conditions.append(Shift.status == status)
+    if date_from is not None:
+        conditions.append(Shift.started_at >= date_from)
+    if date_to is not None:
+        conditions.append(Shift.started_at <= date_to)
+
+    count_query = select(func.count()).select_from(Shift).where(*conditions)
+    total = (await session.execute(count_query)).scalar_one()
+
+    query = (
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(*conditions)
+        .order_by(Shift.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(query)
+    shifts = list(result.scalars().all())
+
+    return shifts, total
+
+
+async def get_shift_stats(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    period: str,
+) -> dict:
+    """Calculate shift statistics for the given period."""
+    if period not in VALID_PERIODS:
+        raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
+
+    await _auto_finish_stale_shifts(session, user_id)
+
+    now = datetime.now(UTC)
+    if period == "day":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    else:  # month
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    result = await session.execute(
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(
+            Shift.user_id == user_id,
+            Shift.started_at >= start,
+        )
+    )
+    shifts = list(result.scalars().all())
+
+    total_seconds = sum(calculate_worked_seconds(s) for s in shifts)
+    count = len(shifts)
+    avg = total_seconds // count if count > 0 else 0
+
+    return {
+        "period": period,
+        "total_worked_seconds": total_seconds,
+        "shift_count": count,
+        "average_shift_seconds": avg,
+    }
 
 
 async def finish_shift(

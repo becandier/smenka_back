@@ -1,5 +1,8 @@
 # tests/test_shifts.py
+from datetime import UTC, datetime, timedelta
+
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class TestStartShift:
@@ -154,3 +157,149 @@ class TestFinishShift:
 
         response = await client.post("/api/v1/shifts/start", headers=auth_headers)
         assert response.status_code == 201
+
+
+class TestAutoFinish:
+    async def test_stale_shift_auto_finished_on_start(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        """A shift older than 16h should be auto-finished when starting a new one."""
+        from src.app.models.shift import Shift, ShiftStatus
+
+        me_resp = await client.get("/api/v1/users/me", headers=auth_headers)
+        user_id = me_resp.json()["data"]["id"]
+
+        stale_shift = Shift(
+            user_id=user_id,
+            started_at=datetime.now(UTC) - timedelta(hours=17),
+            status=ShiftStatus.active,
+        )
+        db_session.add(stale_shift)
+        await db_session.commit()
+
+        response = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        assert response.status_code == 201
+
+        list_resp = await client.get("/api/v1/shifts", headers=auth_headers)
+        shifts = list_resp.json()["data"]["items"]
+        finished_shifts = [s for s in shifts if s["status"] == "finished"]
+        assert len(finished_shifts) == 1
+
+
+class TestListShifts:
+    async def test_list_shifts_empty(self, client: AsyncClient, auth_headers):
+        response = await client.get("/api/v1/shifts", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["items"] == []
+        assert data["total"] == 0
+
+    async def test_list_shifts_with_data(self, client: AsyncClient, auth_headers):
+        start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        shift_id = start_resp.json()["data"]["id"]
+        await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
+        await client.post("/api/v1/shifts/start", headers=auth_headers)
+
+        response = await client.get("/api/v1/shifts", headers=auth_headers)
+        data = response.json()["data"]
+        assert data["total"] == 2
+        assert len(data["items"]) == 2
+        assert data["items"][0]["status"] == "active"
+        assert data["items"][1]["status"] == "finished"
+
+    async def test_list_shifts_filter_by_status(
+        self, client: AsyncClient, auth_headers
+    ):
+        start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        shift_id = start_resp.json()["data"]["id"]
+        await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
+        await client.post("/api/v1/shifts/start", headers=auth_headers)
+
+        response = await client.get(
+            "/api/v1/shifts", headers=auth_headers, params={"status": "finished"}
+        )
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["status"] == "finished"
+
+    async def test_list_shifts_pagination(self, client: AsyncClient, auth_headers):
+        for _ in range(3):
+            start_resp = await client.post(
+                "/api/v1/shifts/start", headers=auth_headers
+            )
+            shift_id = start_resp.json()["data"]["id"]
+            await client.post(
+                f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
+            )
+
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"limit": 2, "offset": 0},
+        )
+        data = response.json()["data"]
+        assert data["total"] == 3
+        assert len(data["items"]) == 2
+        assert data["limit"] == 2
+        assert data["offset"] == 0
+
+    async def test_list_shifts_unauthorized(self, client: AsyncClient):
+        response = await client.get("/api/v1/shifts")
+        assert response.status_code in (401, 403)
+
+
+class TestShiftStats:
+    async def test_stats_empty(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day"},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["period"] == "day"
+        assert data["total_worked_seconds"] == 0
+        assert data["shift_count"] == 0
+        assert data["average_shift_seconds"] == 0
+
+    async def test_stats_with_finished_shift(self, client: AsyncClient, auth_headers):
+        start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        shift_id = start_resp.json()["data"]["id"]
+        await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
+
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day"},
+        )
+        data = response.json()["data"]
+        assert data["shift_count"] == 1
+        assert data["total_worked_seconds"] >= 0
+        assert data["average_shift_seconds"] >= 0
+
+    async def test_stats_includes_active_shift(
+        self, client: AsyncClient, auth_headers
+    ):
+        await client.post("/api/v1/shifts/start", headers=auth_headers)
+
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day"},
+        )
+        data = response.json()["data"]
+        assert data["shift_count"] == 1
+
+    async def test_stats_invalid_period(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "year"},
+        )
+        assert response.status_code == 400
+
+    async def test_stats_unauthorized(self, client: AsyncClient):
+        response = await client.get(
+            "/api/v1/shifts/stats", params={"period": "day"}
+        )
+        assert response.status_code in (401, 403)
