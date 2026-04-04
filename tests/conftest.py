@@ -20,24 +20,26 @@ TEST_DATABASE_URL = (
     f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}_test"
 )
 
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-test_session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
-
-@pytest.fixture(scope="session", autouse=True)
-async def _setup_db():
-    """Create all tables once per test session."""
-    async with test_engine.begin() as conn:
+@pytest.fixture(scope="session")
+async def test_engine():
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with test_engine.begin() as conn:
+    yield engine
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-    await test_engine.dispose()
+    await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def test_session_factory(test_engine):
+    return async_sessionmaker(test_engine, expire_on_commit=False)
 
 
 @pytest.fixture(autouse=True)
-async def _cleanup_tables():
+async def _cleanup_tables(test_session_factory):
     """Truncate all tables after each test for isolation."""
     yield
     async with test_session_factory() as session:
@@ -47,7 +49,7 @@ async def _cleanup_tables():
 
 
 @pytest.fixture
-async def db_session() -> AsyncGenerator[AsyncSession]:
+async def db_session(test_session_factory) -> AsyncGenerator[AsyncSession]:
     """Provide a database session for the test."""
     async with test_session_factory() as session:
         yield session
