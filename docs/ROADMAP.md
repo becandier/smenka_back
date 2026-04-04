@@ -35,19 +35,19 @@
 
 ---
 
-## Фаза 2 — Персональный режим (смены) `[ ]`
-- [ ] Модель `Shift` (id, user_id, started_at, finished_at, status: active/paused/finished)
-- [ ] Модель `Pause` (id, shift_id, started_at, finished_at)
-- [ ] POST /shifts/start — начать смену
-- [ ] POST /shifts/{id}/pause — поставить на паузу
-- [ ] POST /shifts/{id}/resume — возобновить
-- [ ] POST /shifts/{id}/finish — завершить
-- [ ] GET /shifts — история смен (пагинация, фильтр по дате)
-- [ ] GET /shifts/stats — статистика (день / неделя / месяц)
-- [ ] Бизнес-правила: нельзя начать вторую активную смену, нельзя паузить завершённую и т.д.
-- [ ] Автозавершение по таймауту (16ч по умолчанию, пока синхронно при запросе)
-- [ ] Миграция
-- [ ] Тесты: весь lifecycle смены, edge cases
+## Фаза 2 — Персональный режим (смены) `[x]`
+- [x] Модель `Shift` (id, user_id, started_at, finished_at, status: active/paused/finished)
+- [x] Модель `Pause` (id, shift_id, started_at, finished_at)
+- [x] POST /shifts/start — начать смену
+- [x] POST /shifts/{id}/pause — поставить на паузу
+- [x] POST /shifts/{id}/resume — возобновить
+- [x] POST /shifts/{id}/finish — завершить
+- [x] GET /shifts — история смен (пагинация, фильтр по дате и статусу)
+- [x] GET /shifts/stats — статистика (день / неделя / месяц)
+- [x] Бизнес-правила: нельзя начать вторую активную смену, нельзя паузить завершённую и т.д.
+- [x] Автозавершение по таймауту (16ч по умолчанию, пока синхронно при запросе)
+- [x] Миграция
+- [x] Тесты: весь lifecycle смены, edge cases
 
 ---
 
