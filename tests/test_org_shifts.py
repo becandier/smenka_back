@@ -214,6 +214,16 @@ class TestOrgShiftStart:
 
 
 @pytest.fixture
+async def owner_headers(owner: User, client: AsyncClient) -> dict[str, str]:
+    resp = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "owner@example.com", "password": "Test1234"},
+    )
+    token = resp.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
 async def org_with_limits(
     db_session: AsyncSession, owner: User, employee_user: User,
 ) -> Organization:
@@ -324,3 +334,83 @@ class TestAutoFinishStalePauses:
         shifts = resp.json()["data"]["items"]
         org_shift = next(s for s in shifts if s["id"] == shift_id)
         assert org_shift["status"] == "active"
+
+
+class TestAdminShifts:
+    async def test_owner_can_see_employee_shifts(
+        self,
+        client: AsyncClient,
+        owner_headers: dict,
+        employee_headers: dict,
+        org_no_geo: Organization,
+    ):
+        # Employee starts a shift
+        await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={"organization_id": str(org_no_geo.id)},
+        )
+
+        # Owner views org shifts
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["organization_id"] == str(org_no_geo.id)
+
+    async def test_employee_cannot_see_org_shifts(
+        self,
+        client: AsyncClient,
+        employee_headers: dict,
+        org_no_geo: Organization,
+    ):
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=employee_headers,
+        )
+        assert resp.status_code == 403
+
+    async def test_org_shifts_filtered_by_user(
+        self,
+        client: AsyncClient,
+        owner_headers: dict,
+        employee_headers: dict,
+        employee_user: User,
+        org_no_geo: Organization,
+    ):
+        # Employee starts a shift
+        await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={"organization_id": str(org_no_geo.id)},
+        )
+
+        # Filter by user_id
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
+            params={"user_id": str(employee_user.id)},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["total"] == 1
+
+    async def test_org_shifts_pagination(
+        self,
+        client: AsyncClient,
+        owner_headers: dict,
+        employee_headers: dict,
+        org_no_geo: Organization,
+    ):
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
+            params={"limit": 5, "offset": 0},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert "total" in data
+        assert "items" in data

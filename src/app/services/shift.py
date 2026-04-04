@@ -396,3 +396,43 @@ async def finish_shift(
     await session.flush()
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
+
+
+async def get_org_shifts(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+    status: ShiftStatus | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[Shift], int]:
+    """Get shifts for an organization (admin view)."""
+    conditions = [Shift.organization_id == organization_id]
+
+    if user_id is not None:
+        conditions.append(Shift.user_id == user_id)
+    if status is not None:
+        conditions.append(Shift.status == status)
+    if date_from is not None:
+        conditions.append(Shift.started_at >= date_from)
+    if date_to is not None:
+        conditions.append(Shift.started_at <= date_to)
+
+    count_query = select(func.count()).select_from(Shift).where(*conditions)
+    total = (await session.execute(count_query)).scalar_one()
+
+    query = (
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(*conditions)
+        .order_by(Shift.started_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(query)
+    shifts = list(result.scalars().all())
+
+    return shifts, total

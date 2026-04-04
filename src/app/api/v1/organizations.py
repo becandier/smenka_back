@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime as dt_datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.schemas.base import ApiResponse
@@ -18,8 +19,11 @@ from src.app.schemas.organization_settings import (
     OrganizationSettingsResponse,
     OrganizationSettingsUpdate,
 )
+from src.app.schemas.shift import ShiftListResponse
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
+from src.app.services import shift as shift_service
+from src.app.api.v1.shifts import _shift_to_response
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -193,3 +197,54 @@ async def update_org_settings(
     )
     await session.commit()
     return ApiResponse.success(_settings_to_response(settings))
+
+
+@router.get("/{org_id}/shifts")
+async def list_org_shifts(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    user_id: uuid.UUID | None = Query(None, description="Filter by employee"),
+    status: str | None = Query(None),
+    date_from: dt_datetime | None = Query(None),
+    date_to: dt_datetime | None = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> ApiResponse:
+    # Only owner or admin can view org shifts
+    from src.app.services.work_location import _check_admin_or_owner
+
+    org = await org_service.get_organization(session, org_id)
+    await _check_admin_or_owner(session, org, user.id)
+
+    from src.app.models.shift import ShiftStatus as ShiftStatusEnum
+    from src.app.services.shift import ShiftError
+
+    status_enum = None
+    if status is not None:
+        try:
+            status_enum = ShiftStatusEnum(status)
+        except ValueError:
+            raise ShiftError(
+                "INVALID_STATUS",
+                f"Статус должен быть: {', '.join(s.value for s in ShiftStatusEnum)}",
+                400,
+            )
+
+    shifts, total = await shift_service.get_org_shifts(
+        session, org_id,
+        user_id=user_id,
+        status=status_enum,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+    )
+    return ApiResponse.success(
+        ShiftListResponse(
+            items=[_shift_to_response(s) for s in shifts],
+            total=total,
+            limit=limit,
+            offset=offset,
+        ).model_dump(mode="json")
+    )
