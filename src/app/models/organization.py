@@ -53,6 +53,11 @@ class Organization(Base):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    settings: Mapped["OrganizationSettings | None"] = relationship(
+        back_populates="organization",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
 
 class OrganizationMember(Base):
