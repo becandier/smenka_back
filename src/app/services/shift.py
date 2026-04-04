@@ -79,6 +79,48 @@ async def _auto_finish_stale_shifts(
         await session.flush()
 
 
+async def _auto_finish_stale_pauses(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+) -> None:
+    """Auto-finish pauses that exceeded org max_pause_minutes."""
+    from src.app.models.organization_settings import OrganizationSettings
+
+    # Find all paused org shifts for this user
+    result = await session.execute(
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(
+            Shift.user_id == user_id,
+            Shift.status == ShiftStatus.paused,
+            Shift.organization_id.isnot(None),
+        )
+    )
+    paused_shifts = list(result.scalars().all())
+
+    now = datetime.now(UTC)
+    for shift in paused_shifts:
+        # Load org settings
+        settings_result = await session.execute(
+            select(OrganizationSettings).where(
+                OrganizationSettings.organization_id == shift.organization_id,
+            )
+        )
+        org_settings = settings_result.scalar_one_or_none()
+        if org_settings is None or org_settings.max_pause_minutes is None:
+            continue
+
+        max_pause = timedelta(minutes=org_settings.max_pause_minutes)
+        for pause in shift.pauses:
+            if pause.finished_at is None and (now - pause.started_at) > max_pause:
+                pause.finished_at = pause.started_at + max_pause
+                shift.status = ShiftStatus.active
+                break
+
+    if paused_shifts:
+        await session.flush()
+
+
 async def _validate_org_shift_start(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -158,6 +200,7 @@ async def start_shift(
       at least one WorkLocation radius.
     """
     await _auto_finish_stale_shifts(session, user_id)
+    await _auto_finish_stale_pauses(session, user_id)
 
     # Check for existing active shift in the same context
     conditions = [
@@ -200,6 +243,20 @@ async def pause_shift(
 
     if shift.status != ShiftStatus.active:
         raise ShiftError("SHIFT_NOT_ACTIVE", "Смена не активна", 400)
+
+    # Check max pauses for org shifts
+    if shift.organization_id is not None:
+        from src.app.services.organization_settings import get_settings_for_org
+
+        org_settings = await get_settings_for_org(session, shift.organization_id)
+        if org_settings is not None and org_settings.max_pauses_per_shift is not None:
+            pause_count = len(shift.pauses)
+            if pause_count >= org_settings.max_pauses_per_shift:
+                raise ShiftError(
+                    "MAX_PAUSES_REACHED",
+                    f"Достигнут лимит пауз: {org_settings.max_pauses_per_shift}",
+                    400,
+                )
 
     pause = Pause(shift_id=shift.id)
     session.add(pause)
@@ -247,6 +304,7 @@ async def get_shifts(
 ) -> tuple[list[Shift], int]:
     """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
     await _auto_finish_stale_shifts(session, user_id)
+    await _auto_finish_stale_pauses(session, user_id)
 
     conditions = [Shift.user_id == user_id]
 
@@ -284,6 +342,7 @@ async def get_shift_stats(
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
 
     await _auto_finish_stale_shifts(session, user_id)
+    await _auto_finish_stale_pauses(session, user_id)
 
     now = datetime.now(UTC)
     if period == "day":
