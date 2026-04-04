@@ -44,13 +44,18 @@ async def list_shifts(
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
     from src.app.models.shift import ShiftStatus
+    from src.app.services.shift import ShiftError
 
     status_enum = None
     if status is not None:
         try:
             status_enum = ShiftStatus(status)
         except ValueError:
-            pass
+            raise ShiftError(
+                "INVALID_STATUS",
+                f"Статус должен быть: {', '.join(s.value for s in ShiftStatus)}",
+                400,
+            )
 
     shifts, total = await shift_service.get_shifts(
         session,

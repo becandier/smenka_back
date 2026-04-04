@@ -243,6 +243,48 @@ class TestListShifts:
         assert data["limit"] == 2
         assert data["offset"] == 0
 
+    async def test_list_shifts_filter_by_date(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        from src.app.models.shift import Shift, ShiftStatus
+
+        me_resp = await client.get("/api/v1/users/me", headers=auth_headers)
+        user_id = me_resp.json()["data"]["id"]
+
+        # Create an old finished shift directly in DB
+        old_shift = Shift(
+            user_id=user_id,
+            started_at=datetime.now(UTC) - timedelta(days=3),
+            finished_at=datetime.now(UTC) - timedelta(days=3, hours=-1),
+            status=ShiftStatus.finished,
+        )
+        db_session.add(old_shift)
+        await db_session.commit()
+
+        # Create a recent shift via API
+        start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        shift_id = start_resp.json()["data"]["id"]
+        await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
+
+        # Filter to only recent shifts (last 24h)
+        date_from = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"date_from": date_from},
+        )
+        data = response.json()["data"]
+        assert data["total"] == 1
+
+    async def test_list_shifts_invalid_status(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"status": "invalid_value"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_STATUS"
+
     async def test_list_shifts_unauthorized(self, client: AsyncClient):
         response = await client.get("/api/v1/shifts")
         assert response.status_code in (401, 403)
