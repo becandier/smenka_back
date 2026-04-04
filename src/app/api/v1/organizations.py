@@ -14,7 +14,12 @@ from src.app.schemas.organization import (
     OrganizationResponse,
     OrganizationUpdate,
 )
+from src.app.schemas.organization_settings import (
+    OrganizationSettingsResponse,
+    OrganizationSettingsUpdate,
+)
 from src.app.services import organization as org_service
+from src.app.services import organization_settings as settings_service
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -153,3 +158,38 @@ async def remove_member(
     await org_service.remove_member(session, org_id, member_user_id, user.id)
     await session.commit()
     return ApiResponse.success({"message": "Участник удалён"})
+
+
+def _settings_to_response(s) -> dict:
+    return OrganizationSettingsResponse(
+        organization_id=str(s.organization_id),
+        geo_check_enabled=s.geo_check_enabled,
+        auto_finish_hours=s.auto_finish_hours,
+        max_pause_minutes=s.max_pause_minutes,
+        max_pauses_per_shift=s.max_pauses_per_shift,
+    ).model_dump()
+
+
+@router.get("/{org_id}/settings")
+async def get_org_settings(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    settings = await settings_service.get_settings(session, org_id, user.id)
+    return ApiResponse.success(_settings_to_response(settings))
+
+
+@router.patch("/{org_id}/settings")
+async def update_org_settings(
+    org_id: uuid.UUID,
+    body: OrganizationSettingsUpdate,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    fields = body.model_dump(exclude_unset=True)
+    settings = await settings_service.update_settings(
+        session, org_id, user.id, **fields,
+    )
+    await session.commit()
+    return ApiResponse.success(_settings_to_response(settings))

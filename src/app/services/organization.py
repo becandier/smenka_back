@@ -27,6 +27,12 @@ async def create_organization(
     org = Organization(name=name, owner_id=owner_id)
     session.add(org)
     await session.flush()
+
+    from src.app.models.organization_settings import OrganizationSettings
+    settings = OrganizationSettings(organization_id=org.id)
+    session.add(settings)
+    await session.flush()
+
     return org
 
 
