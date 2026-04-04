@@ -1,8 +1,6 @@
 from fastapi import APIRouter
 
-router = APIRouter(prefix="/v1")
+from src.app.api.v1.auth import router as auth_router
 
-# Роутеры эндпоинтов будут подключаться здесь:
-# router.include_router(auth.router)
-# router.include_router(shifts.router)
-# router.include_router(organizations.router)
+router = APIRouter(prefix="/v1")
+router.include_router(auth_router)
