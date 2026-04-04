@@ -303,3 +303,55 @@ class TestShiftStats:
             "/api/v1/shifts/stats", params={"period": "day"}
         )
         assert response.status_code in (401, 403)
+
+
+class TestShiftLifecycle:
+    async def test_full_lifecycle(self, client: AsyncClient, auth_headers):
+        """Start → pause → resume → pause → finish — full cycle."""
+        resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        assert resp.status_code == 201
+        shift_id = resp.json()["data"]["id"]
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
+        )
+        assert resp.json()["data"]["status"] == "paused"
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
+        )
+        assert resp.json()["data"]["status"] == "active"
+        assert resp.json()["data"]["pauses"][0]["finished_at"] is not None
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
+        )
+        assert resp.json()["data"]["status"] == "paused"
+        assert len(resp.json()["data"]["pauses"]) == 2
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
+        )
+        data = resp.json()["data"]
+        assert data["status"] == "finished"
+        assert data["finished_at"] is not None
+        assert all(p["finished_at"] is not None for p in data["pauses"])
+        assert data["worked_seconds"] >= 0
+
+    async def test_multiple_pauses_tracked(self, client: AsyncClient, auth_headers):
+        """Multiple pause/resume cycles should all be tracked."""
+        resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
+        shift_id = resp.json()["data"]["id"]
+
+        for _ in range(3):
+            await client.post(
+                f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
+            )
+            await client.post(
+                f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
+            )
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
+        )
+        assert len(resp.json()["data"]["pauses"]) == 3
