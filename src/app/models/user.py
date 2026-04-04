@@ -38,6 +38,14 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    owned_organizations: Mapped[list["Organization"]] = relationship(
+        back_populates="owner",
+        cascade="all, delete-orphan",
+    )
+    memberships: Mapped[list["OrganizationMember"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class RefreshToken(Base):
