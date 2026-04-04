@@ -414,3 +414,66 @@ class TestAdminShifts:
         data = resp.json()["data"]
         assert "total" in data
         assert "items" in data
+
+
+class TestOrgStats:
+    async def test_owner_can_view_stats(
+        self,
+        client: AsyncClient,
+        owner_headers: dict,
+        employee_headers: dict,
+        org_no_geo: Organization,
+    ):
+        # Employee starts and finishes a shift
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={"organization_id": str(org_no_geo.id)},
+        )
+        shift_id = resp.json()["data"]["id"]
+        await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=employee_headers)
+
+        # Owner views stats
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/stats",
+            headers=owner_headers,
+            params={"period": "month"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["period"] == "month"
+        assert data["total_worked_seconds"] >= 0
+        assert data["shift_count"] == 1
+        assert data["average_shift_seconds"] >= 0
+        assert len(data["per_employee"]) == 1
+        assert data["per_employee"][0]["shift_count"] == 1
+
+    async def test_employee_cannot_view_stats(
+        self,
+        client: AsyncClient,
+        employee_headers: dict,
+        org_no_geo: Organization,
+    ):
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/stats",
+            headers=employee_headers,
+            params={"period": "week"},
+        )
+        assert resp.status_code == 403
+
+    async def test_empty_stats(
+        self,
+        client: AsyncClient,
+        owner_headers: dict,
+        org_no_geo: Organization,
+    ):
+        resp = await client.get(
+            f"/api/v1/organizations/{org_no_geo.id}/stats",
+            headers=owner_headers,
+            params={"period": "day"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["shift_count"] == 0
+        assert data["total_worked_seconds"] == 0
+        assert data["per_employee"] == []

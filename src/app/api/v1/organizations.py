@@ -19,6 +19,7 @@ from src.app.schemas.organization_settings import (
     OrganizationSettingsResponse,
     OrganizationSettingsUpdate,
 )
+from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
@@ -247,4 +248,22 @@ async def list_org_shifts(
             limit=limit,
             offset=offset,
         ).model_dump(mode="json")
+    )
+
+
+@router.get("/{org_id}/stats")
+async def org_stats(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    period: str = Query(..., description="Period: day, week, month"),
+) -> ApiResponse:
+    from src.app.services.work_location import _check_admin_or_owner
+
+    org = await org_service.get_organization(session, org_id)
+    await _check_admin_or_owner(session, org, user.id)
+
+    stats = await shift_service.get_org_stats(session, org_id, period)
+    return ApiResponse.success(
+        OrgStatsResponse(**stats).model_dump()
     )

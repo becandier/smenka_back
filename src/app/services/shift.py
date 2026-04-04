@@ -398,6 +398,76 @@ async def finish_shift(
     return await _get_shift_with_pauses(session, shift.id, user_id)
 
 
+async def get_org_stats(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    period: str,
+) -> dict:
+    """Calculate org-wide shift statistics."""
+    if period not in VALID_PERIODS:
+        raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
+
+    now = datetime.now(UTC)
+    if period == "day":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        start = (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    else:
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    result = await session.execute(
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(
+            Shift.organization_id == organization_id,
+            Shift.started_at >= start,
+        )
+    )
+    shifts = list(result.scalars().all())
+
+    total_seconds = sum(calculate_worked_seconds(s) for s in shifts)
+    count = len(shifts)
+    avg = total_seconds // count if count > 0 else 0
+
+    from collections import defaultdict
+    from src.app.models.user import User
+
+    by_user: dict[uuid.UUID, list[Shift]] = defaultdict(list)
+    for s in shifts:
+        by_user[s.user_id].append(s)
+
+    per_employee = []
+    if by_user:
+        user_ids = list(by_user.keys())
+        users_result = await session.execute(
+            select(User).where(User.id.in_(user_ids))
+        )
+        users_map = {u.id: u for u in users_result.scalars().all()}
+
+        for uid, user_shifts in by_user.items():
+            user = users_map.get(uid)
+            user_total = sum(calculate_worked_seconds(s) for s in user_shifts)
+            user_count = len(user_shifts)
+            per_employee.append({
+                "user_id": str(uid),
+                "user_name": user.name if user else "Unknown",
+                "user_email": user.email if user else "",
+                "shift_count": user_count,
+                "total_worked_seconds": user_total,
+                "average_shift_seconds": user_total // user_count if user_count > 0 else 0,
+            })
+
+    return {
+        "period": period,
+        "total_worked_seconds": total_seconds,
+        "shift_count": count,
+        "average_shift_seconds": avg,
+        "per_employee": per_employee,
+    }
+
+
 async def get_org_shifts(
     session: AsyncSession,
     organization_id: uuid.UUID,
