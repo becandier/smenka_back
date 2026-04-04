@@ -58,6 +58,7 @@ async def db_session(test_session_factory) -> AsyncGenerator[AsyncSession]:
 @pytest.fixture
 async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     """HTTP client with overridden DB session."""
+
     async def _override_session():
         yield db_session
 
@@ -88,9 +89,12 @@ async def verified_user(db_session: AsyncSession) -> User:
 @pytest.fixture
 async def auth_headers(verified_user: User, client: AsyncClient) -> dict[str, str]:
     """Login as verified_user and return Authorization header."""
-    response = await client.post("/api/v1/auth/login", json={
-        "email": "test@example.com",
-        "password": "Test1234",
-    })
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "test@example.com",
+            "password": "Test1234",
+        },
+    )
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}

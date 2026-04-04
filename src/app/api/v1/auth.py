@@ -25,7 +25,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def register(body: RegisterRequest, session: SessionDep) -> ApiResponse:
     try:
         user, code = await auth_service.register(
-            session, body.email, body.password, body.name,
+            session,
+            body.email,
+            body.password,
+            body.name,
         )
         await session.commit()
         return ApiResponse.success(
@@ -46,7 +49,9 @@ async def register(body: RegisterRequest, session: SessionDep) -> ApiResponse:
 async def verify(body: VerifyRequest, session: SessionDep) -> ApiResponse:
     try:
         access_token, refresh_token = await auth_service.verify_email(
-            session, body.email, body.code,
+            session,
+            body.email,
+            body.code,
         )
         await session.commit()
         return ApiResponse.success(
@@ -84,7 +89,9 @@ async def resend_code(body: ResendCodeRequest, session: SessionDep) -> ApiRespon
 async def login(body: LoginRequest, session: SessionDep) -> ApiResponse:
     try:
         access_token, refresh_token = await auth_service.login(
-            session, body.email, body.password,
+            session,
+            body.email,
+            body.password,
         )
         await session.commit()
         return ApiResponse.success(
@@ -104,7 +111,8 @@ async def login(body: LoginRequest, session: SessionDep) -> ApiResponse:
 async def refresh(body: RefreshRequest, session: SessionDep) -> ApiResponse:
     try:
         access_token, refresh_token = await auth_service.refresh_tokens(
-            session, body.refresh_token,
+            session,
+            body.refresh_token,
         )
         await session.commit()
         return ApiResponse.success(
@@ -125,9 +133,7 @@ async def logout(body: LogoutRequest, session: SessionDep) -> ApiResponse:
     try:
         await auth_service.logout(session, body.refresh_token)
         await session.commit()
-        return ApiResponse.success(
-            MessageResponse(message="Вы вышли из системы").model_dump()
-        )
+        return ApiResponse.success(MessageResponse(message="Вы вышли из системы").model_dump())
     except AuthError as e:
         return JSONResponse(
             status_code=e.status_code,

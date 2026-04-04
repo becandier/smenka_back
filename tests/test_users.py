@@ -4,7 +4,10 @@ from httpx import AsyncClient
 
 class TestGetMe:
     async def test_get_me_success(
-        self, client: AsyncClient, verified_user, auth_headers: dict,
+        self,
+        client: AsyncClient,
+        verified_user,
+        auth_headers: dict,
     ):
         response = await client.get("/api/v1/users/me", headers=auth_headers)
         assert response.status_code == 200
@@ -20,7 +23,10 @@ class TestGetMe:
 
 class TestUpdateMe:
     async def test_update_name(
-        self, client: AsyncClient, verified_user, auth_headers: dict,
+        self,
+        client: AsyncClient,
+        verified_user,
+        auth_headers: dict,
     ):
         response = await client.patch(
             "/api/v1/users/me",
@@ -31,7 +37,10 @@ class TestUpdateMe:
         assert response.json()["data"]["name"] == "Updated Name"
 
     async def test_update_phone(
-        self, client: AsyncClient, verified_user, auth_headers: dict,
+        self,
+        client: AsyncClient,
+        verified_user,
+        auth_headers: dict,
     ):
         response = await client.patch(
             "/api/v1/users/me",

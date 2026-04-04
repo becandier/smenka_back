@@ -55,10 +55,11 @@ async def register(
     await session.flush()
 
     code = _generate_code()
+    expire_minutes = settings.verification_code_expire_minutes
     verification = VerificationCode(
         user_id=user.id,
         code=code,
-        expires_at=datetime.now(UTC) + timedelta(minutes=settings.verification_code_expire_minutes),
+        expires_at=datetime.now(UTC) + timedelta(minutes=expire_minutes),
     )
     session.add(verification)
     await session.flush()
@@ -133,10 +134,11 @@ async def resend_code(session: AsyncSession, email: str) -> str:
             )
 
     code = _generate_code()
+    expire_minutes = settings.verification_code_expire_minutes
     verification = VerificationCode(
         user_id=user.id,
         code=code,
-        expires_at=datetime.now(UTC) + timedelta(minutes=settings.verification_code_expire_minutes),
+        expires_at=datetime.now(UTC) + timedelta(minutes=expire_minutes),
     )
     session.add(verification)
     await session.flush()
@@ -232,5 +234,5 @@ async def _create_refresh_token_db(session: AsyncSession, user_id) -> str:
 def _generate_code() -> str:
     """Generate a random N-digit numeric code."""
     length = settings.verification_code_length
-    upper = 10 ** length
+    upper = 10**length
     return str(secrets.randbelow(upper)).zfill(length)
