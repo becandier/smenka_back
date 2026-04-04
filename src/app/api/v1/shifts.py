@@ -6,7 +6,7 @@ from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.schemas.base import ApiResponse
-from src.app.schemas.shift import ShiftListResponse, ShiftResponse, ShiftStatsResponse
+from src.app.schemas.shift import ShiftListResponse, ShiftResponse, ShiftStartRequest, ShiftStatsResponse
 from src.app.services import shift as shift_service
 from src.app.services.shift import calculate_worked_seconds
 
@@ -95,8 +95,22 @@ async def shift_stats(
 async def start_shift(
     user: CurrentUserDep,
     session: SessionDep,
+    body: ShiftStartRequest | None = None,
 ) -> ApiResponse:
-    shift = await shift_service.start_shift(session, user.id)
+    org_id = None
+    lat = None
+    lng = None
+    if body is not None:
+        org_id = uuid.UUID(body.organization_id) if body.organization_id else None
+        lat = body.latitude
+        lng = body.longitude
+
+    shift = await shift_service.start_shift(
+        session, user.id,
+        organization_id=org_id,
+        latitude=lat,
+        longitude=lng,
+    )
     await session.commit()
     return ApiResponse.success(_shift_to_response(shift))
 

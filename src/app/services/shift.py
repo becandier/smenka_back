@@ -79,25 +79,111 @@ async def _auto_finish_stale_shifts(
         await session.flush()
 
 
-async def start_shift(session: AsyncSession, user_id: uuid.UUID) -> Shift:
-    """Start a new shift. Only one active/paused shift allowed at a time."""
-    await _auto_finish_stale_shifts(session, user_id)
+async def _validate_org_shift_start(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    latitude: float | None,
+    longitude: float | None,
+) -> None:
+    """Validate org membership and geo check for org shift."""
+    from src.app.models.organization import Organization, OrganizationMember
+    from src.app.models.work_location import WorkLocation
+    from src.app.services.organization_settings import get_settings_for_org
 
-    result = await session.execute(
-        select(Shift).where(
-            Shift.user_id == user_id,
-            Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+    # Check org exists and not deleted
+    org_result = await session.execute(
+        select(Organization).where(
+            Organization.id == organization_id,
+            Organization.is_deleted.is_(False),
         )
     )
-    existing = result.scalar_one_or_none()
-    if existing is not None:
+    org = org_result.scalar_one_or_none()
+    if org is None:
+        raise ShiftError("ORG_NOT_FOUND", "Организация не найдена", 404)
+
+    # Check membership
+    member_result = await session.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+        )
+    )
+    if member_result.scalar_one_or_none() is None:
+        raise ShiftError("FORBIDDEN", "Вы не являетесь участником организации", 403)
+
+    # Check geo if enabled
+    org_settings = await get_settings_for_org(session, organization_id)
+    if org_settings is not None and org_settings.geo_check_enabled:
+        if latitude is None or longitude is None:
+            raise ShiftError(
+                "COORDS_REQUIRED",
+                "Необходимо указать координаты для организации с геопроверкой",
+                400,
+            )
+
+        locations_result = await session.execute(
+            select(WorkLocation).where(
+                WorkLocation.organization_id == organization_id,
+            )
+        )
+        locations = list(locations_result.scalars().all())
+
+        from src.app.utils.geo import is_within_radius
+
+        within_any = any(
+            is_within_radius(latitude, longitude, loc.latitude, loc.longitude, loc.radius_meters)
+            for loc in locations
+        )
+        if not within_any:
+            raise ShiftError(
+                "GEO_CHECK_FAILED",
+                "Вы находитесь вне зоны рабочих точек",
+                403,
+            )
+
+
+async def start_shift(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> Shift:
+    """Start a new shift.
+
+    Rules:
+    - One active personal shift + one active org shift per org allowed simultaneously.
+    - If org has geo_check_enabled, latitude/longitude must be provided and within
+      at least one WorkLocation radius.
+    """
+    await _auto_finish_stale_shifts(session, user_id)
+
+    # Check for existing active shift in the same context
+    conditions = [
+        Shift.user_id == user_id,
+        Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+    ]
+    if organization_id is not None:
+        conditions.append(Shift.organization_id == organization_id)
+    else:
+        conditions.append(Shift.organization_id.is_(None))
+
+    result = await session.execute(select(Shift).where(*conditions))
+    if result.scalar_one_or_none() is not None:
         raise ShiftError(
             "SHIFT_ALREADY_ACTIVE",
             "У вас уже есть активная смена",
             409,
         )
 
-    shift = Shift(user_id=user_id)
+    # Organization-specific checks
+    if organization_id is not None:
+        await _validate_org_shift_start(
+            session, user_id, organization_id, latitude, longitude,
+        )
+
+    shift = Shift(user_id=user_id, organization_id=organization_id)
     session.add(shift)
     await session.flush()
 
