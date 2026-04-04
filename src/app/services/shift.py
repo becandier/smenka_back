@@ -77,3 +77,92 @@ async def _auto_finish_stale_shifts(
 
     if stale_shifts:
         await session.flush()
+
+
+async def start_shift(session: AsyncSession, user_id: uuid.UUID) -> Shift:
+    """Start a new shift. Only one active/paused shift allowed at a time."""
+    await _auto_finish_stale_shifts(session, user_id)
+
+    result = await session.execute(
+        select(Shift).where(
+            Shift.user_id == user_id,
+            Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+        )
+    )
+    existing = result.scalar_one_or_none()
+    if existing is not None:
+        raise ShiftError(
+            "SHIFT_ALREADY_ACTIVE",
+            "У вас уже есть активная смена",
+            409,
+        )
+
+    shift = Shift(user_id=user_id)
+    session.add(shift)
+    await session.flush()
+
+    return await _get_shift_with_pauses(session, shift.id, user_id)
+
+
+async def pause_shift(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Shift:
+    """Pause an active shift."""
+    shift = await _get_shift_with_pauses(session, shift_id, user_id)
+
+    if shift.status != ShiftStatus.active:
+        raise ShiftError("SHIFT_NOT_ACTIVE", "Смена не активна", 400)
+
+    pause = Pause(shift_id=shift.id)
+    session.add(pause)
+    shift.status = ShiftStatus.paused
+    await session.flush()
+    session.expire(shift, ["pauses"])
+
+    return await _get_shift_with_pauses(session, shift.id, user_id)
+
+
+async def resume_shift(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Shift:
+    """Resume a paused shift."""
+    shift = await _get_shift_with_pauses(session, shift_id, user_id)
+
+    if shift.status != ShiftStatus.paused:
+        raise ShiftError("SHIFT_NOT_PAUSED", "Смена не на паузе", 400)
+
+    for pause in shift.pauses:
+        if pause.finished_at is None:
+            pause.finished_at = datetime.now(UTC)
+            break
+
+    shift.status = ShiftStatus.active
+    await session.flush()
+
+    return await _get_shift_with_pauses(session, shift.id, user_id)
+
+
+async def finish_shift(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Shift:
+    """Finish an active or paused shift."""
+    shift = await _get_shift_with_pauses(session, shift_id, user_id)
+
+    if shift.status == ShiftStatus.finished:
+        raise ShiftError("SHIFT_ALREADY_FINISHED", "Смена уже завершена", 400)
+
+    for pause in shift.pauses:
+        if pause.finished_at is None:
+            pause.finished_at = datetime.now(UTC)
+
+    shift.status = ShiftStatus.finished
+    shift.finished_at = datetime.now(UTC)
+    await session.flush()
+
+    return await _get_shift_with_pauses(session, shift.id, user_id)
