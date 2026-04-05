@@ -7,7 +7,7 @@ from src.app.schemas.user import UserResponse, UserUpdate
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("/me")
+@router.get("/me", summary="Текущий пользователь", description="Возвращает профиль авторизованного пользователя.")
 async def get_me(user: CurrentUserDep) -> ApiResponse:
     return ApiResponse.success(
         UserResponse(
@@ -21,7 +21,7 @@ async def get_me(user: CurrentUserDep) -> ApiResponse:
     )
 
 
-@router.patch("/me")
+@router.patch("/me", summary="Обновить профиль", description="Обновляет имя и/или телефон текущего пользователя. Передавайте только поля, которые нужно изменить.")
 async def update_me(
     body: UserUpdate,
     user: CurrentUserDep,

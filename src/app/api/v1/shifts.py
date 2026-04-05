@@ -34,7 +34,7 @@ def _shift_to_response(shift) -> dict:
     ).model_dump(mode="json")
 
 
-@router.get("")
+@router.get("", summary="История смен", description="Список персональных смен текущего пользователя с пагинацией. Поддерживает фильтрацию по статусу и дате.")
 async def list_shifts(
     user: CurrentUserDep,
     session: SessionDep,
@@ -78,7 +78,7 @@ async def list_shifts(
     )
 
 
-@router.get("/stats")
+@router.get("/stats", summary="Статистика смен", description="Агрегированная статистика персональных смен за период (день/неделя/месяц): суммарное время, количество, среднее.")
 async def shift_stats(
     user: CurrentUserDep,
     session: SessionDep,
@@ -91,7 +91,7 @@ async def shift_stats(
     )
 
 
-@router.post("/start", status_code=201)
+@router.post("/start", status_code=201, summary="Начать смену", description="Начинает новую смену. Без `organization_id` — персональная смена. С `organization_id` — организационная смена (требуется членство, при включённой геопроверке нужны координаты). Допускается одна активная персональная смена + по одной на каждую организацию одновременно.")
 async def start_shift(
     user: CurrentUserDep,
     session: SessionDep,
@@ -115,7 +115,7 @@ async def start_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/pause")
+@router.post("/{shift_id}/pause", summary="Поставить на паузу", description="Ставит активную смену на паузу. Для организационных смен может быть ограничено настройкой `max_pauses_per_shift`.")
 async def pause_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
@@ -126,7 +126,7 @@ async def pause_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/resume")
+@router.post("/{shift_id}/resume", summary="Возобновить смену", description="Снимает смену с паузы и возвращает в статус active.")
 async def resume_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
@@ -137,7 +137,7 @@ async def resume_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/finish")
+@router.post("/{shift_id}/finish", summary="Завершить смену", description="Завершает активную или стоящую на паузе смену. Все открытые паузы автоматически закрываются.")
 async def finish_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,

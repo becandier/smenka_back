@@ -52,7 +52,7 @@ def _member_to_response(member) -> dict:
     ).model_dump(mode="json")
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, summary="Создать организацию", description="Создаёт организацию. Текущий пользователь становится владельцем (Owner). Автоматически создаётся инвайт-код и настройки по умолчанию.")
 async def create_organization(
     body: OrganizationCreate,
     user: CurrentUserDep,
@@ -63,7 +63,7 @@ async def create_organization(
     return ApiResponse.success(_org_to_response(org))
 
 
-@router.get("")
+@router.get("", summary="Мои организации", description="Список всех организаций, где текущий пользователь — владелец или участник.")
 async def list_organizations(
     user: CurrentUserDep,
     session: SessionDep,
@@ -76,7 +76,7 @@ async def list_organizations(
     )
 
 
-@router.get("/{org_id}")
+@router.get("/{org_id}", summary="Получить организацию", description="Информация об организации по ID.")
 async def get_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -86,7 +86,7 @@ async def get_organization(
     return ApiResponse.success(_org_to_response(org))
 
 
-@router.patch("/{org_id}")
+@router.patch("/{org_id}", summary="Обновить организацию", description="Обновляет название организации. Только для владельца (Owner).")
 async def update_organization(
     org_id: uuid.UUID,
     body: OrganizationUpdate,
@@ -98,7 +98,7 @@ async def update_organization(
     return ApiResponse.success(_org_to_response(org))
 
 
-@router.delete("/{org_id}", status_code=200)
+@router.delete("/{org_id}", status_code=200, summary="Удалить организацию", description="Мягкое удаление организации (soft delete). Только для владельца (Owner).")
 async def delete_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -109,7 +109,7 @@ async def delete_organization(
     return ApiResponse.success({"message": "Организация удалена"})
 
 
-@router.post("/{org_id}/rotate-invite", status_code=200)
+@router.post("/{org_id}/rotate-invite", status_code=200, summary="Ротация инвайт-кода", description="Генерирует новый инвайт-код. Старый перестаёт работать. Только для владельца (Owner).")
 async def rotate_invite_code(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -122,7 +122,7 @@ async def rotate_invite_code(
     )
 
 
-@router.post("/join/{invite_code}", status_code=201)
+@router.post("/join/{invite_code}", status_code=201, summary="Присоединиться по инвайт-коду", description="Присоединяет текущего пользователя к организации с ролью Employee. Владелец не может присоединиться к своей организации.")
 async def join_organization(
     invite_code: str,
     user: CurrentUserDep,
@@ -139,7 +139,7 @@ async def join_organization(
     )
 
 
-@router.get("/{org_id}/members")
+@router.get("/{org_id}/members", summary="Список участников", description="Список всех участников организации с их ролями. Доступно владельцу и участникам.")
 async def list_members(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -153,7 +153,7 @@ async def list_members(
     )
 
 
-@router.delete("/{org_id}/members/{member_user_id}")
+@router.delete("/{org_id}/members/{member_user_id}", summary="Удалить участника", description="Удаляет участника из организации. Владелец и админ могут удалять других. Любой участник может покинуть организацию сам (передав свой user_id).")
 async def remove_member(
     org_id: uuid.UUID,
     member_user_id: uuid.UUID,
@@ -175,7 +175,7 @@ def _settings_to_response(s) -> dict:
     ).model_dump()
 
 
-@router.get("/{org_id}/settings")
+@router.get("/{org_id}/settings", summary="Настройки организации", description="Текущие настройки организации (геопроверка, лимиты пауз, автозавершение). Только для владельца (Owner).")
 async def get_org_settings(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -185,7 +185,7 @@ async def get_org_settings(
     return ApiResponse.success(_settings_to_response(settings))
 
 
-@router.patch("/{org_id}/settings")
+@router.patch("/{org_id}/settings", summary="Обновить настройки", description="Обновляет настройки организации. Передавайте только поля, которые нужно изменить. Только для владельца (Owner).")
 async def update_org_settings(
     org_id: uuid.UUID,
     body: OrganizationSettingsUpdate,
@@ -200,17 +200,17 @@ async def update_org_settings(
     return ApiResponse.success(_settings_to_response(settings))
 
 
-@router.get("/{org_id}/shifts")
+@router.get("/{org_id}/shifts", summary="Смены сотрудников", description="Список смен сотрудников организации с пагинацией и фильтрами. Доступно владельцу (Owner) и админам.")
 async def list_org_shifts(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    user_id: uuid.UUID | None = Query(None, description="Filter by employee"),
-    status: str | None = Query(None),
-    date_from: dt_datetime | None = Query(None),
-    date_to: dt_datetime | None = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    user_id: uuid.UUID | None = Query(None, description="Фильтр по UUID сотрудника"),
+    status: str | None = Query(None, description="Фильтр по статусу: active, paused, finished"),
+    date_from: dt_datetime | None = Query(None, description="Смены начатые после этой даты"),
+    date_to: dt_datetime | None = Query(None, description="Смены начатые до этой даты"),
+    limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
+    offset: int = Query(0, ge=0, description="Смещение для пагинации"),
 ) -> ApiResponse:
     # Only owner or admin can view org shifts
     from src.app.services.work_location import _check_admin_or_owner
@@ -251,12 +251,12 @@ async def list_org_shifts(
     )
 
 
-@router.get("/{org_id}/stats")
+@router.get("/{org_id}/stats", summary="Статистика организации", description="Агрегированная статистика по организации за период с разбивкой по каждому сотруднику. Доступно владельцу (Owner) и админам.")
 async def org_stats(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    period: str = Query(..., description="Period: day, week, month"),
+    period: str = Query(..., description="Период агрегации: day, week, month"),
 ) -> ApiResponse:
     from src.app.services.work_location import _check_admin_or_owner
 

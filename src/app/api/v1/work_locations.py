@@ -30,7 +30,7 @@ def _location_to_response(loc) -> dict:
     ).model_dump(mode="json")
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, summary="Создать рабочую точку", description="Создаёт рабочую точку (геозону) для организации. При включённой геопроверке сотрудники смогут начать смену только внутри радиуса одной из точек. Доступно владельцу и админам.")
 async def create_location(
     org_id: uuid.UUID,
     body: WorkLocationCreate,
@@ -48,7 +48,7 @@ async def create_location(
     return ApiResponse.success(_location_to_response(location))
 
 
-@router.get("")
+@router.get("", summary="Список рабочих точек", description="Все рабочие точки организации. Доступно владельцу и участникам.")
 async def list_locations(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -62,7 +62,7 @@ async def list_locations(
     )
 
 
-@router.patch("/{location_id}")
+@router.patch("/{location_id}", summary="Обновить рабочую точку", description="Обновляет параметры рабочей точки. Передавайте только поля, которые нужно изменить. Доступно владельцу и админам.")
 async def update_location(
     org_id: uuid.UUID,
     location_id: uuid.UUID,
@@ -78,7 +78,7 @@ async def update_location(
     return ApiResponse.success(_location_to_response(location))
 
 
-@router.delete("/{location_id}")
+@router.delete("/{location_id}", summary="Удалить рабочую точку", description="Удаляет рабочую точку. Доступно владельцу и админам.")
 async def delete_location(
     org_id: uuid.UUID,
     location_id: uuid.UUID,
