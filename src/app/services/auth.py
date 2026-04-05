@@ -1,4 +1,3 @@
-import logging
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -8,6 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.config import get_settings
+from src.app.core.logging import get_logger
 from src.app.core.security import (
     ALGORITHM,
     create_access_token,
@@ -17,7 +17,7 @@ from src.app.core.security import (
 )
 from src.app.models.user import RefreshToken, User, VerificationCode
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 settings = get_settings()
 
 
@@ -65,7 +65,8 @@ async def register(
     session.add(verification)
     await session.flush()
 
-    logger.info("Verification code for %s: %s", email, code)
+    logger.info("verification_code_generated", email=email, code=code)
+    logger.info("user_registered", user_id=str(user.id), email=email)
     return user, code
 
 
@@ -103,6 +104,7 @@ async def verify_email(
 
     access_token = create_access_token(str(user.id))
     refresh_token = await _create_refresh_token_db(session, user.id)
+    logger.info("email_verified", email=email)
     return access_token, refresh_token
 
 
@@ -144,7 +146,7 @@ async def resend_code(session: AsyncSession, email: str) -> str:
     session.add(verification)
     await session.flush()
 
-    logger.info("Verification code for %s: %s", email, code)
+    logger.info("verification_code_resent", email=email, code=code)
     return code
 
 
@@ -163,6 +165,7 @@ async def login(
 
     access_token = create_access_token(str(user.id))
     refresh_token = await _create_refresh_token_db(session, user.id)
+    logger.info("user_logged_in", user_id=str(user.id), email=email)
     return access_token, refresh_token
 
 
@@ -196,6 +199,7 @@ async def refresh_tokens(
 
     new_access = create_access_token(user_id)
     new_refresh = await _create_refresh_token_db(session, db_token.user_id)
+    logger.info("tokens_refreshed", user_id=user_id)
     return new_access, new_refresh
 
 
@@ -211,6 +215,7 @@ async def logout(session: AsyncSession, refresh_token: str) -> None:
     if db_token is not None:
         db_token.revoked = True
         await session.flush()
+    logger.info("user_logged_out")
 
 
 async def get_user_by_id(session: AsyncSession, user_id: str) -> User | None:

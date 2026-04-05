@@ -3,8 +3,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.core.logging import get_logger
 from src.app.models.work_location import WorkLocation
 from src.app.services.organization import OrgError, get_organization, _check_org_access
+
+logger = get_logger(__name__)
 
 
 async def create_work_location(
@@ -28,6 +31,7 @@ async def create_work_location(
     )
     session.add(location)
     await session.flush()
+    logger.info("work_location_created", org_id=str(org_id), location_id=str(location.id))
     return location
 
 
@@ -75,6 +79,7 @@ async def delete_work_location(
     location = await _get_location(session, org_id, location_id)
     await session.delete(location)
     await session.flush()
+    logger.info("work_location_deleted", org_id=str(org_id), location_id=str(location_id))
 
 
 async def _get_location(

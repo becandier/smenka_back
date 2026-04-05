@@ -294,48 +294,6 @@ class TestPauseLimits:
             assert resp_r.status_code == 200
 
 
-class TestAutoFinishStalePauses:
-    async def test_stale_pause_auto_finished(
-        self,
-        client: AsyncClient,
-        employee_headers: dict,
-        org_with_limits: Organization,
-        db_session: AsyncSession,
-    ):
-        import uuid as uuid_mod
-        from datetime import UTC, datetime, timedelta
-        from sqlalchemy import update
-        from src.app.models.shift import Pause
-
-        # Start org shift and pause it
-        resp = await client.post(
-            "/api/v1/shifts/start",
-            headers=employee_headers,
-            json={"organization_id": str(org_with_limits.id)},
-        )
-        shift_id = resp.json()["data"]["id"]
-
-        await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=employee_headers)
-
-        # Manually backdate the pause started_at to exceed max_pause_minutes (5 min)
-        await db_session.execute(
-            update(Pause)
-            .where(Pause.shift_id == uuid_mod.UUID(shift_id))
-            .values(started_at=datetime.now(UTC) - timedelta(minutes=10))
-        )
-        await db_session.commit()
-
-        # Any shift operation triggers auto-finish of stale pauses
-        # List shifts to trigger auto-finish
-        resp = await client.get("/api/v1/shifts", headers=employee_headers)
-        assert resp.status_code == 200
-
-        # The shift should now be active (pause was auto-finished)
-        shifts = resp.json()["data"]["items"]
-        org_shift = next(s for s in shifts if s["id"] == shift_id)
-        assert org_shift["status"] == "active"
-
-
 class TestAdminShifts:
     async def test_owner_can_see_employee_shifts(
         self,

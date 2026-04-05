@@ -1,3 +1,4 @@
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,18 +9,27 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.app.api.v1.router import router as v1_router
 from src.app.core.config import get_settings
+from src.app.core.logging import get_logger, setup_logging
 from src.app.schemas.base import ApiResponse
 from src.app.services.auth import AuthError
 from src.app.services.organization import OrgError
 from src.app.services.shift import ShiftError
 
+settings = get_settings()
+
+setup_logging(
+    json_logs=settings.app_env == "production",
+    log_level="DEBUG" if settings.debug else "INFO",
+)
+logger = get_logger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    logger.info("app_started")
     yield
+    logger.info("app_stopped")
 
-
-settings = get_settings()
 
 app = FastAPI(
     title="Smenka API",
@@ -29,6 +39,21 @@ app = FastAPI(
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
 )
+
+
+@app.middleware("http")
+async def logging_middleware(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
+    logger.info(
+        "request_completed",
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=duration_ms,
+    )
+    return response
 
 
 @app.exception_handler(StarletteHTTPException)

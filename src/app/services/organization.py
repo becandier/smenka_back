@@ -5,7 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.app.core.logging import get_logger
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
+
+logger = get_logger(__name__)
 
 
 class OrgError(Exception):
@@ -33,6 +36,7 @@ async def create_organization(
     session.add(settings)
     await session.flush()
 
+    logger.info("organization_created", org_id=str(org.id), owner_id=str(owner_id))
     return org
 
 
@@ -101,6 +105,7 @@ async def delete_organization(
     _check_owner(org, owner_id)
     org.is_deleted = True
     await session.flush()
+    logger.info("organization_deleted", org_id=str(org_id))
 
 
 async def rotate_invite_code(
@@ -149,6 +154,7 @@ async def join_by_invite(
     )
     session.add(member)
     await session.flush()
+    logger.info("member_joined", org_id=str(org.id), user_id=str(user_id))
     return org, member
 
 
@@ -211,6 +217,7 @@ async def remove_member(
 
     await session.delete(member)
     await session.flush()
+    logger.info("member_removed", org_id=str(org_id), user_id=str(member_user_id))
 
 
 def _check_owner(org: Organization, user_id: uuid.UUID) -> None:

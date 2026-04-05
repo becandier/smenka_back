@@ -3,8 +3,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.core.logging import get_logger
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.services.organization import OrgError, get_organization, _check_owner
+
+logger = get_logger(__name__)
 
 
 async def get_settings(
@@ -37,6 +40,7 @@ async def update_settings(
         if value is not None:
             setattr(settings, key, value)
     await session.flush()
+    logger.info("org_settings_updated", org_id=str(org_id))
     return settings
 
 

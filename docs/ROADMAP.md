@@ -76,10 +76,16 @@
 
 ---
 
-## Фаза 5 — Фоновые задачи `[ ]`
-- [ ] Background-воркер для автозавершения зависших смен
-- [ ] Периодическая проверка (cron-like)
-- [ ] Логирование
+## Фаза 5 — Фоновые задачи и логирование `[x]`
+- [x] Celery + Redis инфраструктура (брокер, воркер с Beat)
+- [x] Задача `auto_finish_stale_shifts` — автозавершение зависших смен (каждые 5 мин)
+- [x] Задача `auto_finish_stale_pauses` — автозавершение просроченных пауз (каждые 5 мин)
+- [x] Задача `cleanup_expired_tokens` — очистка протухших токенов и кодов (ежедневно 03:00 UTC)
+- [x] Использование `OrganizationSettings.auto_finish_hours` вместо глобального дефолта для орг-смен
+- [x] Структурированное логирование (structlog) — JSON в проде, pretty в dev
+- [x] Request logging middleware (method, path, status, duration)
+- [x] Логирование во всех сервисах (auth, shifts, organizations, locations, settings)
+- [x] Тесты фоновых задач
 
 ---
 

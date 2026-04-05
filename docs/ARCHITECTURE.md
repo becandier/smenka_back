@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-04-04 (фаза 4)
+Последнее обновление: 2026-04-05 (фаза 5)
 
 ---
 
@@ -68,6 +68,8 @@
 | `services/organization.py` | CRUD организаций, инвайты, участники |
 | `services/work_location.py` | CRUD рабочих точек |
 | `services/organization_settings.py` | CRUD настроек организации |
+| `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule) |
+| `core/logging.py` | Конфигурация structlog |
 
 ---
 
@@ -100,9 +102,36 @@
 
 ---
 
+## Фоновые задачи (Celery + Redis)
+
+| Файл | Задача | Расписание |
+|------|--------|------------|
+| `tasks/shifts.py` | `auto_finish_stale_shifts` — завершение зависших смен | Каждые 5 мин |
+| `tasks/shifts.py` | `auto_finish_stale_pauses` — завершение просроченных пауз | Каждые 5 мин |
+| `tasks/cleanup.py` | `cleanup_expired_tokens` — очистка протухших токенов/кодов | Ежедневно 03:00 UTC |
+
+**Инфраструктура:**
+- Redis 7 — брокер Celery + будущий кэш
+- Celery worker с встроенным Beat (один контейнер)
+- Синхронные DB-сессии для задач (`sync_session_factory` в `database.py`)
+
+---
+
+## Логирование
+
+| Файл | Описание |
+|------|----------|
+| `core/logging.py` | Конфигурация structlog (JSON prod / pretty dev) |
+
+- Все сервисы используют `structlog` через `get_logger()`
+- HTTP middleware логирует каждый запрос (method, path, status_code, duration_ms)
+- Celery-задачи логируют результаты выполнения
+
+---
+
 ## Внешние сервисы
 
-Нет. Проект полностью автономный (PostgreSQL + API).
+- **Redis** — брокер Celery, планируется для кэширования
 
 ---
 

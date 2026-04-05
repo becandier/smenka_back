@@ -6,8 +6,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.app.core.config import get_settings
+from src.app.core.logging import get_logger
 from src.app.models.shift import Pause, Shift, ShiftStatus
 
+logger = get_logger(__name__)
 settings = get_settings()
 
 
@@ -47,78 +49,6 @@ async def _get_shift_with_pauses(
     if shift is None:
         raise ShiftError("SHIFT_NOT_FOUND", "Смена не найдена", 404)
     return shift
-
-
-async def _auto_finish_stale_shifts(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-) -> None:
-    """Auto-finish shifts that exceeded the timeout (default 16h)."""
-    timeout_hours = settings.default_auto_finish_hours
-    cutoff = datetime.now(UTC) - timedelta(hours=timeout_hours)
-
-    result = await session.execute(
-        select(Shift)
-        .options(selectinload(Shift.pauses))
-        .where(
-            Shift.user_id == user_id,
-            Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
-            Shift.started_at < cutoff,
-        )
-    )
-    stale_shifts = result.scalars().all()
-
-    for shift in stale_shifts:
-        for pause in shift.pauses:
-            if pause.finished_at is None:
-                pause.finished_at = datetime.now(UTC)
-        shift.status = ShiftStatus.finished
-        shift.finished_at = datetime.now(UTC)
-
-    if stale_shifts:
-        await session.flush()
-
-
-async def _auto_finish_stale_pauses(
-    session: AsyncSession,
-    user_id: uuid.UUID,
-) -> None:
-    """Auto-finish pauses that exceeded org max_pause_minutes."""
-    from src.app.models.organization_settings import OrganizationSettings
-
-    # Find all paused org shifts for this user
-    result = await session.execute(
-        select(Shift)
-        .options(selectinload(Shift.pauses))
-        .where(
-            Shift.user_id == user_id,
-            Shift.status == ShiftStatus.paused,
-            Shift.organization_id.isnot(None),
-        )
-    )
-    paused_shifts = list(result.scalars().all())
-
-    now = datetime.now(UTC)
-    for shift in paused_shifts:
-        # Load org settings
-        settings_result = await session.execute(
-            select(OrganizationSettings).where(
-                OrganizationSettings.organization_id == shift.organization_id,
-            )
-        )
-        org_settings = settings_result.scalar_one_or_none()
-        if org_settings is None or org_settings.max_pause_minutes is None:
-            continue
-
-        max_pause = timedelta(minutes=org_settings.max_pause_minutes)
-        for pause in shift.pauses:
-            if pause.finished_at is None and (now - pause.started_at) > max_pause:
-                pause.finished_at = pause.started_at + max_pause
-                shift.status = ShiftStatus.active
-                break
-
-    if paused_shifts:
-        await session.flush()
 
 
 async def _validate_org_shift_start(
@@ -185,6 +115,52 @@ async def _validate_org_shift_start(
             )
 
 
+async def _auto_finish_stale_for_user(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+) -> None:
+    """Inline safety net: auto-finish stale shifts for this user before starting a new one.
+
+    The main cleanup is done by the Celery background task every 5 min.
+    This ensures the user is never blocked by their own stale shift.
+    """
+    from src.app.models.organization_settings import OrganizationSettings
+
+    now = datetime.now(UTC)
+    result = await session.execute(
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(
+            Shift.user_id == user_id,
+            Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+        )
+    )
+    active_shifts = list(result.scalars().all())
+
+    for shift in active_shifts:
+        if shift.organization_id is not None:
+            org_result = await session.execute(
+                select(OrganizationSettings).where(
+                    OrganizationSettings.organization_id == shift.organization_id,
+                )
+            )
+            org_settings = org_result.scalar_one_or_none()
+            hours = org_settings.auto_finish_hours if org_settings else settings.default_auto_finish_hours
+        else:
+            hours = settings.default_auto_finish_hours
+
+        cutoff = now - timedelta(hours=hours)
+        if shift.started_at < cutoff:
+            for pause in shift.pauses:
+                if pause.finished_at is None:
+                    pause.finished_at = now
+            shift.status = ShiftStatus.finished
+            shift.finished_at = now
+            logger.info("stale_shift_auto_finished_inline", shift_id=str(shift.id), user_id=str(user_id))
+
+    await session.flush()
+
+
 async def start_shift(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -199,8 +175,7 @@ async def start_shift(
     - If org has geo_check_enabled, latitude/longitude must be provided and within
       at least one WorkLocation radius.
     """
-    await _auto_finish_stale_shifts(session, user_id)
-    await _auto_finish_stale_pauses(session, user_id)
+    await _auto_finish_stale_for_user(session, user_id)
 
     # Check for existing active shift in the same context
     conditions = [
@@ -229,6 +204,13 @@ async def start_shift(
     shift = Shift(user_id=user_id, organization_id=organization_id)
     session.add(shift)
     await session.flush()
+
+    logger.info(
+        "shift_started",
+        shift_id=str(shift.id),
+        user_id=str(user_id),
+        org_id=str(organization_id) if organization_id else None,
+    )
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
 
@@ -264,6 +246,8 @@ async def pause_shift(
     await session.flush()
     session.expire(shift, ["pauses"])
 
+    logger.info("shift_paused", shift_id=str(shift_id), user_id=str(user_id))
+
     return await _get_shift_with_pauses(session, shift.id, user_id)
 
 
@@ -286,6 +270,8 @@ async def resume_shift(
     shift.status = ShiftStatus.active
     await session.flush()
 
+    logger.info("shift_resumed", shift_id=str(shift_id), user_id=str(user_id))
+
     return await _get_shift_with_pauses(session, shift.id, user_id)
 
 
@@ -303,9 +289,6 @@ async def get_shifts(
     offset: int = 0,
 ) -> tuple[list[Shift], int]:
     """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
-    await _auto_finish_stale_shifts(session, user_id)
-    await _auto_finish_stale_pauses(session, user_id)
-
     conditions = [Shift.user_id == user_id]
 
     if status is not None:
@@ -340,9 +323,6 @@ async def get_shift_stats(
     """Calculate shift statistics for the given period."""
     if period not in VALID_PERIODS:
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
-
-    await _auto_finish_stale_shifts(session, user_id)
-    await _auto_finish_stale_pauses(session, user_id)
 
     now = datetime.now(UTC)
     if period == "day":
@@ -394,6 +374,8 @@ async def finish_shift(
     shift.status = ShiftStatus.finished
     shift.finished_at = datetime.now(UTC)
     await session.flush()
+
+    logger.info("shift_finished", shift_id=str(shift_id), user_id=str(user_id))
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
 
