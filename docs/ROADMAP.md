@@ -89,6 +89,18 @@
 
 ---
 
+## Глобальные роли пользователей `[x]`
+- [x] Enum `UserRole` (super_admin, user), default user
+- [x] Поле `role` в модели `User` + Alembic-миграция
+- [x] Зависимость `SuperAdminDep` в deps.py
+- [x] Защита POST /organizations — только super_admin
+- [x] GET /organizations/all — все организации для super_admin
+- [x] PATCH /organizations/{id}/members/{user_id}/role — смена роли участника (owner/super_admin)
+- [x] /users/me возвращает role
+- [x] super_admin задаётся только вручную в БД
+
+---
+
 ## Фаза 6 — Продакшен `[ ]`
 - [ ] Rate-limiting
 - [ ] CORS-настройки

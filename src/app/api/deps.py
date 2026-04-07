@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.core.config import get_settings
 from src.app.core.database import get_session
 from src.app.core.security import ALGORITHM
-from src.app.models.user import User
+from src.app.models.user import User, UserRole
 from src.app.services.auth import get_user_by_id
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -40,3 +40,14 @@ async def get_current_user(
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def require_super_admin(
+    user: CurrentUserDep,
+) -> User:
+    if user.role != UserRole.super_admin:
+        raise HTTPException(status_code=403, detail="SUPER_ADMIN_REQUIRED")
+    return user
+
+
+SuperAdminDep = Annotated[User, Depends(require_super_admin)]

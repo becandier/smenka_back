@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-04-05 (фаза 5)
+Последнее обновление: 2026-04-07 (глобальные роли пользователей)
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Модель | Таблица | Описание |
 |--------|---------|----------|
-| `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified) |
+| `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified, role: super_admin/user) |
 | `RefreshToken` | `refresh_tokens` | JWT refresh-токен (token, expires_at, revoked) |
 | `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at) |
 | `Shift` | `shifts` | Рабочая смена (user_id, organization_id, started_at, finished_at, status) |
@@ -39,7 +39,8 @@
 | POST | `/api/v1/shifts/{id}/pause` | Поставить на паузу | Bearer |
 | POST | `/api/v1/shifts/{id}/resume` | Возобновить | Bearer |
 | POST | `/api/v1/shifts/{id}/finish` | Завершить | Bearer |
-| POST | `/api/v1/organizations` | Создать организацию | Bearer |
+| POST | `/api/v1/organizations` | Создать организацию | Bearer (super_admin) |
+| GET | `/api/v1/organizations/all` | Все организации системы | Bearer (super_admin) |
 | GET | `/api/v1/organizations` | Мои организации | Bearer |
 | GET | `/api/v1/organizations/{id}` | Получить организацию | Bearer |
 | PATCH | `/api/v1/organizations/{id}` | Обновить организацию | Bearer |
@@ -48,6 +49,7 @@
 | POST | `/api/v1/organizations/join/{code}` | Присоединиться по коду | Bearer |
 | GET | `/api/v1/organizations/{id}/members` | Список участников | Bearer |
 | DELETE | `/api/v1/organizations/{id}/members/{user_id}` | Удалить участника / выйти | Bearer |
+| PATCH | `/api/v1/organizations/{id}/members/{user_id}/role` | Изменить роль участника | Bearer (owner/super_admin) |
 | POST | `/api/v1/organizations/{id}/locations` | Создать точку | Bearer |
 | GET | `/api/v1/organizations/{id}/locations` | Список точек | Bearer |
 | PATCH | `/api/v1/organizations/{id}/locations/{loc_id}` | Обновить точку | Bearer |
@@ -79,6 +81,7 @@
 |-----|------|----------|
 | `SessionDep` | `api/deps.py` | `AsyncSession` через `Depends` |
 | `CurrentUserDep` | `api/deps.py` | Текущий пользователь из JWT (HTTPBearer) |
+| `SuperAdminDep` | `api/deps.py` | Текущий пользователь + проверка role=super_admin (403) |
 
 ---
 

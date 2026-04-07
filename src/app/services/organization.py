@@ -220,6 +220,62 @@ async def remove_member(
     logger.info("member_removed", org_id=str(org_id), user_id=str(member_user_id))
 
 
+async def get_all_organizations(
+    session: AsyncSession,
+) -> list[Organization]:
+    """Get all active organizations (for super_admin)."""
+    result = await session.execute(
+        select(Organization).where(Organization.is_deleted.is_(False))
+    )
+    return list(result.scalars().all())
+
+
+async def update_member_role(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    new_role: str,
+    requester_id: uuid.UUID,
+    is_super_admin: bool = False,
+) -> OrganizationMember:
+    org = await get_organization(session, org_id)
+
+    # Only owner or super_admin can change roles
+    if not is_super_admin and org.owner_id != requester_id:
+        raise OrgError("FORBIDDEN", "Только владелец или super_admin может менять роли", 403)
+
+    try:
+        role_enum = MemberRole(new_role)
+    except ValueError:
+        raise OrgError(
+            "INVALID_ROLE",
+            f"Роль должна быть: {', '.join(r.value for r in MemberRole)}",
+            400,
+        )
+
+    result = await session.execute(
+        select(OrganizationMember)
+        .options(selectinload(OrganizationMember.user))
+        .where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == member_user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if member is None:
+        raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+
+    member.role = role_enum
+    await session.flush()
+    logger.info(
+        "member_role_updated",
+        org_id=str(org_id),
+        user_id=str(member_user_id),
+        new_role=new_role,
+    )
+    return member
+
+
 def _check_owner(org: Organization, user_id: uuid.UUID) -> None:
     if org.owner_id != user_id:
         raise OrgError("FORBIDDEN", "Только владелец может выполнить это действие", 403)

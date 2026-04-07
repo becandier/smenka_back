@@ -16,6 +16,7 @@ async def get_me(user: CurrentUserDep) -> ApiResponse:
             phone=user.phone,
             name=user.name,
             is_verified=user.is_verified,
+            role=user.role.value,
             created_at=user.created_at,
         ).model_dump(mode="json")
     )
@@ -40,6 +41,7 @@ async def update_me(
             phone=user.phone,
             name=user.name,
             is_verified=user.is_verified,
+            role=user.role.value,
             created_at=user.created_at,
         ).model_dump(mode="json")
     )

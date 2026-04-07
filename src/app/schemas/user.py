@@ -9,6 +9,7 @@ class UserResponse(BaseModel):
     phone: str | None = Field(default=None, description="Телефон")
     name: str = Field(description="Имя")
     is_verified: bool = Field(description="Email подтверждён")
+    role: str = Field(description="Глобальная роль: super_admin или user")
     created_at: datetime = Field(description="Дата регистрации")
 
     model_config = {"from_attributes": True}

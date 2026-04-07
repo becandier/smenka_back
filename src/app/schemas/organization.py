@@ -50,3 +50,7 @@ class JoinResponse(BaseModel):
 
 class InviteCodeResponse(BaseModel):
     invite_code: str = Field(description="Новый инвайт-код")
+
+
+class MemberRoleUpdate(BaseModel):
+    role: str = Field(description="Новая роль: admin или employee")

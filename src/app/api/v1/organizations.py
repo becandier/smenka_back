@@ -3,13 +3,15 @@ from datetime import datetime as dt_datetime
 
 from fastapi import APIRouter, Query
 
-from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
+from src.app.models.user import UserRole
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.organization import (
     InviteCodeResponse,
     JoinResponse,
     MemberListResponse,
     MemberResponse,
+    MemberRoleUpdate,
     OrganizationCreate,
     OrganizationListResponse,
     OrganizationResponse,
@@ -52,10 +54,10 @@ def _member_to_response(member) -> dict:
     ).model_dump(mode="json")
 
 
-@router.post("", status_code=201, summary="Создать организацию", description="Создаёт организацию. Текущий пользователь становится владельцем (Owner). Автоматически создаётся инвайт-код и настройки по умолчанию.")
+@router.post("", status_code=201, summary="Создать организацию", description="Создаёт организацию. Только для super_admin. Текущий пользователь становится владельцем (Owner). Автоматически создаётся инвайт-код и настройки по умолчанию.")
 async def create_organization(
     body: OrganizationCreate,
-    user: CurrentUserDep,
+    user: SuperAdminDep,
     session: SessionDep,
 ) -> ApiResponse:
     org = await org_service.create_organization(session, body.name, user.id)
@@ -69,6 +71,19 @@ async def list_organizations(
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_user_organizations(session, user.id)
+    return ApiResponse.success(
+        OrganizationListResponse(
+            items=[_org_to_response(o) for o in orgs],
+        ).model_dump(mode="json")
+    )
+
+
+@router.get("/all", summary="Все организации (super_admin)", description="Список ВСЕХ организаций системы. Только для super_admin.")
+async def list_all_organizations(
+    user: SuperAdminDep,
+    session: SessionDep,
+) -> ApiResponse:
+    orgs = await org_service.get_all_organizations(session)
     return ApiResponse.success(
         OrganizationListResponse(
             items=[_org_to_response(o) for o in orgs],
@@ -163,6 +178,26 @@ async def remove_member(
     await org_service.remove_member(session, org_id, member_user_id, user.id)
     await session.commit()
     return ApiResponse.success({"message": "Участник удалён"})
+
+
+@router.patch("/{org_id}/members/{member_user_id}/role", summary="Изменить роль участника", description="Назначает или снимает роль admin у участника. Доступно владельцу (Owner) и super_admin.")
+async def update_member_role(
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    body: MemberRoleUpdate,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    member = await org_service.update_member_role(
+        session,
+        org_id,
+        member_user_id,
+        body.role,
+        user.id,
+        is_super_admin=user.role == UserRole.super_admin,
+    )
+    await session.commit()
+    return ApiResponse.success(_member_to_response(member))
 
 
 def _settings_to_response(s) -> dict:
