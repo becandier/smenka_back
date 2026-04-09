@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(
     title="Smenka API",
     version="0.1.0",
+    redirect_slashes=False,
     description="""API для учёта рабочего времени (shift tracking).
 
 ## Режимы работы
