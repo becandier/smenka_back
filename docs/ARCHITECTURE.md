@@ -81,7 +81,10 @@
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/reorder` | Изменить порядок | Bearer (owner/admin) |
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/roles` | Назначить ролям (PUT) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/assignments` | Кому назначен | Bearer (owner/admin) |
-| PUT | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Личные overrides (PUT) | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Личные overrides bulk (PUT) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Список личных overrides сотрудника | Bearer (owner/admin/self) |
+| PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Upsert override (шаблон, сотрудник) | Bearer (owner/admin) |
+| DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Снять override (идемпотентно) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/members/{user_id}/checklists` | Эффективные чек-листы | Bearer (owner/admin/self) |
 | GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены | Bearer (владелец смены / owner / admin) |
 | GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра | Bearer |
@@ -100,7 +103,8 @@
 | `services/organization_settings.py` | CRUD настроек организации |
 | `services/organization_role.py` | Кастомные роли организации и их назначение members (`RoleError`) |
 | `services/checklist_template.py` | Шаблоны чек-листов, пункты, reorder, архивация (`ChecklistError`) |
-| `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides, вычисление эффективных шаблонов |
+| `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides (bulk PUT), вычисление эффективных шаблонов |
+| `services/checklist_override.py` | Гранулярный upsert/delete/list личных overrides (ON CONFLICT DO UPDATE) |
 | `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, finalize |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule) |
 | `core/logging.py` | Конфигурация structlog |

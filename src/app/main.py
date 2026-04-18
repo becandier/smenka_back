@@ -105,6 +105,10 @@ Authorization: Bearer <access_token>
             "description": "Назначение шаблонов ролям и личные переопределения для сотрудников. Вычисление эффективных чек-листов.",
         },
         {
+            "name": "checklist-overrides",
+            "description": "Гранулярные операции над личными overrides: upsert и удаление по паре (шаблон, сотрудник), список overrides сотрудника.",
+        },
+        {
             "name": "checklist-instances",
             "description": "Экземпляры чек-листов смены (снимки): просмотр и заполнение пунктов.",
         },

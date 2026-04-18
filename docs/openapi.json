@@ -2621,6 +2621,63 @@
             }
           }
         }
+      },
+      "get": {
+        "tags": [
+          "checklist-overrides"
+        ],
+        "summary": "Все личные overrides сотрудника",
+        "description": "Возвращает все личные переопределения сотрудника включая overrides архивных шаблонов. Доступно владельцу, админам и самому сотруднику.",
+        "operationId": "list_member_overrides_api_v1_organizations__org_id__members__user_id__checklist_overrides_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/organizations/{org_id}/members/{user_id}/checklists": {
@@ -2645,6 +2702,152 @@
               "type": "string",
               "format": "uuid",
               "title": "Org Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/{org_id}/checklist-templates/{template_id}/personal/{user_id}": {
+      "put": {
+        "tags": [
+          "checklist-overrides"
+        ],
+        "summary": "Установить личный override для (шаблон, сотрудник)",
+        "description": "Upsert-семантика: создаёт или обновляет override для пары (template, user). На архивных шаблонах запрещено.",
+        "operationId": "upsert_personal_override_api_v1_organizations__org_id__checklist_templates__template_id__personal__user_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Template Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalOverrideRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "checklist-overrides"
+        ],
+        "summary": "Снять личный override",
+        "description": "Идемпотентно удаляет override для пары (template, user). Возвращает 200 даже если override отсутствует.",
+        "operationId": "delete_personal_override_api_v1_organizations__org_id__checklist_templates__template_id__personal__user_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "template_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Template Id"
             }
           },
           {
@@ -3447,6 +3650,20 @@
         ],
         "title": "OverrideItem"
       },
+      "PersonalOverrideRequest": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "add — добавить поверх роли, remove — исключить из роли"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "PersonalOverrideRequest"
+      },
       "RefreshRequest": {
         "properties": {
           "refresh_token": {
@@ -3959,6 +4176,10 @@
     {
       "name": "checklist-assignments",
       "description": "Назначение шаблонов ролям и личные переопределения для сотрудников. Вычисление эффективных чек-листов."
+    },
+    {
+      "name": "checklist-overrides",
+      "description": "Гранулярные операции над личными overrides: upsert и удаление по паре (шаблон, сотрудник), список overrides сотрудника."
     },
     {
       "name": "checklist-instances",

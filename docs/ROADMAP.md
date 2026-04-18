@@ -140,3 +140,11 @@
 - [x] PATCH пункта: владелец смены, смена не finished, change_count, авто-пересчёт статуса
 - [x] `finalize_shift_checklists` вызывается в finish_shift, inline auto-finish и Celery
 - [x] Миграция, 12 тестов
+
+### Этап 7.1 — Гранулярные overrides `[x]`
+- [x] `GET /members/{user_id}/checklist-overrides` — все overrides сотрудника (с архивными)
+- [x] `PUT /checklist-templates/{tpl_id}/personal/{user_id}` — upsert через ON CONFLICT DO UPDATE
+- [x] `DELETE /checklist-templates/{tpl_id}/personal/{user_id}` — идемпотентное удаление
+- [x] Запрет PUT на архивный шаблон (TEMPLATE_ARCHIVED)
+- [x] Bulk PUT остаётся для «очистить всё» сценариев
+- [x] 21 тест (CRUD, права, архивность, cascade, обратная совместимость)

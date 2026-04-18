@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from src.app.api.v1.auth import router as auth_router
 from src.app.api.v1.checklist_assignments import router as checklist_assignments_router
 from src.app.api.v1.checklist_instances import router as checklist_instances_router
+from src.app.api.v1.checklist_overrides import router as checklist_overrides_router
 from src.app.api.v1.checklist_templates import router as checklist_templates_router
 from src.app.api.v1.organization_roles import router as organization_roles_router
 from src.app.api.v1.organizations import router as organizations_router
@@ -18,5 +19,6 @@ router.include_router(organizations_router)
 router.include_router(organization_roles_router)
 router.include_router(checklist_templates_router)
 router.include_router(checklist_assignments_router)
+router.include_router(checklist_overrides_router)
 router.include_router(checklist_instances_router)
 router.include_router(work_locations_router)
