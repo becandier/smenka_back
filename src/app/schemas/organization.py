@@ -17,6 +17,7 @@ class OrganizationResponse(BaseModel):
     owner_id: str = Field(description="UUID владельца")
     invite_code: str = Field(description="Инвайт-код для присоединения")
     is_deleted: bool = Field(description="Помечена как удалённая")
+    geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
     created_at: datetime = Field(description="Дата создания")
 
     model_config = {"from_attributes": True}
@@ -46,6 +47,7 @@ class JoinResponse(BaseModel):
     organization_id: str = Field(description="UUID организации")
     organization_name: str = Field(description="Название организации")
     role: str = Field(description="Назначенная роль (employee)")
+    geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
 
 
 class InviteCodeResponse(BaseModel):

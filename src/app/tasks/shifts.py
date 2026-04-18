@@ -21,7 +21,8 @@ def auto_finish_stale_shifts() -> None:
         now = datetime.now(UTC)
 
         # 1. Personal shifts (no org) — use global default
-        global_cutoff = now - timedelta(hours=settings.default_auto_finish_hours)
+        global_hours = settings.default_auto_finish_hours
+        global_cutoff = now - timedelta(hours=global_hours)
         result = session.execute(
             select(Shift)
             .options(selectinload(Shift.pauses))
@@ -31,7 +32,9 @@ def auto_finish_stale_shifts() -> None:
                 Shift.started_at < global_cutoff,
             )
         )
-        personal_shifts = list(result.scalars().all())
+        stale: list[tuple[Shift, int]] = [
+            (s, global_hours) for s in result.scalars().all()
+        ]
 
         # 2. Org shifts — use per-org auto_finish_hours
         org_settings_result = session.execute(select(OrganizationSettings))
@@ -47,30 +50,29 @@ def auto_finish_stale_shifts() -> None:
                 Shift.organization_id.isnot(None),
             )
         )
-        org_shifts = list(org_result.scalars().all())
 
-        stale_org_shifts = []
-        for shift in org_shifts:
+        for shift in org_result.scalars().all():
             org_s = all_org_settings.get(shift.organization_id)
-            hours = (
-                org_s.auto_finish_hours if org_s else settings.default_auto_finish_hours
-            )
+            if org_s is None:
+                hours = global_hours
+            elif org_s.auto_finish_hours is None:
+                continue  # auto-finish disabled for this org
+            else:
+                hours = org_s.auto_finish_hours
             cutoff = now - timedelta(hours=hours)
             if shift.started_at < cutoff:
-                stale_org_shifts.append(shift)
+                stale.append((shift, hours))
 
-        all_stale = personal_shifts + stale_org_shifts
-
-        for shift in all_stale:
+        for shift, hours in stale:
+            shift_finish = shift.started_at + timedelta(hours=hours)
             for pause in shift.pauses:
                 if pause.finished_at is None:
-                    pause.finished_at = now
+                    pause.finished_at = shift_finish
             shift.status = ShiftStatus.finished
-            shift.finished_at = now
+            shift.finished_at = shift_finish
 
-        count = len(all_stale)
-        if count > 0:
-            logger.info("stale_shifts_finished", count=count)
+        if stale:
+            logger.info("stale_shifts_finished", count=len(stale))
 
 
 @celery_app.task(name="auto_finish_stale_pauses")

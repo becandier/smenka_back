@@ -145,17 +145,23 @@ async def _auto_finish_stale_for_user(
                 )
             )
             org_settings = org_result.scalar_one_or_none()
-            hours = org_settings.auto_finish_hours if org_settings else settings.default_auto_finish_hours
+            if org_settings is None:
+                hours = settings.default_auto_finish_hours
+            elif org_settings.auto_finish_hours is None:
+                continue  # auto-finish disabled for this org
+            else:
+                hours = org_settings.auto_finish_hours
         else:
             hours = settings.default_auto_finish_hours
 
         cutoff = now - timedelta(hours=hours)
         if shift.started_at < cutoff:
+            shift_finish = shift.started_at + timedelta(hours=hours)
             for pause in shift.pauses:
                 if pause.finished_at is None:
-                    pause.finished_at = now
+                    pause.finished_at = shift_finish
             shift.status = ShiftStatus.finished
-            shift.finished_at = now
+            shift.finished_at = shift_finish
             logger.info("stale_shift_auto_finished_inline", shift_id=str(shift.id), user_id=str(user_id))
 
     await session.flush()

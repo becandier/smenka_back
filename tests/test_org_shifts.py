@@ -62,6 +62,7 @@ async def org_with_geo(
     settings = OrganizationSettings(
         organization_id=org.id,
         geo_check_enabled=True,
+        auto_finish_hours=16,
     )
     db_session.add(settings)
 
@@ -93,7 +94,7 @@ async def org_no_geo(
     db_session.add(org)
     await db_session.flush()
 
-    settings = OrganizationSettings(organization_id=org.id, geo_check_enabled=False)
+    settings = OrganizationSettings(organization_id=org.id, geo_check_enabled=False, auto_finish_hours=16)
     db_session.add(settings)
 
     member = OrganizationMember(
@@ -235,6 +236,7 @@ async def org_with_limits(
     settings = OrganizationSettings(
         organization_id=org.id,
         geo_check_enabled=False,
+        auto_finish_hours=16,
         max_pause_minutes=5,
         max_pauses_per_shift=2,
     )

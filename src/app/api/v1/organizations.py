@@ -32,12 +32,14 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 
 def _org_to_response(org) -> dict:
+    geo_check = org.settings.geo_check_enabled if org.settings else False
     return OrganizationResponse(
         id=str(org.id),
         name=org.name,
         owner_id=str(org.owner_id),
         invite_code=org.invite_code,
         is_deleted=org.is_deleted,
+        geo_check_enabled=geo_check,
         created_at=org.created_at,
     ).model_dump(mode="json")
 
@@ -145,11 +147,13 @@ async def join_organization(
 ) -> ApiResponse:
     org, member = await org_service.join_by_invite(session, invite_code, user.id)
     await session.commit()
+    geo_check = org.settings.geo_check_enabled if org.settings else False
     return ApiResponse.success(
         JoinResponse(
             organization_id=str(org.id),
             organization_name=org.name,
             role=member.role.value,
+            geo_check_enabled=geo_check,
         ).model_dump()
     )
 
@@ -210,7 +214,7 @@ def _settings_to_response(s) -> dict:
     ).model_dump()
 
 
-@router.get("/{org_id}/settings", summary="Настройки организации", description="Текущие настройки организации (геопроверка, лимиты пауз, автозавершение). Только для владельца (Owner).")
+@router.get("/{org_id}/settings", summary="Настройки организации", description="Текущие настройки организации (геопроверка, лимиты пауз, автозавершение). Доступно владельцу (Owner) и админам.")
 async def get_org_settings(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -220,7 +224,7 @@ async def get_org_settings(
     return ApiResponse.success(_settings_to_response(settings))
 
 
-@router.patch("/{org_id}/settings", summary="Обновить настройки", description="Обновляет настройки организации. Передавайте только поля, которые нужно изменить. Только для владельца (Owner).")
+@router.patch("/{org_id}/settings", summary="Обновить настройки", description="Обновляет настройки организации. Передавайте только поля, которые нужно изменить. Доступно владельцу (Owner) и админам.")
 async def update_org_settings(
     org_id: uuid.UUID,
     body: OrganizationSettingsUpdate,

@@ -32,9 +32,10 @@ async def create_organization(
     await session.flush()
 
     from src.app.models.organization_settings import OrganizationSettings
-    settings = OrganizationSettings(organization_id=org.id)
+    settings = OrganizationSettings(organization_id=org.id, auto_finish_hours=16)
     session.add(settings)
     await session.flush()
+    await session.refresh(org, ["settings"])
 
     logger.info("organization_created", org_id=str(org.id), owner_id=str(owner_id))
     return org
@@ -45,7 +46,9 @@ async def get_organization(
     org_id: uuid.UUID,
 ) -> Organization:
     result = await session.execute(
-        select(Organization).where(
+        select(Organization)
+        .options(selectinload(Organization.settings))
+        .where(
             Organization.id == org_id,
             Organization.is_deleted.is_(False),
         )
@@ -61,9 +64,13 @@ async def get_user_organizations(
     user_id: uuid.UUID,
 ) -> list[Organization]:
     """Get all active orgs where user is owner or member."""
-    owned_q = select(Organization).where(
-        Organization.owner_id == user_id,
-        Organization.is_deleted.is_(False),
+    owned_q = (
+        select(Organization)
+        .options(selectinload(Organization.settings))
+        .where(
+            Organization.owner_id == user_id,
+            Organization.is_deleted.is_(False),
+        )
     )
     owned_result = await session.execute(owned_q)
     owned = list(owned_result.scalars().all())
@@ -72,6 +79,7 @@ async def get_user_organizations(
     member_q = (
         select(Organization)
         .join(OrganizationMember)
+        .options(selectinload(Organization.settings))
         .where(
             OrganizationMember.user_id == user_id,
             Organization.is_deleted.is_(False),
@@ -126,7 +134,9 @@ async def join_by_invite(
     user_id: uuid.UUID,
 ) -> tuple[Organization, OrganizationMember]:
     result = await session.execute(
-        select(Organization).where(
+        select(Organization)
+        .options(selectinload(Organization.settings))
+        .where(
             Organization.invite_code == invite_code,
             Organization.is_deleted.is_(False),
         )
@@ -225,7 +235,9 @@ async def get_all_organizations(
 ) -> list[Organization]:
     """Get all active organizations (for super_admin)."""
     result = await session.execute(
-        select(Organization).where(Organization.is_deleted.is_(False))
+        select(Organization)
+        .options(selectinload(Organization.settings))
+        .where(Organization.is_deleted.is_(False))
     )
     return list(result.scalars().all())
 

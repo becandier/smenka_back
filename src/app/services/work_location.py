@@ -1,9 +1,10 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.logging import get_logger
+from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
 from src.app.services.organization import OrgError, get_organization, _check_org_access
 
@@ -79,6 +80,25 @@ async def delete_work_location(
     location = await _get_location(session, org_id, location_id)
     await session.delete(location)
     await session.flush()
+
+    # Auto-disable geo_check if no locations left
+    remaining = await session.execute(
+        select(func.count()).select_from(WorkLocation).where(
+            WorkLocation.organization_id == org_id,
+        )
+    )
+    if remaining.scalar_one() == 0:
+        settings_result = await session.execute(
+            select(OrganizationSettings).where(
+                OrganizationSettings.organization_id == org_id,
+            )
+        )
+        org_settings = settings_result.scalar_one_or_none()
+        if org_settings and org_settings.geo_check_enabled:
+            org_settings.geo_check_enabled = False
+            await session.flush()
+            logger.info("geo_check_auto_disabled", org_id=str(org_id))
+
     logger.info("work_location_deleted", org_id=str(org_id), location_id=str(location_id))
 
 
