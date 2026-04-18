@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-04-07 (глобальные роли пользователей)
+Последнее обновление: 2026-04-18 (фаза 7 — чек-листы и кастомные роли)
 
 ---
 
@@ -11,12 +11,19 @@
 | `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified, role: super_admin/user) |
 | `RefreshToken` | `refresh_tokens` | JWT refresh-токен (token, expires_at, revoked) |
 | `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at) |
-| `Shift` | `shifts` | Рабочая смена (user_id, organization_id, started_at, finished_at, status) |
+| `Shift` | `shifts` | Рабочая смена (user_id, organization_id, started_at, finished_at, status, has_incomplete_required_checklists) |
 | `Pause` | `pauses` | Пауза внутри смены (shift_id, started_at, finished_at) |
 | `Organization` | `organizations` | Организация (name, owner_id, invite_code, is_deleted) |
-| `OrganizationMember` | `organization_members` | Участник организации (org_id, user_id, role) |
+| `OrganizationMember` | `organization_members` | Участник (org_id, user_id, role, role_id → custom_role) |
+| `OrganizationRole` | `organization_roles` | Кастомная роль организации (org_id, name) |
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius) |
 | `OrganizationSettings` | `organization_settings` | Настройки организации (geo, лимиты пауз, auto-finish) |
+| `ChecklistTemplate` | `checklist_templates` | Шаблон чек-листа (org_id, name, type, is_required, is_archived) |
+| `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position) |
+| `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
+| `ChecklistMemberOverride` | `checklist_member_overrides` | Личное переопределение (add/remove) |
+| `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
+| `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count) |
 
 ---
 
@@ -58,6 +65,27 @@
 | PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
 | GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/stats` | Статистика организации | Bearer (owner/admin) |
+| POST | `/api/v1/organizations/{id}/roles` | Создать кастомную роль | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/roles` | Список ролей | Bearer (member) |
+| PATCH | `/api/v1/organizations/{id}/roles/{role_id}` | Переименовать | Bearer (owner/admin) |
+| DELETE | `/api/v1/organizations/{id}/roles/{role_id}` | Удалить (SET NULL у members) | Bearer (owner/admin) |
+| PATCH | `/api/v1/organizations/{id}/members/{user_id}/custom-role` | Назначить/снять кастомную роль | Bearer (owner/admin) |
+| POST | `/api/v1/organizations/{id}/checklist-templates` | Создать шаблон | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/checklist-templates` | Список шаблонов | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}` | Детали с пунктами | Bearer (owner/admin) |
+| PATCH | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}` | Обновить шаблон | Bearer (owner/admin) |
+| DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}` | Архивировать | Bearer (owner/admin) |
+| POST | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items` | Добавить пункт | Bearer (owner/admin) |
+| PATCH | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/{item_id}` | Обновить пункт | Bearer (owner/admin) |
+| DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/{item_id}` | Удалить пункт | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/reorder` | Изменить порядок | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/roles` | Назначить ролям (PUT) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/assignments` | Кому назначен | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Личные overrides (PUT) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/members/{user_id}/checklists` | Эффективные чек-листы | Bearer (owner/admin/self) |
+| GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены | Bearer (владелец смены / owner / admin) |
+| GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра | Bearer |
+| PATCH | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}` | Отметить пункт | Bearer (владелец смены) |
 
 ---
 
@@ -70,6 +98,10 @@
 | `services/organization.py` | CRUD организаций, инвайты, участники |
 | `services/work_location.py` | CRUD рабочих точек |
 | `services/organization_settings.py` | CRUD настроек организации |
+| `services/organization_role.py` | Кастомные роли организации и их назначение members (`RoleError`) |
+| `services/checklist_template.py` | Шаблоны чек-листов, пункты, reorder, архивация (`ChecklistError`) |
+| `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides, вычисление эффективных шаблонов |
+| `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, finalize |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule) |
 | `core/logging.py` | Конфигурация structlog |
 

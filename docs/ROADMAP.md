@@ -106,3 +106,37 @@
 - [ ] CORS-настройки
 - [ ] CI/CD (lint → test → build)
 - [ ] Финальная проверка OpenAPI-документации
+
+---
+
+## Фаза 7 — Чек-листы и кастомные роли `[x]`
+**Спека:** `smenka/docs/CHECKLISTS_SPEC.md`  **ADR:** `smenka/docs/decisions/002-custom-roles-single-per-member.md`
+
+### Этап 1 — Кастомные роли `[x]`
+- [x] Модель `OrganizationRole` (id, org_id, name, created_at, UNIQUE(org_id, name))
+- [x] `OrganizationMember.role_id` (FK → organization_roles, nullable, SET NULL)
+- [x] CRUD ролей (owner/admin) + list (all members)
+- [x] PATCH /members/{user_id}/custom-role — назначение/снятие
+- [x] `MemberResponse.custom_role: RoleResponse | null`
+- [x] Миграция, `RoleError`, 19 тестов
+
+### Этап 2 — Шаблоны чек-листов `[x]`
+- [x] Модели `ChecklistTemplate`, `ChecklistTemplateItem`, enum `ChecklistType`
+- [x] CRUD шаблонов + пунктов, PUT reorder
+- [x] Мягкое удаление (is_archived), фильтр архивных в list
+- [x] Миграция, `ChecklistError`, 18 тестов
+
+### Этап 3 — Назначение `[x]`
+- [x] Модели `ChecklistRoleAssignment`, `ChecklistMemberOverride` (enum `OverrideType`)
+- [x] PUT-семантика для assign-to-roles и member-overrides
+- [x] GET /assignments — роли + personal_add / personal_remove
+- [x] GET /members/{user_id}/checklists — effective (роль − remove) + add, фильтр архивных
+- [x] Миграция, 13 тестов
+
+### Этап 4 — Экземпляры и заполнение `[x]`
+- [x] Модели `ChecklistInstance`, `ChecklistInstanceItem`, enum `ChecklistInstanceStatus`
+- [x] `Shift.has_incomplete_required_checklists`
+- [x] При старте org-смены — создание снимков (templates + items)
+- [x] PATCH пункта: владелец смены, смена не finished, change_count, авто-пересчёт статуса
+- [x] `finalize_shift_checklists` вызывается в finish_shift, inline auto-finish и Celery
+- [x] Миграция, 12 тестов
