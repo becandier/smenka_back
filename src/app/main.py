@@ -12,6 +12,7 @@ from src.app.core.config import get_settings
 from src.app.core.logging import get_logger, setup_logging
 from src.app.schemas.base import ApiResponse
 from src.app.services.auth import AuthError
+from src.app.services.checklist_template import ChecklistError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.shift import ShiftError
@@ -96,6 +97,10 @@ Authorization: Bearer <access_token>
             "description": "Кастомные роли организации (бариста, кассир и т.п.) и их назначение участникам.",
         },
         {
+            "name": "checklist-templates",
+            "description": "Шаблоны чек-листов организации (открытие/закрытие смены) и их пункты.",
+        },
+        {
             "name": "work-locations",
             "description": "Рабочие точки организации. Используются для геопроверки при начале смены.",
         },
@@ -174,6 +179,16 @@ async def org_error_handler(request: Request, exc: OrgError) -> JSONResponse:
 
 @app.exception_handler(RoleError)
 async def role_error_handler(request: Request, exc: RoleError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(ChecklistError)
+async def checklist_error_handler(
+    request: Request, exc: ChecklistError,
+) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
