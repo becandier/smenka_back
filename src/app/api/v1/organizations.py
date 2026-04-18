@@ -45,6 +45,13 @@ def _org_to_response(org) -> dict:
 
 
 def _member_to_response(member) -> dict:
+    custom_role = None
+    if member.custom_role is not None:
+        custom_role = {
+            "id": str(member.custom_role.id),
+            "name": member.custom_role.name,
+            "created_at": member.custom_role.created_at.isoformat(),
+        }
     return MemberResponse(
         id=str(member.id),
         organization_id=str(member.organization_id),
@@ -52,6 +59,7 @@ def _member_to_response(member) -> dict:
         user_name=member.user.name,
         user_email=member.user.email,
         role=member.role.value,
+        custom_role=custom_role,
         joined_at=member.joined_at,
     ).model_dump(mode="json")
 

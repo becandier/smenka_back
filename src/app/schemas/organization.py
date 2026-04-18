@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from src.app.schemas.organization_role import RoleResponse
+
 
 class OrganizationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255, description="Название организации")
@@ -33,7 +35,11 @@ class MemberResponse(BaseModel):
     user_id: str = Field(description="UUID пользователя")
     user_name: str = Field(description="Имя участника")
     user_email: str = Field(description="Email участника")
-    role: str = Field(description="Роль: admin или employee")
+    role: str = Field(description="Системная роль: admin или employee")
+    custom_role: RoleResponse | None = Field(
+        default=None,
+        description="Кастомная роль организации (или null)",
+    )
     joined_at: datetime = Field(description="Дата присоединения")
 
     model_config = {"from_attributes": True}

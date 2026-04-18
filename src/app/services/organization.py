@@ -178,7 +178,10 @@ async def get_members(
 
     result = await session.execute(
         select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
         .where(OrganizationMember.organization_id == org_id)
     )
     return list(result.scalars().all())
@@ -267,7 +270,10 @@ async def update_member_role(
 
     result = await session.execute(
         select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
         .where(
             OrganizationMember.organization_id == org_id,
             OrganizationMember.user_id == member_user_id,

@@ -13,6 +13,7 @@ from src.app.core.logging import get_logger, setup_logging
 from src.app.schemas.base import ApiResponse
 from src.app.services.auth import AuthError
 from src.app.services.organization import OrgError
+from src.app.services.organization_role import RoleError
 from src.app.services.shift import ShiftError
 
 settings = get_settings()
@@ -91,6 +92,10 @@ Authorization: Bearer <access_token>
             "description": "CRUD организаций, инвайт-коды, управление участниками, настройки, смены и статистика сотрудников.",
         },
         {
+            "name": "organization-roles",
+            "description": "Кастомные роли организации (бариста, кассир и т.п.) и их назначение участникам.",
+        },
+        {
             "name": "work-locations",
             "description": "Рабочие точки организации. Используются для геопроверки при начале смены.",
         },
@@ -161,6 +166,14 @@ async def shift_error_handler(request: Request, exc: ShiftError) -> JSONResponse
 
 @app.exception_handler(OrgError)
 async def org_error_handler(request: Request, exc: OrgError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(RoleError)
+async def role_error_handler(request: Request, exc: RoleError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

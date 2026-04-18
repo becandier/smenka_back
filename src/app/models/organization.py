@@ -85,6 +85,12 @@ class OrganizationMember(Base):
         Enum(MemberRole),
         default=MemberRole.employee,
     )
+    role_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_roles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -92,3 +98,6 @@ class OrganizationMember(Base):
 
     organization: Mapped["Organization"] = relationship(back_populates="members")
     user: Mapped["User"] = relationship(back_populates="memberships")
+    custom_role: Mapped["OrganizationRole | None"] = relationship(
+        foreign_keys=[role_id],
+    )
