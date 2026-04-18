@@ -31,6 +31,9 @@ def _shift_to_response(shift) -> dict:
             for p in shift.pauses
         ],
         worked_seconds=calculate_worked_seconds(shift),
+        has_incomplete_required_checklists=bool(
+            getattr(shift, "has_incomplete_required_checklists", False)
+        ),
     ).model_dump(mode="json")
 
 

@@ -156,6 +156,11 @@ async def _auto_finish_stale_for_user(
 
         cutoff = now - timedelta(hours=hours)
         if shift.started_at < cutoff:
+            from src.app.services.checklist_instance import finalize_shift_checklists
+
+            has_incomplete = await finalize_shift_checklists(session, shift.id)
+            shift.has_incomplete_required_checklists = has_incomplete
+
             shift_finish = shift.started_at + timedelta(hours=hours)
             for pause in shift.pauses:
                 if pause.finished_at is None:
@@ -210,6 +215,20 @@ async def start_shift(
     shift = Shift(user_id=user_id, organization_id=organization_id)
     session.add(shift)
     await session.flush()
+
+    if organization_id is not None:
+        from src.app.models.organization import OrganizationMember
+        from src.app.services.checklist_instance import create_instances_for_shift
+
+        member_result = await session.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == user_id,
+            )
+        )
+        member = member_result.scalar_one_or_none()
+        if member is not None:
+            await create_instances_for_shift(session, shift, member)
 
     logger.info(
         "shift_started",
@@ -368,10 +387,15 @@ async def finish_shift(
     user_id: uuid.UUID,
 ) -> Shift:
     """Finish an active or paused shift."""
+    from src.app.services.checklist_instance import finalize_shift_checklists
+
     shift = await _get_shift_with_pauses(session, shift_id, user_id)
 
     if shift.status == ShiftStatus.finished:
         raise ShiftError("SHIFT_ALREADY_FINISHED", "Смена уже завершена", 400)
+
+    has_incomplete = await finalize_shift_checklists(session, shift.id)
+    shift.has_incomplete_required_checklists = has_incomplete
 
     for pause in shift.pauses:
         if pause.finished_at is None:

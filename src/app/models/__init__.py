@@ -1,4 +1,7 @@
 from src.app.models.checklist import (
+    ChecklistInstance,
+    ChecklistInstanceItem,
+    ChecklistInstanceStatus,
     ChecklistMemberOverride,
     ChecklistRoleAssignment,
     ChecklistTemplate,
@@ -22,4 +25,5 @@ __all__ = [
     "WorkLocation",
     "ChecklistTemplate", "ChecklistTemplateItem", "ChecklistType",
     "ChecklistRoleAssignment", "ChecklistMemberOverride", "OverrideType",
+    "ChecklistInstance", "ChecklistInstanceItem", "ChecklistInstanceStatus",
 ]

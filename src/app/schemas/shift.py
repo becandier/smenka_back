@@ -25,6 +25,10 @@ class ShiftResponse(BaseModel):
     status: str = Field(description="Статус: active, paused, finished")
     pauses: list[PauseResponse] = Field(description="Список пауз в смене")
     worked_seconds: int = Field(description="Отработанное время в секундах (за вычетом пауз)")
+    has_incomplete_required_checklists: bool = Field(
+        default=False,
+        description="После завершения смены: был ли хотя бы один обязательный чек-лист не заполнен",
+    )
 
     model_config = {"from_attributes": True}
 

@@ -1,17 +1,42 @@
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session, selectinload
 
 from src.app.core.celery_app import celery_app
 from src.app.core.config import get_settings
 from src.app.core.database import get_sync_session
 from src.app.core.logging import get_logger
+from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Shift, ShiftStatus
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+def _finalize_shift_checklists_sync(session: Session, shift_id) -> bool:
+    """Sync version of checklist_instance.finalize_shift_checklists.
+
+    Returns True if the shift now has incomplete required checklists.
+    """
+    session.execute(
+        update(ChecklistInstance)
+        .where(
+            ChecklistInstance.shift_id == shift_id,
+            ChecklistInstance.status == ChecklistInstanceStatus.pending,
+            ChecklistInstance.is_required.is_(True),
+        )
+        .values(status=ChecklistInstanceStatus.incomplete)
+    )
+    result = session.execute(
+        select(func.count()).where(
+            ChecklistInstance.shift_id == shift_id,
+            ChecklistInstance.status == ChecklistInstanceStatus.incomplete,
+            ChecklistInstance.is_required.is_(True),
+        )
+    )
+    return result.scalar_one() > 0
 
 
 @celery_app.task(name="auto_finish_stale_shifts")
@@ -64,6 +89,9 @@ def auto_finish_stale_shifts() -> None:
                 stale.append((shift, hours))
 
         for shift, hours in stale:
+            has_incomplete = _finalize_shift_checklists_sync(session, shift.id)
+            shift.has_incomplete_required_checklists = has_incomplete
+
             shift_finish = shift.started_at + timedelta(hours=hours)
             for pause in shift.pauses:
                 if pause.finished_at is None:

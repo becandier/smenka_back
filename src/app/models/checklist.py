@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -25,6 +26,12 @@ class ChecklistType(str, enum.Enum):
 class OverrideType(str, enum.Enum):
     add = "add"
     remove = "remove"
+
+
+class ChecklistInstanceStatus(str, enum.Enum):
+    pending = "pending"
+    completed = "completed"
+    incomplete = "incomplete"
 
 
 class ChecklistTemplate(Base):
@@ -146,3 +153,82 @@ class ChecklistMemberOverride(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
     )
+
+
+class ChecklistInstance(Base):
+    __tablename__ = "checklist_instances"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    shift_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("shifts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    template_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    type: Mapped[ChecklistType] = mapped_column(Enum(ChecklistType))
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[ChecklistInstanceStatus] = mapped_column(
+        Enum(ChecklistInstanceStatus),
+        default=ChecklistInstanceStatus.pending,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+    )
+
+    shift: Mapped["Shift"] = relationship(back_populates="checklist_instances")
+    items: Mapped[list["ChecklistInstanceItem"]] = relationship(
+        back_populates="instance",
+        cascade="all, delete-orphan",
+        order_by="ChecklistInstanceItem.position",
+    )
+
+
+class ChecklistInstanceItem(Base):
+    __tablename__ = "checklist_instance_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    instance_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_instances.id", ondelete="CASCADE"),
+        index=True,
+    )
+    template_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_template_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    text: Mapped[str] = mapped_column(String(500))
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    is_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    change_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    instance: Mapped["ChecklistInstance"] = relationship(back_populates="items")

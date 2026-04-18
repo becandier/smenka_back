@@ -117,3 +117,50 @@ class EffectiveTemplateResponse(BaseModel):
 
 class EffectiveTemplatesResponse(BaseModel):
     items: list[EffectiveTemplateResponse]
+
+
+class ItemsSummary(BaseModel):
+    total: int
+    completed: int
+
+
+class ChecklistInstanceResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    is_required: bool
+    status: str = Field(description="pending | completed | incomplete")
+    completed_at: datetime | None
+    items_summary: ItemsSummary
+    created_at: datetime
+
+
+class ChecklistInstanceListResponse(BaseModel):
+    items: list[ChecklistInstanceResponse]
+
+
+class InstanceItemResponse(BaseModel):
+    id: str
+    text: str
+    is_required: bool
+    position: int
+    is_completed: bool
+    comment: str | None
+    completed_at: datetime | None
+    change_count: int
+
+
+class ChecklistInstanceDetailResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    is_required: bool
+    status: str
+    completed_at: datetime | None
+    created_at: datetime
+    items: list[InstanceItemResponse]
+
+
+class InstanceItemUpdate(BaseModel):
+    is_completed: bool = Field(description="Отмечено/снято")
+    comment: str | None = Field(default=None, max_length=2000)
