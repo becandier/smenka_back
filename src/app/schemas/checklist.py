@@ -75,3 +75,45 @@ class ItemsReorderRequest(BaseModel):
         min_length=1,
         description="UUIDы пунктов в новом порядке",
     )
+
+
+class RoleAssignmentRequest(BaseModel):
+    role_ids: list[str] = Field(
+        description="UUIDы ролей. Передавайте полный список — PUT-семантика (замена)",
+    )
+
+
+class OverrideItem(BaseModel):
+    template_id: str = Field(description="UUID шаблона")
+    type: str = Field(description="add — добавить поверх роли, remove — исключить")
+
+
+class MemberOverrideRequest(BaseModel):
+    overrides: list[OverrideItem] = Field(
+        description="Полный список личных переопределений для сотрудника (PUT-семантика)",
+    )
+
+
+class MemberInfo(BaseModel):
+    user_id: str
+    user_name: str
+    user_email: str
+
+
+class AssignmentResponse(BaseModel):
+    template_id: str
+    role_ids: list[str] = Field(description="Роли, которым назначен шаблон")
+    personal_add: list[MemberInfo] = Field(description="Сотрудники с личным add")
+    personal_remove: list[MemberInfo] = Field(description="Сотрудники с личным remove")
+
+
+class EffectiveTemplateResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    is_required: bool
+    source: str = Field(description="role | personal_add")
+
+
+class EffectiveTemplatesResponse(BaseModel):
+    items: list[EffectiveTemplateResponse]

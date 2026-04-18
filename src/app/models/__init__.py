@@ -1,7 +1,10 @@
 from src.app.models.checklist import (
+    ChecklistMemberOverride,
+    ChecklistRoleAssignment,
     ChecklistTemplate,
     ChecklistTemplateItem,
     ChecklistType,
+    OverrideType,
 )
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
@@ -18,4 +21,5 @@ __all__ = [
     "OrganizationSettings",
     "WorkLocation",
     "ChecklistTemplate", "ChecklistTemplateItem", "ChecklistType",
+    "ChecklistRoleAssignment", "ChecklistMemberOverride", "OverrideType",
 ]
