@@ -91,6 +91,48 @@ async def get_user_organizations(
     return owned + member_orgs
 
 
+async def batch_get_my_roles(
+    session: AsyncSession,
+    orgs: list[Organization],
+    user_id: uuid.UUID,
+) -> dict[uuid.UUID, tuple[str | None, object | None]]:
+    """Return {org_id: (my_role, my_custom_role)} for the given orgs in one membership query.
+
+    my_role is 'owner'/'admin'/'employee' or None if the user is neither
+    owner nor member (possible for super_admin viewing /organizations/all).
+    my_custom_role is OrganizationRole or None.
+    """
+    if not orgs:
+        return {}
+
+    result: dict[uuid.UUID, tuple[str | None, object | None]] = {}
+    non_owned_ids: list[uuid.UUID] = []
+    for org in orgs:
+        if org.owner_id == user_id:
+            result[org.id] = ("owner", None)
+        else:
+            non_owned_ids.append(org.id)
+
+    if non_owned_ids:
+        member_result = await session.execute(
+            select(OrganizationMember)
+            .options(selectinload(OrganizationMember.custom_role))
+            .where(
+                OrganizationMember.user_id == user_id,
+                OrganizationMember.organization_id.in_(non_owned_ids),
+            )
+        )
+        by_org = {m.organization_id: m for m in member_result.scalars().all()}
+        for org_id in non_owned_ids:
+            member = by_org.get(org_id)
+            if member is None:
+                result[org_id] = (None, None)
+            else:
+                result[org_id] = (member.role.value, member.custom_role)
+
+    return result
+
+
 async def update_organization(
     session: AsyncSession,
     org_id: uuid.UUID,

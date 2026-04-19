@@ -141,6 +141,13 @@
 - [x] `finalize_shift_checklists` вызывается в finish_shift, inline auto-finish и Celery
 - [x] Миграция, 12 тестов
 
+### Этап 7.2 — `my_role` / `my_custom_role` в OrganizationResponse `[x]`
+- [x] `OrganizationResponse.my_role` (owner/admin/employee | null) и `my_custom_role` (RoleResponse | null)
+- [x] `batch_get_my_roles(session, orgs, user_id)` — один membership-запрос на любой набор
+- [x] `GET /organizations`, `GET /organizations/{id}`, `GET /organizations/all` возвращают поля
+- [x] Убирает N+1 `getMembers` на мобильном экране Profile
+- [x] 10 тестов (включая guard на N+1)
+
 ### Этап 7.1 — Гранулярные overrides `[x]`
 - [x] `GET /members/{user_id}/checklist-overrides` — все overrides сотрудника (с архивными)
 - [x] `PUT /checklist-templates/{tpl_id}/personal/{user_id}` — upsert через ON CONFLICT DO UPDATE

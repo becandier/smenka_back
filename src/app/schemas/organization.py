@@ -21,6 +21,14 @@ class OrganizationResponse(BaseModel):
     is_deleted: bool = Field(description="Помечена как удалённая")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
     created_at: datetime = Field(description="Дата создания")
+    my_role: str | None = Field(
+        default=None,
+        description="Роль текущего пользователя: owner, admin или employee. null только в /organizations/all для super_admin, не состоящего в организации.",
+    )
+    my_custom_role: RoleResponse | None = Field(
+        default=None,
+        description="Кастомная роль текущего пользователя (у owner всегда null)",
+    )
 
     model_config = {"from_attributes": True}
 

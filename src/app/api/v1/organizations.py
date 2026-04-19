@@ -31,8 +31,19 @@ from src.app.api.v1.shifts import _shift_to_response
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 
-def _org_to_response(org) -> dict:
+def _org_to_response(
+    org,
+    my_role: str | None = None,
+    my_custom_role=None,
+) -> dict:
     geo_check = org.settings.geo_check_enabled if org.settings else False
+    custom_role_payload = None
+    if my_custom_role is not None:
+        custom_role_payload = {
+            "id": str(my_custom_role.id),
+            "name": my_custom_role.name,
+            "created_at": my_custom_role.created_at.isoformat(),
+        }
     return OrganizationResponse(
         id=str(org.id),
         name=org.name,
@@ -41,6 +52,8 @@ def _org_to_response(org) -> dict:
         is_deleted=org.is_deleted,
         geo_check_enabled=geo_check,
         created_at=org.created_at,
+        my_role=my_role,
+        my_custom_role=custom_role_payload,
     ).model_dump(mode="json")
 
 
@@ -72,43 +85,53 @@ async def create_organization(
 ) -> ApiResponse:
     org = await org_service.create_organization(session, body.name, user.id)
     await session.commit()
-    return ApiResponse.success(_org_to_response(org))
+    return ApiResponse.success(_org_to_response(org, "owner", None))
 
 
-@router.get("", summary="Мои организации", description="Список всех организаций, где текущий пользователь — владелец или участник.")
+@router.get("", summary="Мои организации", description="Список всех организаций, где текущий пользователь — владелец или участник. В ответе поля my_role и my_custom_role отражают роль текущего пользователя в каждой организации.")
 async def list_organizations(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_user_organizations(session, user.id)
+    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o) for o in orgs],
+            items=[
+                _org_to_response(o, *roles.get(o.id, (None, None)))
+                for o in orgs
+            ],
         ).model_dump(mode="json")
     )
 
 
-@router.get("/all", summary="Все организации (super_admin)", description="Список ВСЕХ организаций системы. Только для super_admin.")
+@router.get("/all", summary="Все организации (super_admin)", description="Список ВСЕХ организаций системы. Только для super_admin. my_role/my_custom_role заполнены, если super_admin сам является владельцем или участником конкретной организации, иначе null.")
 async def list_all_organizations(
     user: SuperAdminDep,
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_all_organizations(session)
+    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o) for o in orgs],
+            items=[
+                _org_to_response(o, *roles.get(o.id, (None, None)))
+                for o in orgs
+            ],
         ).model_dump(mode="json")
     )
 
 
-@router.get("/{org_id}", summary="Получить организацию", description="Информация об организации по ID.")
+@router.get("/{org_id}", summary="Получить организацию", description="Информация об организации по ID. Поля my_role/my_custom_role отражают роль текущего пользователя в этой организации.")
 async def get_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
     org = await org_service.get_organization(session, org_id)
-    return ApiResponse.success(_org_to_response(org))
+    roles = await org_service.batch_get_my_roles(session, [org], user.id)
+    my_role, my_custom_role = roles.get(org.id, (None, None))
+    return ApiResponse.success(_org_to_response(org, my_role, my_custom_role))
 
 
 @router.patch("/{org_id}", summary="Обновить организацию", description="Обновляет название организации. Только для владельца (Owner).")
@@ -120,7 +143,7 @@ async def update_organization(
 ) -> ApiResponse:
     org = await org_service.update_organization(session, org_id, user.id, body.name)
     await session.commit()
-    return ApiResponse.success(_org_to_response(org))
+    return ApiResponse.success(_org_to_response(org, "owner", None))
 
 
 @router.delete("/{org_id}", status_code=200, summary="Удалить организацию", description="Мягкое удаление организации (soft delete). Только для владельца (Owner).")

@@ -705,7 +705,7 @@
           "organizations"
         ],
         "summary": "Мои организации",
-        "description": "Список всех организаций, где текущий пользователь — владелец или участник.",
+        "description": "Список всех организаций, где текущий пользователь — владелец или участник. В ответе поля my_role и my_custom_role отражают роль текущего пользователя в каждой организации.",
         "operationId": "list_organizations_api_v1_organizations_get",
         "responses": {
           "200": {
@@ -777,7 +777,7 @@
           "organizations"
         ],
         "summary": "Все организации (super_admin)",
-        "description": "Список ВСЕХ организаций системы. Только для super_admin.",
+        "description": "Список ВСЕХ организаций системы. Только для super_admin. my_role/my_custom_role заполнены, если super_admin сам является владельцем или участником конкретной организации, иначе null.",
         "operationId": "list_all_organizations_api_v1_organizations_all_get",
         "responses": {
           "200": {
@@ -804,7 +804,7 @@
           "organizations"
         ],
         "summary": "Получить организацию",
-        "description": "Информация об организации по ID.",
+        "description": "Информация об организации по ID. Поля my_role/my_custom_role отражают роль текущего пользователя в этой организации.",
         "operationId": "get_organization_api_v1_organizations__org_id__get",
         "security": [
           {
