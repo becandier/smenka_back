@@ -101,11 +101,25 @@
 
 ---
 
-## Фаза 6 — Продакшен `[ ]`
+## Фаза 6 — Продакшен `[~]`
 - [ ] Rate-limiting
-- [ ] CORS-настройки
+- [x] CORS-настройки (`CORSMiddleware` + `Settings.cors_origins`, env `CORS_ORIGINS`) — закрыто в admin_panel
 - [ ] CI/CD (lint → test → build)
 - [ ] Финальная проверка OpenAPI-документации
+
+---
+
+## admin_panel — веб-админка (backend-трек) `[x]`
+**ТЗ:** `smenka/docs/tasks/admin_panel/backend.md`  **STATUS:** `smenka/docs/tasks/admin_panel/STATUS.md`
+
+- [x] Блок A — CORS (`CORSMiddleware`, `cors_origins`, `NoDecode`-парсинг CSV из env)
+- [x] Блок B — `sort`/`order` для `GET /shifts` и `GET /organizations/{id}/shifts` (обратно совместимо)
+- [x] Блок C2 — сквозной доступ super_admin: guard-проверки вынесены в `services/common.py` (`ensure_owner/ensure_member/ensure_admin_or_owner`, `AccessError`), добавлена ветка super_admin; `_check_*` в 6 сервисах стали тонкими делегаторами
+- [x] Блок C1 — `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/role` (`CANNOT_DEMOTE_SELF`)
+- [x] Блок C2 — `GET /admin/organizations` (`AdminOrganizationResponse`: owner_email, member_count)
+- [x] Блок C3 — `GET /admin/stats` (сводка платформы для дашборда)
+- [x] Блок D — `scripts/seed_superadmin.py <email>` (идемпотентно, верифицированный пользователь)
+- [x] Без миграций (схема не менялась); 28 тестов (`tests/test_admin.py`): права, пагинация, self-demote, сквозной super_admin, сортировка смен
 
 ---
 

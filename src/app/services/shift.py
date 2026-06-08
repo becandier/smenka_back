@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -303,6 +304,18 @@ async def resume_shift(
 VALID_PERIODS = {"day", "week", "month"}
 
 
+_SHIFT_SORT_COLUMNS = {
+    "started_at": Shift.started_at,
+    "finished_at": Shift.finished_at,
+}
+
+
+def _shift_order_by(sort: str, order: str) -> Any:
+    """Build the ORDER BY clause for shift lists (default: started_at desc)."""
+    column = _SHIFT_SORT_COLUMNS.get(sort, Shift.started_at)
+    return column.asc() if order.lower() == "asc" else column.desc()
+
+
 async def get_shifts(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -312,6 +325,8 @@ async def get_shifts(
     date_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
     conditions = [Shift.user_id == user_id]
@@ -330,7 +345,7 @@ async def get_shifts(
         select(Shift)
         .options(selectinload(Shift.pauses))
         .where(*conditions)
-        .order_by(Shift.started_at.desc())
+        .order_by(_shift_order_by(sort, order))
         .limit(limit)
         .offset(offset)
     )
@@ -490,6 +505,8 @@ async def get_org_shifts(
     date_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get shifts for an organization (admin view)."""
     conditions = [Shift.organization_id == organization_id]
@@ -510,7 +527,7 @@ async def get_org_shifts(
         select(Shift)
         .options(selectinload(Shift.pauses))
         .where(*conditions)
-        .order_by(Shift.started_at.desc())
+        .order_by(_shift_order_by(sort, order))
         .limit(limit)
         .offset(offset)
     )

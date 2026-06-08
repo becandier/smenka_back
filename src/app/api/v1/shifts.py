@@ -46,6 +46,8 @@ async def list_shifts(
     date_to: dt_datetime | None = Query(None, description="Filter shifts started before this datetime"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
+    order: str = Query("desc", description="Направление: asc или desc"),
 ) -> ApiResponse:
     from src.app.models.shift import ShiftStatus
     from src.app.services.shift import ShiftError
@@ -69,6 +71,8 @@ async def list_shifts(
         date_to=date_to,
         limit=limit,
         offset=offset,
+        sort=sort,
+        order=order,
     )
     await session.commit()
     return ApiResponse.success(

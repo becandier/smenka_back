@@ -281,6 +281,8 @@ async def list_org_shifts(
     date_to: dt_datetime | None = Query(None, description="Смены начатые до этой даты"),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
+    sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
+    order: str = Query("desc", description="Направление: asc или desc"),
 ) -> ApiResponse:
     # Only owner or admin can view org shifts
     from src.app.services.work_location import _check_admin_or_owner
@@ -310,6 +312,8 @@ async def list_org_shifts(
         date_to=date_to,
         limit=limit,
         offset=offset,
+        sort=sort,
+        order=order,
     )
     return ApiResponse.success(
         ShiftListResponse(

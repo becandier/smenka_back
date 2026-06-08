@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -11,8 +12,10 @@ from src.app.api.v1.router import router as v1_router
 from src.app.core.config import get_settings
 from src.app.core.logging import get_logger, setup_logging
 from src.app.schemas.base import ApiResponse
+from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
 from src.app.services.checklist_template import ChecklistError
+from src.app.services.common import AccessError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.shift import ShiftError
@@ -116,6 +119,10 @@ Authorization: Bearer <access_token>
             "name": "work-locations",
             "description": "Рабочие точки организации. Используются для геопроверки при начале смены.",
         },
+        {
+            "name": "admin",
+            "description": "Платформенные эндпоинты super_admin: пользователи, обзор организаций, сводная статистика.",
+        },
     ],
 )
 
@@ -133,6 +140,19 @@ async def logging_middleware(request: Request, call_next):
         duration_ms=duration_ms,
     )
     return response
+
+
+# CORS: добавляется после logging-middleware, чтобы оказаться внешним слоем
+# (Starlette применяет middleware в обратном порядке добавления) и корректно
+# обрабатывать preflight-запросы браузерной админки.
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -201,6 +221,22 @@ async def role_error_handler(request: Request, exc: RoleError) -> JSONResponse:
 async def checklist_error_handler(
     request: Request, exc: ChecklistError,
 ) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(AccessError)
+async def access_error_handler(request: Request, exc: AccessError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(AdminError)
+async def admin_error_handler(request: Request, exc: AdminError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

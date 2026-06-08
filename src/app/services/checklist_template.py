@@ -10,7 +10,8 @@ from src.app.models.checklist import (
     ChecklistTemplateItem,
     ChecklistType,
 )
-from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.models.organization import Organization
+from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import get_organization
 
 logger = get_logger(__name__)
@@ -28,17 +29,10 @@ async def _check_admin_or_owner(
     org: Organization,
     user_id: uuid.UUID,
 ) -> None:
-    if org.owner_id == user_id:
-        return
-    result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org.id,
-            OrganizationMember.user_id == user_id,
-            OrganizationMember.role == MemberRole.admin,
-        )
+    """Владелец, admin или super_admin. Делегирует в services.common."""
+    await ensure_admin_or_owner(
+        session, org, user_id, message="Нет прав для управления чек-листами",
     )
-    if result.scalar_one_or_none() is None:
-        raise ChecklistError("FORBIDDEN", "Нет прав для управления чек-листами", 403)
 
 
 def _parse_type(raw: str) -> ChecklistType:

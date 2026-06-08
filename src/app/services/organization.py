@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.services.common import ensure_member, ensure_owner
 
 logger = get_logger(__name__)
 
@@ -140,7 +141,7 @@ async def update_organization(
     name: str,
 ) -> Organization:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.name = name
     await session.flush()
     return org
@@ -152,7 +153,7 @@ async def delete_organization(
     owner_id: uuid.UUID,
 ) -> None:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.is_deleted = True
     await session.flush()
     logger.info("organization_deleted", org_id=str(org_id))
@@ -164,7 +165,7 @@ async def rotate_invite_code(
     owner_id: uuid.UUID,
 ) -> str:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.invite_code = _generate_invite_code()
     await session.flush()
     return org.invite_code
@@ -336,25 +337,10 @@ async def update_member_role(
     return member
 
 
-def _check_owner(org: Organization, user_id: uuid.UUID) -> None:
-    if org.owner_id != user_id:
-        raise OrgError("FORBIDDEN", "Только владелец может выполнить это действие", 403)
-
-
 async def _check_org_access(
     session: AsyncSession,
     org: Organization,
     user_id: uuid.UUID,
 ) -> None:
-    """Check that user is owner or member of the org."""
-    if org.owner_id == user_id:
-        return
-
-    result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org.id,
-            OrganizationMember.user_id == user_id,
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise OrgError("FORBIDDEN", "Нет доступа к организации", 403)
+    """Владелец, участник или super_admin. Делегирует в services.common."""
+    await ensure_member(session, org, user_id)
