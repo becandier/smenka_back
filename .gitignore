@@ -20,3 +20,6 @@ htmlcov/
 *.sqlite3
 
 CLAUDE.md
+
+# Claude Code session state
+.claude/
