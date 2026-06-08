@@ -104,7 +104,7 @@
 ## Фаза 6 — Продакшен `[~]`
 - [ ] Rate-limiting
 - [x] CORS-настройки (`CORSMiddleware` + `Settings.cors_origins`, env `CORS_ORIGINS`) — закрыто в admin_panel
-- [ ] CI/CD (lint → test → build)
+- [x] CI/CD: `.github/workflows/ci.yml` (ruff + mypy + pytest на PR/ветках) + `release.yml` (build → ghcr). Весь бэк: ruff+mypy zero-errors.
 - [ ] Финальная проверка OpenAPI-документации
 
 ---
