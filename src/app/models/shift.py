@@ -1,15 +1,21 @@
 import enum
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, ForeignKey
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database import Base
 
+if TYPE_CHECKING:
+    from src.app.models.checklist import ChecklistInstance
+    from src.app.models.organization import Organization
+    from src.app.models.user import User
 
-class ShiftStatus(str, enum.Enum):
+
+class ShiftStatus(enum.StrEnum):
     active = "active"
     paused = "paused"
     finished = "finished"
@@ -46,6 +52,11 @@ class Shift(Base):
         Enum(ShiftStatus),
         default=ShiftStatus.active,
     )
+    has_incomplete_required_checklists: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
 
     user: Mapped["User"] = relationship(back_populates="shifts")
     organization: Mapped["Organization | None"] = relationship()
@@ -53,6 +64,10 @@ class Shift(Base):
         back_populates="shift",
         cascade="all, delete-orphan",
         order_by="Pause.started_at",
+    )
+    checklist_instances: Mapped[list["ChecklistInstance"]] = relationship(
+        back_populates="shift",
+        cascade="all, delete-orphan",
     )
 
 

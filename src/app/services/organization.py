@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.services.common import ensure_member, ensure_owner
 
 logger = get_logger(__name__)
 
@@ -91,6 +92,48 @@ async def get_user_organizations(
     return owned + member_orgs
 
 
+async def batch_get_my_roles(
+    session: AsyncSession,
+    orgs: list[Organization],
+    user_id: uuid.UUID,
+) -> dict[uuid.UUID, tuple[str | None, object | None]]:
+    """Return {org_id: (my_role, my_custom_role)} for the given orgs in one membership query.
+
+    my_role is 'owner'/'admin'/'employee' or None if the user is neither
+    owner nor member (possible for super_admin viewing /organizations/all).
+    my_custom_role is OrganizationRole or None.
+    """
+    if not orgs:
+        return {}
+
+    result: dict[uuid.UUID, tuple[str | None, object | None]] = {}
+    non_owned_ids: list[uuid.UUID] = []
+    for org in orgs:
+        if org.owner_id == user_id:
+            result[org.id] = ("owner", None)
+        else:
+            non_owned_ids.append(org.id)
+
+    if non_owned_ids:
+        member_result = await session.execute(
+            select(OrganizationMember)
+            .options(selectinload(OrganizationMember.custom_role))
+            .where(
+                OrganizationMember.user_id == user_id,
+                OrganizationMember.organization_id.in_(non_owned_ids),
+            )
+        )
+        by_org = {m.organization_id: m for m in member_result.scalars().all()}
+        for org_id in non_owned_ids:
+            member = by_org.get(org_id)
+            if member is None:
+                result[org_id] = (None, None)
+            else:
+                result[org_id] = (member.role.value, member.custom_role)
+
+    return result
+
+
 async def update_organization(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -98,7 +141,7 @@ async def update_organization(
     name: str,
 ) -> Organization:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.name = name
     await session.flush()
     return org
@@ -110,7 +153,7 @@ async def delete_organization(
     owner_id: uuid.UUID,
 ) -> None:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.is_deleted = True
     await session.flush()
     logger.info("organization_deleted", org_id=str(org_id))
@@ -122,7 +165,7 @@ async def rotate_invite_code(
     owner_id: uuid.UUID,
 ) -> str:
     org = await get_organization(session, org_id)
-    _check_owner(org, owner_id)
+    await ensure_owner(session, org, owner_id)
     org.invite_code = _generate_invite_code()
     await session.flush()
     return org.invite_code
@@ -178,7 +221,10 @@ async def get_members(
 
     result = await session.execute(
         select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
         .where(OrganizationMember.organization_id == org_id)
     )
     return list(result.scalars().all())
@@ -263,11 +309,14 @@ async def update_member_role(
             "INVALID_ROLE",
             f"Роль должна быть: {', '.join(r.value for r in MemberRole)}",
             400,
-        )
+        ) from None
 
     result = await session.execute(
         select(OrganizationMember)
-        .options(selectinload(OrganizationMember.user))
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
         .where(
             OrganizationMember.organization_id == org_id,
             OrganizationMember.user_id == member_user_id,
@@ -288,25 +337,10 @@ async def update_member_role(
     return member
 
 
-def _check_owner(org: Organization, user_id: uuid.UUID) -> None:
-    if org.owner_id != user_id:
-        raise OrgError("FORBIDDEN", "Только владелец может выполнить это действие", 403)
-
-
 async def _check_org_access(
     session: AsyncSession,
     org: Organization,
     user_id: uuid.UUID,
 ) -> None:
-    """Check that user is owner or member of the org."""
-    if org.owner_id == user_id:
-        return
-
-    result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org.id,
-            OrganizationMember.user_id == user_id,
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise OrgError("FORBIDDEN", "Нет доступа к организации", 403)
+    """Владелец, участник или super_admin. Делегирует в services.common."""
+    await ensure_member(session, org, user_id)

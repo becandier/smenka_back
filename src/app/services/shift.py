@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,13 +157,22 @@ async def _auto_finish_stale_for_user(
 
         cutoff = now - timedelta(hours=hours)
         if shift.started_at < cutoff:
+            from src.app.services.checklist_instance import finalize_shift_checklists
+
+            has_incomplete = await finalize_shift_checklists(session, shift.id)
+            shift.has_incomplete_required_checklists = has_incomplete
+
             shift_finish = shift.started_at + timedelta(hours=hours)
             for pause in shift.pauses:
                 if pause.finished_at is None:
                     pause.finished_at = shift_finish
             shift.status = ShiftStatus.finished
             shift.finished_at = shift_finish
-            logger.info("stale_shift_auto_finished_inline", shift_id=str(shift.id), user_id=str(user_id))
+            logger.info(
+                "stale_shift_auto_finished_inline",
+                shift_id=str(shift.id),
+                user_id=str(user_id),
+            )
 
     await session.flush()
 
@@ -210,6 +220,20 @@ async def start_shift(
     shift = Shift(user_id=user_id, organization_id=organization_id)
     session.add(shift)
     await session.flush()
+
+    if organization_id is not None:
+        from src.app.models.organization import OrganizationMember
+        from src.app.services.checklist_instance import create_instances_for_shift
+
+        member_result = await session.execute(
+            select(OrganizationMember).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == user_id,
+            )
+        )
+        member = member_result.scalar_one_or_none()
+        if member is not None:
+            await create_instances_for_shift(session, shift, member)
 
     logger.info(
         "shift_started",
@@ -284,6 +308,18 @@ async def resume_shift(
 VALID_PERIODS = {"day", "week", "month"}
 
 
+_SHIFT_SORT_COLUMNS = {
+    "started_at": Shift.started_at,
+    "finished_at": Shift.finished_at,
+}
+
+
+def _shift_order_by(sort: str, order: str) -> Any:
+    """Build the ORDER BY clause for shift lists (default: started_at desc)."""
+    column = _SHIFT_SORT_COLUMNS.get(sort, Shift.started_at)
+    return column.asc() if order.lower() == "asc" else column.desc()
+
+
 async def get_shifts(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -293,6 +329,8 @@ async def get_shifts(
     date_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
     conditions = [Shift.user_id == user_id]
@@ -311,7 +349,7 @@ async def get_shifts(
         select(Shift)
         .options(selectinload(Shift.pauses))
         .where(*conditions)
-        .order_by(Shift.started_at.desc())
+        .order_by(_shift_order_by(sort, order))
         .limit(limit)
         .offset(offset)
     )
@@ -325,7 +363,7 @@ async def get_shift_stats(
     session: AsyncSession,
     user_id: uuid.UUID,
     period: str,
-) -> dict:
+) -> dict[str, Any]:
     """Calculate shift statistics for the given period."""
     if period not in VALID_PERIODS:
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
@@ -368,10 +406,15 @@ async def finish_shift(
     user_id: uuid.UUID,
 ) -> Shift:
     """Finish an active or paused shift."""
+    from src.app.services.checklist_instance import finalize_shift_checklists
+
     shift = await _get_shift_with_pauses(session, shift_id, user_id)
 
     if shift.status == ShiftStatus.finished:
         raise ShiftError("SHIFT_ALREADY_FINISHED", "Смена уже завершена", 400)
+
+    has_incomplete = await finalize_shift_checklists(session, shift.id)
+    shift.has_incomplete_required_checklists = has_incomplete
 
     for pause in shift.pauses:
         if pause.finished_at is None:
@@ -390,7 +433,7 @@ async def get_org_stats(
     session: AsyncSession,
     organization_id: uuid.UUID,
     period: str,
-) -> dict:
+) -> dict[str, Any]:
     """Calculate org-wide shift statistics."""
     if period not in VALID_PERIODS:
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
@@ -420,6 +463,7 @@ async def get_org_stats(
     avg = total_seconds // count if count > 0 else 0
 
     from collections import defaultdict
+
     from src.app.models.user import User
 
     by_user: dict[uuid.UUID, list[Shift]] = defaultdict(list)
@@ -466,6 +510,8 @@ async def get_org_shifts(
     date_to: datetime | None = None,
     limit: int = 20,
     offset: int = 0,
+    sort: str = "started_at",
+    order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get shifts for an organization (admin view)."""
     conditions = [Shift.organization_id == organization_id]
@@ -486,7 +532,7 @@ async def get_org_shifts(
         select(Shift)
         .options(selectinload(Shift.pauses))
         .where(*conditions)
-        .order_by(Shift.started_at.desc())
+        .order_by(_shift_order_by(sort, order))
         .limit(limit)
         .offset(offset)
     )

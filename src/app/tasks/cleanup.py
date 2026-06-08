@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from sqlalchemy import delete
+from sqlalchemy import CursorResult, delete
 
 from src.app.core.celery_app import celery_app
 from src.app.core.database import get_sync_session
@@ -17,16 +18,22 @@ def cleanup_expired_tokens() -> None:
         now = datetime.now(UTC)
 
         # Delete expired or revoked refresh tokens
-        tokens_result = session.execute(
-            delete(RefreshToken).where(
-                (RefreshToken.expires_at < now) | (RefreshToken.revoked.is_(True))
-            )
+        tokens_result = cast(
+            "CursorResult[Any]",
+            session.execute(
+                delete(RefreshToken).where(
+                    (RefreshToken.expires_at < now) | (RefreshToken.revoked.is_(True))
+                )
+            ),
         )
         tokens_deleted = tokens_result.rowcount
 
         # Delete expired verification codes
-        codes_result = session.execute(
-            delete(VerificationCode).where(VerificationCode.expires_at < now)
+        codes_result = cast(
+            "CursorResult[Any]",
+            session.execute(
+                delete(VerificationCode).where(VerificationCode.expires_at < now)
+            ),
         )
         codes_deleted = codes_result.rowcount
 

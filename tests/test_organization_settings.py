@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.organization import Organization, OrganizationMember, MemberRole
+from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation

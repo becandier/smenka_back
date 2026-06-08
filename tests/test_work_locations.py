@@ -1,11 +1,20 @@
 # tests/test_work_locations.py
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.user import User
+from src.app.models.user import User, UserRole
+
+
+@pytest.fixture(autouse=True)
+async def _owner_is_super_admin(verified_user: User, db_session: AsyncSession) -> None:
+    """Создание организации требует super_admin; владелец-создатель повышается
+    до super_admin. Forbidden-кейсы используют отдельных обычных пользователей."""
+    verified_user.role = UserRole.super_admin
+    await db_session.commit()
 
 
 async def _create_second_user(db_session: AsyncSession) -> User:

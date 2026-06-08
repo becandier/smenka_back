@@ -1,12 +1,13 @@
 # tests/test_org_shifts.py
 import uuid
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.organization import Organization, OrganizationMember, MemberRole
+from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
@@ -94,7 +95,9 @@ async def org_no_geo(
     db_session.add(org)
     await db_session.flush()
 
-    settings = OrganizationSettings(organization_id=org.id, geo_check_enabled=False, auto_finish_hours=16)
+    settings = OrganizationSettings(
+        organization_id=org.id, geo_check_enabled=False, auto_finish_hours=16,
+    )
     db_session.add(settings)
 
     member = OrganizationMember(
@@ -109,8 +112,8 @@ async def org_no_geo(
 
 class TestOrgShiftStart:
     async def test_start_org_shift_within_radius(
-        self, client: AsyncClient, employee_headers: dict, org_with_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+    ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
             headers=employee_headers,
@@ -126,8 +129,8 @@ class TestOrgShiftStart:
         assert data["status"] == "active"
 
     async def test_start_org_shift_outside_radius(
-        self, client: AsyncClient, employee_headers: dict, org_with_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+    ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
             headers=employee_headers,
@@ -141,8 +144,8 @@ class TestOrgShiftStart:
         assert resp.json()["error"]["code"] == "GEO_CHECK_FAILED"
 
     async def test_start_org_shift_no_geo_check(
-        self, client: AsyncClient, employee_headers: dict, org_no_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+    ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
             headers=employee_headers,
@@ -152,8 +155,8 @@ class TestOrgShiftStart:
         assert resp.json()["data"]["organization_id"] == str(org_no_geo.id)
 
     async def test_start_org_shift_geo_enabled_no_coords(
-        self, client: AsyncClient, employee_headers: dict, org_with_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+    ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
             headers=employee_headers,
@@ -163,8 +166,8 @@ class TestOrgShiftStart:
         assert resp.json()["error"]["code"] == "COORDS_REQUIRED"
 
     async def test_non_member_cannot_start_org_shift(
-        self, client: AsyncClient, auth_headers: dict, org_with_geo: Organization,
-    ):
+        self, client: AsyncClient, auth_headers: dict[str, Any], org_with_geo: Organization,
+    ) -> None:
         """verified_user (from conftest) is not a member of the org."""
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -178,8 +181,8 @@ class TestOrgShiftStart:
         assert resp.status_code == 403
 
     async def test_personal_and_org_shift_simultaneously(
-        self, client: AsyncClient, employee_headers: dict, org_no_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+    ) -> None:
         # Start personal shift
         resp1 = await client.post(
             "/api/v1/shifts/start",
@@ -199,8 +202,8 @@ class TestOrgShiftStart:
         assert resp2.json()["data"]["organization_id"] == str(org_no_geo.id)
 
     async def test_cannot_start_second_org_shift_same_org(
-        self, client: AsyncClient, employee_headers: dict, org_no_geo: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+    ) -> None:
         await client.post(
             "/api/v1/shifts/start",
             headers=employee_headers,
@@ -254,8 +257,8 @@ async def org_with_limits(
 
 class TestPauseLimits:
     async def test_max_pauses_per_shift(
-        self, client: AsyncClient, employee_headers: dict, org_with_limits: Organization,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_limits: Organization,
+    ) -> None:
         # Start org shift
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -278,8 +281,8 @@ class TestPauseLimits:
         assert resp.json()["error"]["code"] == "MAX_PAUSES_REACHED"
 
     async def test_personal_shift_no_pause_limits(
-        self, client: AsyncClient, employee_headers: dict,
-    ):
+        self, client: AsyncClient, employee_headers: dict[str, Any],
+    ) -> None:
         # Start personal shift
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -290,9 +293,13 @@ class TestPauseLimits:
 
         # Should allow unlimited pauses
         for _ in range(5):
-            resp_p = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=employee_headers)
+            resp_p = await client.post(
+                f"/api/v1/shifts/{shift_id}/pause", headers=employee_headers,
+            )
             assert resp_p.status_code == 200
-            resp_r = await client.post(f"/api/v1/shifts/{shift_id}/resume", headers=employee_headers)
+            resp_r = await client.post(
+                f"/api/v1/shifts/{shift_id}/resume", headers=employee_headers,
+            )
             assert resp_r.status_code == 200
 
 
@@ -300,10 +307,10 @@ class TestAdminShifts:
     async def test_owner_can_see_employee_shifts(
         self,
         client: AsyncClient,
-        owner_headers: dict,
-        employee_headers: dict,
+        owner_headers: dict[str, Any],
+        employee_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         # Employee starts a shift
         await client.post(
             "/api/v1/shifts/start",
@@ -325,9 +332,9 @@ class TestAdminShifts:
     async def test_employee_cannot_see_org_shifts(
         self,
         client: AsyncClient,
-        employee_headers: dict,
+        employee_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         resp = await client.get(
             f"/api/v1/organizations/{org_no_geo.id}/shifts",
             headers=employee_headers,
@@ -337,11 +344,11 @@ class TestAdminShifts:
     async def test_org_shifts_filtered_by_user(
         self,
         client: AsyncClient,
-        owner_headers: dict,
-        employee_headers: dict,
+        owner_headers: dict[str, Any],
+        employee_headers: dict[str, Any],
         employee_user: User,
         org_no_geo: Organization,
-    ):
+    ) -> None:
         # Employee starts a shift
         await client.post(
             "/api/v1/shifts/start",
@@ -361,10 +368,10 @@ class TestAdminShifts:
     async def test_org_shifts_pagination(
         self,
         client: AsyncClient,
-        owner_headers: dict,
-        employee_headers: dict,
+        owner_headers: dict[str, Any],
+        employee_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         resp = await client.get(
             f"/api/v1/organizations/{org_no_geo.id}/shifts",
             headers=owner_headers,
@@ -380,10 +387,10 @@ class TestOrgStats:
     async def test_owner_can_view_stats(
         self,
         client: AsyncClient,
-        owner_headers: dict,
-        employee_headers: dict,
+        owner_headers: dict[str, Any],
+        employee_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         # Employee starts and finishes a shift
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -411,9 +418,9 @@ class TestOrgStats:
     async def test_employee_cannot_view_stats(
         self,
         client: AsyncClient,
-        employee_headers: dict,
+        employee_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         resp = await client.get(
             f"/api/v1/organizations/{org_no_geo.id}/stats",
             headers=employee_headers,
@@ -424,9 +431,9 @@ class TestOrgStats:
     async def test_empty_stats(
         self,
         client: AsyncClient,
-        owner_headers: dict,
+        owner_headers: dict[str, Any],
         org_no_geo: Organization,
-    ):
+    ) -> None:
         resp = await client.get(
             f"/api/v1/organizations/{org_no_geo.id}/stats",
             headers=owner_headers,

@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -8,8 +9,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database import Base
 
+if TYPE_CHECKING:
+    from src.app.models.organization import Organization, OrganizationMember
+    from src.app.models.shift import Shift
 
-class UserRole(str, enum.Enum):
+
+class UserRole(enum.StrEnum):
     super_admin = "super_admin"
     user = "user"
 

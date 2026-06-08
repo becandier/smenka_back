@@ -1,5 +1,5 @@
-from celery import Celery
-from celery.schedules import crontab
+from celery import Celery  # type: ignore[import-untyped]
+from celery.schedules import crontab  # type: ignore[import-untyped]
 
 from src.app.core.config import get_settings
 

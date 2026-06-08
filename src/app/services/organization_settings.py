@@ -1,33 +1,26 @@
 import uuid
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import func
-
 from src.app.core.logging import get_logger
+from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
-from src.app.models.organization import MemberRole, OrganizationMember
 from src.app.models.work_location import WorkLocation
+from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import OrgError, get_organization
 
 logger = get_logger(__name__)
 
 
 async def _check_admin_or_owner(
-    session: AsyncSession, org, user_id: uuid.UUID,
+    session: AsyncSession, org: Organization, user_id: uuid.UUID,
 ) -> None:
-    if org.owner_id == user_id:
-        return
-    result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org.id,
-            OrganizationMember.user_id == user_id,
-            OrganizationMember.role == MemberRole.admin,
-        )
+    """Владелец, admin или super_admin. Делегирует в services.common."""
+    await ensure_admin_or_owner(
+        session, org, user_id, message="Нет прав для управления настройками",
     )
-    if result.scalar_one_or_none() is None:
-        raise OrgError("FORBIDDEN", "Нет прав для управления настройками", 403)
 
 
 async def get_settings(
@@ -62,7 +55,7 @@ async def update_settings(
     session: AsyncSession,
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
-    **fields,
+    **fields: Any,
 ) -> OrganizationSettings:
     settings = await get_settings(session, org_id, requester_id)
 

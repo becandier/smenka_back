@@ -1,12 +1,15 @@
 import uuid
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.logging import get_logger
+from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
-from src.app.services.organization import OrgError, get_organization, _check_org_access
+from src.app.services.common import ensure_admin_or_owner
+from src.app.services.organization import OrgError, _check_org_access, get_organization
 
 logger = get_logger(__name__)
 
@@ -55,7 +58,7 @@ async def update_work_location(
     org_id: uuid.UUID,
     location_id: uuid.UUID,
     requester_id: uuid.UUID,
-    **fields,
+    **fields: Any,
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -119,19 +122,12 @@ async def _get_location(
     return location
 
 
-async def _check_admin_or_owner(session, org, user_id):
-    """Only owner or admin can manage locations."""
-    from src.app.models.organization import MemberRole, OrganizationMember
-
-    if org.owner_id == user_id:
-        return
-
-    result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org.id,
-            OrganizationMember.user_id == user_id,
-            OrganizationMember.role == MemberRole.admin,
-        )
+async def _check_admin_or_owner(
+    session: AsyncSession,
+    org: Organization,
+    user_id: uuid.UUID,
+) -> None:
+    """Владелец, admin или super_admin. Делегирует в services.common."""
+    await ensure_admin_or_owner(
+        session, org, user_id, message="Нет прав для управления точками",
     )
-    if result.scalar_one_or_none() is None:
-        raise OrgError("FORBIDDEN", "Нет прав для управления точками", 403)

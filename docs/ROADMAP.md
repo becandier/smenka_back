@@ -101,8 +101,71 @@
 
 ---
 
-## Фаза 6 — Продакшен `[ ]`
+## Фаза 6 — Продакшен `[~]`
 - [ ] Rate-limiting
-- [ ] CORS-настройки
+- [x] CORS-настройки (`CORSMiddleware` + `Settings.cors_origins`, env `CORS_ORIGINS`) — закрыто в admin_panel
 - [ ] CI/CD (lint → test → build)
 - [ ] Финальная проверка OpenAPI-документации
+
+---
+
+## admin_panel — веб-админка (backend-трек) `[x]`
+**ТЗ:** `smenka/docs/tasks/admin_panel/backend.md`  **STATUS:** `smenka/docs/tasks/admin_panel/STATUS.md`
+
+- [x] Блок A — CORS (`CORSMiddleware`, `cors_origins`, `NoDecode`-парсинг CSV из env)
+- [x] Блок B — `sort`/`order` для `GET /shifts` и `GET /organizations/{id}/shifts` (обратно совместимо)
+- [x] Блок C2 — сквозной доступ super_admin: guard-проверки вынесены в `services/common.py` (`ensure_owner/ensure_member/ensure_admin_or_owner`, `AccessError`), добавлена ветка super_admin; `_check_*` в 6 сервисах стали тонкими делегаторами
+- [x] Блок C1 — `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/role` (`CANNOT_DEMOTE_SELF`)
+- [x] Блок C2 — `GET /admin/organizations` (`AdminOrganizationResponse`: owner_email, member_count)
+- [x] Блок C3 — `GET /admin/stats` (сводка платформы для дашборда)
+- [x] Блок D — `scripts/seed_superadmin.py <email>` (идемпотентно, верифицированный пользователь)
+- [x] Без миграций (схема не менялась); 28 тестов (`tests/test_admin.py`): права, пагинация, self-demote, сквозной super_admin, сортировка смен
+
+---
+
+## Фаза 7 — Чек-листы и кастомные роли `[x]`
+**Спека:** `smenka/docs/CHECKLISTS_SPEC.md`  **ADR:** `smenka/docs/decisions/002-custom-roles-single-per-member.md`
+
+### Этап 1 — Кастомные роли `[x]`
+- [x] Модель `OrganizationRole` (id, org_id, name, created_at, UNIQUE(org_id, name))
+- [x] `OrganizationMember.role_id` (FK → organization_roles, nullable, SET NULL)
+- [x] CRUD ролей (owner/admin) + list (all members)
+- [x] PATCH /members/{user_id}/custom-role — назначение/снятие
+- [x] `MemberResponse.custom_role: RoleResponse | null`
+- [x] Миграция, `RoleError`, 19 тестов
+
+### Этап 2 — Шаблоны чек-листов `[x]`
+- [x] Модели `ChecklistTemplate`, `ChecklistTemplateItem`, enum `ChecklistType`
+- [x] CRUD шаблонов + пунктов, PUT reorder
+- [x] Мягкое удаление (is_archived), фильтр архивных в list
+- [x] Миграция, `ChecklistError`, 18 тестов
+
+### Этап 3 — Назначение `[x]`
+- [x] Модели `ChecklistRoleAssignment`, `ChecklistMemberOverride` (enum `OverrideType`)
+- [x] PUT-семантика для assign-to-roles и member-overrides
+- [x] GET /assignments — роли + personal_add / personal_remove
+- [x] GET /members/{user_id}/checklists — effective (роль − remove) + add, фильтр архивных
+- [x] Миграция, 13 тестов
+
+### Этап 4 — Экземпляры и заполнение `[x]`
+- [x] Модели `ChecklistInstance`, `ChecklistInstanceItem`, enum `ChecklistInstanceStatus`
+- [x] `Shift.has_incomplete_required_checklists`
+- [x] При старте org-смены — создание снимков (templates + items)
+- [x] PATCH пункта: владелец смены, смена не finished, change_count, авто-пересчёт статуса
+- [x] `finalize_shift_checklists` вызывается в finish_shift, inline auto-finish и Celery
+- [x] Миграция, 12 тестов
+
+### Этап 7.2 — `my_role` / `my_custom_role` в OrganizationResponse `[x]`
+- [x] `OrganizationResponse.my_role` (owner/admin/employee | null) и `my_custom_role` (RoleResponse | null)
+- [x] `batch_get_my_roles(session, orgs, user_id)` — один membership-запрос на любой набор
+- [x] `GET /organizations`, `GET /organizations/{id}`, `GET /organizations/all` возвращают поля
+- [x] Убирает N+1 `getMembers` на мобильном экране Profile
+- [x] 10 тестов (включая guard на N+1)
+
+### Этап 7.1 — Гранулярные overrides `[x]`
+- [x] `GET /members/{user_id}/checklist-overrides` — все overrides сотрудника (с архивными)
+- [x] `PUT /checklist-templates/{tpl_id}/personal/{user_id}` — upsert через ON CONFLICT DO UPDATE
+- [x] `DELETE /checklist-templates/{tpl_id}/personal/{user_id}` — идемпотентное удаление
+- [x] Запрет PUT на архивный шаблон (TEMPLATE_ARCHIVED)
+- [x] Bulk PUT остаётся для «очистить всё» сценариев
+- [x] 21 тест (CRUD, права, архивность, cascade, обратная совместимость)

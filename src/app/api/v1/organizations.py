@@ -1,9 +1,11 @@
 import uuid
 from datetime import datetime as dt_datetime
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
+from src.app.api.v1.shifts import _shift_to_response
 from src.app.models.user import UserRole
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.organization import (
@@ -26,13 +28,27 @@ from src.app.schemas.shift import ShiftListResponse
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import shift as shift_service
-from src.app.api.v1.shifts import _shift_to_response
+
+if TYPE_CHECKING:
+    from src.app.models.organization import Organization, OrganizationMember
+    from src.app.models.organization_settings import OrganizationSettings
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 
-def _org_to_response(org) -> dict:
+def _org_to_response(
+    org: "Organization",
+    my_role: str | None = None,
+    my_custom_role: Any = None,
+) -> dict[str, Any]:
     geo_check = org.settings.geo_check_enabled if org.settings else False
+    custom_role_payload = None
+    if my_custom_role is not None:
+        custom_role_payload = {
+            "id": str(my_custom_role.id),
+            "name": my_custom_role.name,
+            "created_at": my_custom_role.created_at.isoformat(),
+        }
     return OrganizationResponse(
         id=str(org.id),
         name=org.name,
@@ -41,10 +57,19 @@ def _org_to_response(org) -> dict:
         is_deleted=org.is_deleted,
         geo_check_enabled=geo_check,
         created_at=org.created_at,
+        my_role=my_role,
+        my_custom_role=custom_role_payload,
     ).model_dump(mode="json")
 
 
-def _member_to_response(member) -> dict:
+def _member_to_response(member: "OrganizationMember") -> dict[str, Any]:
+    custom_role = None
+    if member.custom_role is not None:
+        custom_role = {
+            "id": str(member.custom_role.id),
+            "name": member.custom_role.name,
+            "created_at": member.custom_role.created_at.isoformat(),
+        }
     return MemberResponse(
         id=str(member.id),
         organization_id=str(member.organization_id),
@@ -52,11 +77,21 @@ def _member_to_response(member) -> dict:
         user_name=member.user.name,
         user_email=member.user.email,
         role=member.role.value,
+        custom_role=custom_role,
         joined_at=member.joined_at,
     ).model_dump(mode="json")
 
 
-@router.post("", status_code=201, summary="Создать организацию", description="Создаёт организацию. Только для super_admin. Текущий пользователь становится владельцем (Owner). Автоматически создаётся инвайт-код и настройки по умолчанию.")
+@router.post(
+    "",
+    status_code=201,
+    summary="Создать организацию",
+    description=(
+        "Создаёт организацию. Только для super_admin. Текущий пользователь "
+        "становится владельцем (Owner). Автоматически создаётся инвайт-код и "
+        "настройки по умолчанию."
+    ),
+)
 async def create_organization(
     body: OrganizationCreate,
     user: SuperAdminDep,
@@ -64,46 +99,83 @@ async def create_organization(
 ) -> ApiResponse:
     org = await org_service.create_organization(session, body.name, user.id)
     await session.commit()
-    return ApiResponse.success(_org_to_response(org))
+    return ApiResponse.success(_org_to_response(org, "owner", None))
 
 
-@router.get("", summary="Мои организации", description="Список всех организаций, где текущий пользователь — владелец или участник.")
+@router.get(
+    "",
+    summary="Мои организации",
+    description=(
+        "Список всех организаций, где текущий пользователь — владелец или "
+        "участник. В ответе поля my_role и my_custom_role отражают роль "
+        "текущего пользователя в каждой организации."
+    ),
+)
 async def list_organizations(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_user_organizations(session, user.id)
+    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o) for o in orgs],
+            items=[
+                _org_to_response(o, *roles.get(o.id, (None, None)))
+                for o in orgs
+            ],
         ).model_dump(mode="json")
     )
 
 
-@router.get("/all", summary="Все организации (super_admin)", description="Список ВСЕХ организаций системы. Только для super_admin.")
+@router.get(
+    "/all",
+    summary="Все организации (super_admin)",
+    description=(
+        "Список ВСЕХ организаций системы. Только для super_admin. "
+        "my_role/my_custom_role заполнены, если super_admin сам является "
+        "владельцем или участником конкретной организации, иначе null."
+    ),
+)
 async def list_all_organizations(
     user: SuperAdminDep,
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_all_organizations(session)
+    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o) for o in orgs],
+            items=[
+                _org_to_response(o, *roles.get(o.id, (None, None)))
+                for o in orgs
+            ],
         ).model_dump(mode="json")
     )
 
 
-@router.get("/{org_id}", summary="Получить организацию", description="Информация об организации по ID.")
+@router.get(
+    "/{org_id}",
+    summary="Получить организацию",
+    description=(
+        "Информация об организации по ID. Поля my_role/my_custom_role "
+        "отражают роль текущего пользователя в этой организации."
+    ),
+)
 async def get_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
     org = await org_service.get_organization(session, org_id)
-    return ApiResponse.success(_org_to_response(org))
+    roles = await org_service.batch_get_my_roles(session, [org], user.id)
+    my_role, my_custom_role = roles.get(org.id, (None, None))
+    return ApiResponse.success(_org_to_response(org, my_role, my_custom_role))
 
 
-@router.patch("/{org_id}", summary="Обновить организацию", description="Обновляет название организации. Только для владельца (Owner).")
+@router.patch(
+    "/{org_id}",
+    summary="Обновить организацию",
+    description="Обновляет название организации. Только для владельца (Owner).",
+)
 async def update_organization(
     org_id: uuid.UUID,
     body: OrganizationUpdate,
@@ -112,10 +184,17 @@ async def update_organization(
 ) -> ApiResponse:
     org = await org_service.update_organization(session, org_id, user.id, body.name)
     await session.commit()
-    return ApiResponse.success(_org_to_response(org))
+    return ApiResponse.success(_org_to_response(org, "owner", None))
 
 
-@router.delete("/{org_id}", status_code=200, summary="Удалить организацию", description="Мягкое удаление организации (soft delete). Только для владельца (Owner).")
+@router.delete(
+    "/{org_id}",
+    status_code=200,
+    summary="Удалить организацию",
+    description=(
+        "Мягкое удаление организации (soft delete). Только для владельца (Owner)."
+    ),
+)
 async def delete_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -126,7 +205,15 @@ async def delete_organization(
     return ApiResponse.success({"message": "Организация удалена"})
 
 
-@router.post("/{org_id}/rotate-invite", status_code=200, summary="Ротация инвайт-кода", description="Генерирует новый инвайт-код. Старый перестаёт работать. Только для владельца (Owner).")
+@router.post(
+    "/{org_id}/rotate-invite",
+    status_code=200,
+    summary="Ротация инвайт-кода",
+    description=(
+        "Генерирует новый инвайт-код. Старый перестаёт работать. Только для "
+        "владельца (Owner)."
+    ),
+)
 async def rotate_invite_code(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -139,7 +226,15 @@ async def rotate_invite_code(
     )
 
 
-@router.post("/join/{invite_code}", status_code=201, summary="Присоединиться по инвайт-коду", description="Присоединяет текущего пользователя к организации с ролью Employee. Владелец не может присоединиться к своей организации.")
+@router.post(
+    "/join/{invite_code}",
+    status_code=201,
+    summary="Присоединиться по инвайт-коду",
+    description=(
+        "Присоединяет текущего пользователя к организации с ролью Employee. "
+        "Владелец не может присоединиться к своей организации."
+    ),
+)
 async def join_organization(
     invite_code: str,
     user: CurrentUserDep,
@@ -158,7 +253,14 @@ async def join_organization(
     )
 
 
-@router.get("/{org_id}/members", summary="Список участников", description="Список всех участников организации с их ролями. Доступно владельцу и участникам.")
+@router.get(
+    "/{org_id}/members",
+    summary="Список участников",
+    description=(
+        "Список всех участников организации с их ролями. Доступно владельцу и "
+        "участникам."
+    ),
+)
 async def list_members(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -172,7 +274,15 @@ async def list_members(
     )
 
 
-@router.delete("/{org_id}/members/{member_user_id}", summary="Удалить участника", description="Удаляет участника из организации. Владелец и админ могут удалять других. Любой участник может покинуть организацию сам (передав свой user_id).")
+@router.delete(
+    "/{org_id}/members/{member_user_id}",
+    summary="Удалить участника",
+    description=(
+        "Удаляет участника из организации. Владелец и админ могут удалять "
+        "других. Любой участник может покинуть организацию сам (передав свой "
+        "user_id)."
+    ),
+)
 async def remove_member(
     org_id: uuid.UUID,
     member_user_id: uuid.UUID,
@@ -184,7 +294,14 @@ async def remove_member(
     return ApiResponse.success({"message": "Участник удалён"})
 
 
-@router.patch("/{org_id}/members/{member_user_id}/role", summary="Изменить роль участника", description="Назначает или снимает роль admin у участника. Доступно владельцу (Owner) и super_admin.")
+@router.patch(
+    "/{org_id}/members/{member_user_id}/role",
+    summary="Изменить роль участника",
+    description=(
+        "Назначает или снимает роль admin у участника. Доступно владельцу "
+        "(Owner) и super_admin."
+    ),
+)
 async def update_member_role(
     org_id: uuid.UUID,
     member_user_id: uuid.UUID,
@@ -204,7 +321,7 @@ async def update_member_role(
     return ApiResponse.success(_member_to_response(member))
 
 
-def _settings_to_response(s) -> dict:
+def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
     return OrganizationSettingsResponse(
         organization_id=str(s.organization_id),
         geo_check_enabled=s.geo_check_enabled,
@@ -214,7 +331,14 @@ def _settings_to_response(s) -> dict:
     ).model_dump()
 
 
-@router.get("/{org_id}/settings", summary="Настройки организации", description="Текущие настройки организации (геопроверка, лимиты пауз, автозавершение). Доступно владельцу (Owner) и админам.")
+@router.get(
+    "/{org_id}/settings",
+    summary="Настройки организации",
+    description=(
+        "Текущие настройки организации (геопроверка, лимиты пауз, "
+        "автозавершение). Доступно владельцу (Owner) и админам."
+    ),
+)
 async def get_org_settings(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -224,7 +348,14 @@ async def get_org_settings(
     return ApiResponse.success(_settings_to_response(settings))
 
 
-@router.patch("/{org_id}/settings", summary="Обновить настройки", description="Обновляет настройки организации. Передавайте только поля, которые нужно изменить. Доступно владельцу (Owner) и админам.")
+@router.patch(
+    "/{org_id}/settings",
+    summary="Обновить настройки",
+    description=(
+        "Обновляет настройки организации. Передавайте только поля, которые "
+        "нужно изменить. Доступно владельцу (Owner) и админам."
+    ),
+)
 async def update_org_settings(
     org_id: uuid.UUID,
     body: OrganizationSettingsUpdate,
@@ -239,7 +370,14 @@ async def update_org_settings(
     return ApiResponse.success(_settings_to_response(settings))
 
 
-@router.get("/{org_id}/shifts", summary="Смены сотрудников", description="Список смен сотрудников организации с пагинацией и фильтрами. Доступно владельцу (Owner) и админам.")
+@router.get(
+    "/{org_id}/shifts",
+    summary="Смены сотрудников",
+    description=(
+        "Список смен сотрудников организации с пагинацией и фильтрами. "
+        "Доступно владельцу (Owner) и админам."
+    ),
+)
 async def list_org_shifts(
     org_id: uuid.UUID,
     user: CurrentUserDep,
@@ -250,6 +388,8 @@ async def list_org_shifts(
     date_to: dt_datetime | None = Query(None, description="Смены начатые до этой даты"),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
+    sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
+    order: str = Query("desc", description="Направление: asc или desc"),
 ) -> ApiResponse:
     # Only owner or admin can view org shifts
     from src.app.services.work_location import _check_admin_or_owner
@@ -269,7 +409,7 @@ async def list_org_shifts(
                 "INVALID_STATUS",
                 f"Статус должен быть: {', '.join(s.value for s in ShiftStatusEnum)}",
                 400,
-            )
+            ) from None
 
     shifts, total = await shift_service.get_org_shifts(
         session, org_id,
@@ -279,6 +419,8 @@ async def list_org_shifts(
         date_to=date_to,
         limit=limit,
         offset=offset,
+        sort=sort,
+        order=order,
     )
     return ApiResponse.success(
         ShiftListResponse(
@@ -290,7 +432,14 @@ async def list_org_shifts(
     )
 
 
-@router.get("/{org_id}/stats", summary="Статистика организации", description="Агрегированная статистика по организации за период с разбивкой по каждому сотруднику. Доступно владельцу (Owner) и админам.")
+@router.get(
+    "/{org_id}/stats",
+    summary="Статистика организации",
+    description=(
+        "Агрегированная статистика по организации за период с разбивкой по "
+        "каждому сотруднику. Доступно владельцу (Owner) и админам."
+    ),
+)
 async def org_stats(
     org_id: uuid.UUID,
     user: CurrentUserDep,

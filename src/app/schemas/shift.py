@@ -7,7 +7,9 @@ class PauseResponse(BaseModel):
     id: str = Field(description="UUID паузы")
     shift_id: str = Field(description="UUID смены")
     started_at: datetime = Field(description="Начало паузы")
-    finished_at: datetime | None = Field(default=None, description="Конец паузы (null если активна)")
+    finished_at: datetime | None = Field(
+        default=None, description="Конец паузы (null если активна)"
+    )
 
     model_config = {"from_attributes": True}
 
@@ -25,6 +27,11 @@ class ShiftResponse(BaseModel):
     status: str = Field(description="Статус: active, paused, finished")
     pauses: list[PauseResponse] = Field(description="Список пауз в смене")
     worked_seconds: int = Field(description="Отработанное время в секундах (за вычетом пауз)")
+    has_incomplete_required_checklists: bool = Field(
+        default=False,
+        description="После завершения смены: был ли хотя бы один обязательный "
+        "чек-лист не заполнен",
+    )
 
     model_config = {"from_attributes": True}
 

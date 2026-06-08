@@ -8,7 +8,10 @@ class WorkLocationCreate(BaseModel):
     latitude: float = Field(ge=-90, le=90, description="Широта (-90 до 90)")
     longitude: float = Field(ge=-180, le=180, description="Долгота (-180 до 180)")
     radius_meters: int = Field(
-        default=100, ge=10, le=10000, description="Радиус зоны в метрах (10–10000, по умолчанию 100)"
+        default=100,
+        ge=10,
+        le=10000,
+        description="Радиус зоны в метрах (10–10000, по умолчанию 100)",
     )
 
 

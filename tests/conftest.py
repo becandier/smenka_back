@@ -11,7 +11,7 @@ from src.app.core.config import get_settings
 from src.app.core.database import Base, get_session
 from src.app.core.security import hash_password
 from src.app.main import app
-from src.app.models.user import User
+from src.app.models.user import User, UserRole
 
 settings = get_settings()
 
@@ -95,6 +95,33 @@ async def auth_headers(verified_user: User, client: AsyncClient) -> dict[str, st
             "email": "test@example.com",
             "password": "Test1234",
         },
+    )
+    token = response.json()["data"]["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+async def super_admin_user(db_session: AsyncSession) -> User:
+    user = User(
+        id=uuid.uuid4(),
+        email="admin@example.com",
+        password_hash=hash_password("Test1234"),
+        name="Super Admin",
+        is_verified=True,
+        role=UserRole.super_admin,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    return user
+
+
+@pytest.fixture
+async def super_admin_headers(
+    super_admin_user: User, client: AsyncClient,
+) -> dict[str, str]:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@example.com", "password": "Test1234"},
     )
     token = response.json()["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
