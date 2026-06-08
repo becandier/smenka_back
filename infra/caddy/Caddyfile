@@ -1,0 +1,13 @@
+# Edge-прокси с автоматическим HTTPS (Let's Encrypt).
+# Домены приходят из окружения (API_DOMAIN / ADMIN_DOMAIN в .env), поэтому
+# конфиг не привязан к конкретному домену.
+
+{$API_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:8000
+}
+
+{$ADMIN_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy admin:80
+}
