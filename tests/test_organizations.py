@@ -1,11 +1,21 @@
 # tests/test_organizations.py
 import uuid
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.user import User
+from src.app.models.user import User, UserRole
+
+
+@pytest.fixture(autouse=True)
+async def _owner_is_super_admin(verified_user: User, db_session: AsyncSession) -> None:
+    """Создание организации требует super_admin; в этих тестах владелец-создатель
+    повышается до super_admin (creator становится owner). На роль владельца тесты
+    не опираются, а forbidden-кейсы используют отдельных обычных пользователей."""
+    verified_user.role = UserRole.super_admin
+    await db_session.commit()
 
 
 async def _create_second_user(db_session: AsyncSession) -> User:
@@ -52,7 +62,9 @@ class TestCreateOrganization:
 
     async def test_create_multiple_organizations(self, client: AsyncClient, auth_headers):
         await client.post("/api/v1/organizations", headers=auth_headers, json={"name": "Org 1"})
-        response = await client.post("/api/v1/organizations", headers=auth_headers, json={"name": "Org 2"})
+        response = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org 2"}
+        )
         assert response.status_code == 201
 
         list_resp = await client.get("/api/v1/organizations", headers=auth_headers)
@@ -62,7 +74,9 @@ class TestCreateOrganization:
 class TestUpdateOrganization:
     async def test_update_organization_success(self, client: AsyncClient, auth_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=auth_headers, json={"name": "Old Name"}
+            "/api/v1/organizations",
+            headers=auth_headers,
+            json={"name": "Old Name"},
         )
         org_id = create_resp.json()["data"]["id"]
 
@@ -292,7 +306,7 @@ class TestMembers:
         org_id = create_resp.json()["data"]["id"]
         invite_code = create_resp.json()["data"]["invite_code"]
 
-        second_user = await _create_second_user(db_session)
+        await _create_second_user(db_session)
         other_headers = await _login_as(client, "second@example.com")
         await client.post(f"/api/v1/organizations/join/{invite_code}", headers=other_headers)
 

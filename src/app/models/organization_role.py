@@ -1,11 +1,15 @@
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database import Base
+
+if TYPE_CHECKING:
+    from src.app.models.organization import Organization
 
 
 class OrganizationRole(Base):

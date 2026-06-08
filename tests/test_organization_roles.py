@@ -248,7 +248,7 @@ class TestUpdateRole:
             "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
-        r1 = await client.post(
+        await client.post(
             f"/api/v1/organizations/{org_id}/roles",
             headers=super_admin_headers,
             json={"name": "Бариста"},

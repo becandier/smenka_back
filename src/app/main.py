@@ -7,6 +7,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from src.app.api.v1.router import router as v1_router
 from src.app.core.config import get_settings
@@ -40,41 +42,49 @@ app = FastAPI(
     title="Smenka API",
     version="0.1.0",
     redirect_slashes=False,
-    description="""API для учёта рабочего времени (shift tracking).
-
-## Режимы работы
-
-- **Персональный** — любой авторизованный пользователь может трекать рабочее время для себя.
-- **Организационный** — владелец создаёт организацию, приглашает сотрудников, настраивает правила (геопроверка, лимиты пауз, автозавершение).
-
-## Роли в организации
-
-| Роль | Описание | Может трекать время | Управление |
-|------|----------|---------------------|------------|
-| **Owner** | Создатель организации | Нет | Полное: настройки, участники, статистика, смены сотрудников |
-| **Admin** | Участник с расширенными правами | Да | Рабочие точки, просмотр смен и статистики |
-| **Employee** | Обычный участник | Да | Только свои смены |
-
-> **Важно:** Owner НЕ является участником организации и не может трекать в ней время. Это управленческая роль.
-
-## Формат ответов
-
-Все ответы обёрнуты в единую структуру:
-```json
-{"data": <payload>, "error": null}
-```
-При ошибке:
-```json
-{"data": null, "error": {"code": "ERROR_CODE", "message": "Описание ошибки"}}
-```
-
-## Авторизация
-
-Используется JWT Bearer-токен. Получите `access_token` через `/auth/login` и передавайте в заголовке:
-```
-Authorization: Bearer <access_token>
-```
-""",
+    description=(
+        "API для учёта рабочего времени (shift tracking).\n"
+        "\n"
+        "## Режимы работы\n"
+        "\n"
+        "- **Персональный** — любой авторизованный пользователь может трекать рабочее время для "
+        "себя.\n"
+        "- **Организационный** — владелец создаёт организацию, приглашает сотрудников, "
+        "настраивает правила (геопроверка, лимиты пауз, автозавершение).\n"
+        "\n"
+        "## Роли в организации\n"
+        "\n"
+        "| Роль | Описание | Может трекать время | Управление |\n"
+        "|------|----------|---------------------|------------|\n"
+        "| **Owner** | Создатель организации | Нет | Полное: настройки, участники, статистика, "
+        "смены сотрудников |\n"
+        "| **Admin** | Участник с расширенными правами | Да | Рабочие точки, просмотр смен и "
+        "статистики |\n"
+        "| **Employee** | Обычный участник | Да | Только свои смены |\n"
+        "\n"
+        "> **Важно:** Owner НЕ является участником организации и не может трекать в ней время. "
+        "Это управленческая роль.\n"
+        "\n"
+        "## Формат ответов\n"
+        "\n"
+        "Все ответы обёрнуты в единую структуру:\n"
+        "```json\n"
+        "{\"data\": <payload>, \"error\": null}\n"
+        "```\n"
+        "При ошибке:\n"
+        "```json\n"
+        "{\"data\": null, \"error\": {\"code\": \"ERROR_CODE\", \"message\": \"Описание "
+        "ошибки\"}}\n"
+        "```\n"
+        "\n"
+        "## Авторизация\n"
+        "\n"
+        "Используется JWT Bearer-токен. Получите `access_token` через `/auth/login` и передавайте "
+        "в заголовке:\n"
+        "```\n"
+        "Authorization: Bearer <access_token>\n"
+        "```\n"
+    ),
     lifespan=lifespan,
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
@@ -89,15 +99,24 @@ Authorization: Bearer <access_token>
         },
         {
             "name": "shifts",
-            "description": "Персональные смены: начало, пауза, возобновление, завершение, история и статистика.",
+            "description": (
+                "Персональные смены: начало, пауза, возобновление, завершение, "
+                "история и статистика."
+            ),
         },
         {
             "name": "organizations",
-            "description": "CRUD организаций, инвайт-коды, управление участниками, настройки, смены и статистика сотрудников.",
+            "description": (
+                "CRUD организаций, инвайт-коды, управление участниками, "
+                "настройки, смены и статистика сотрудников."
+            ),
         },
         {
             "name": "organization-roles",
-            "description": "Кастомные роли организации (бариста, кассир и т.п.) и их назначение участникам.",
+            "description": (
+                "Кастомные роли организации (бариста, кассир и т.п.) и их "
+                "назначение участникам."
+            ),
         },
         {
             "name": "checklist-templates",
@@ -105,11 +124,17 @@ Authorization: Bearer <access_token>
         },
         {
             "name": "checklist-assignments",
-            "description": "Назначение шаблонов ролям и личные переопределения для сотрудников. Вычисление эффективных чек-листов.",
+            "description": (
+                "Назначение шаблонов ролям и личные переопределения для "
+                "сотрудников. Вычисление эффективных чек-листов."
+            ),
         },
         {
             "name": "checklist-overrides",
-            "description": "Гранулярные операции над личными overrides: upsert и удаление по паре (шаблон, сотрудник), список overrides сотрудника.",
+            "description": (
+                "Гранулярные операции над личными overrides: upsert и удаление "
+                "по паре (шаблон, сотрудник), список overrides сотрудника."
+            ),
         },
         {
             "name": "checklist-instances",
@@ -117,18 +142,24 @@ Authorization: Bearer <access_token>
         },
         {
             "name": "work-locations",
-            "description": "Рабочие точки организации. Используются для геопроверки при начале смены.",
+            "description": (
+                "Рабочие точки организации. Используются для геопроверки при "
+                "начале смены."
+            ),
         },
         {
             "name": "admin",
-            "description": "Платформенные эндпоинты super_admin: пользователи, обзор организаций, сводная статистика.",
+            "description": (
+                "Платформенные эндпоинты super_admin: пользователи, обзор "
+                "организаций, сводная статистика."
+            ),
         },
     ],
 )
 
 
 @app.middleware("http")
-async def logging_middleware(request: Request, call_next):
+async def logging_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
     start = time.monotonic()
     response = await call_next(request)
     duration_ms = round((time.monotonic() - start) * 1000, 2)

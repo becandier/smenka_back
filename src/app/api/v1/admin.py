@@ -35,7 +35,8 @@ def _user_to_response(user: User) -> dict[str, Any]:
 @router.get(
     "/users",
     summary="Список пользователей (super_admin)",
-    description="Все пользователи платформы с поиском (email/имя), фильтрами role и is_verified, сортировкой и пагинацией.",
+    description="Все пользователи платформы с поиском (email/имя), фильтрами role и "
+    "is_verified, сортировкой и пагинацией.",
 )
 async def list_users(
     user: SuperAdminDep,
@@ -71,7 +72,8 @@ async def list_users(
 @router.get(
     "/users/{user_id}",
     summary="Детали пользователя (super_admin)",
-    description="Профиль пользователя с агрегатами: число организаций во владении, число членств, число смен.",
+    description="Профиль пользователя с агрегатами: число организаций во владении, "
+    "число членств, число смен.",
 )
 async def get_user(
     user_id: uuid.UUID,
@@ -98,7 +100,8 @@ async def get_user(
 @router.patch(
     "/users/{user_id}/role",
     summary="Сменить роль пользователя (super_admin)",
-    description="Меняет глобальную роль (super_admin/user). Нельзя снять super_admin с самого себя.",
+    description="Меняет глобальную роль (super_admin/user). Нельзя снять super_admin "
+    "с самого себя.",
 )
 async def update_user_role(
     user_id: uuid.UUID,
@@ -114,7 +117,8 @@ async def update_user_role(
 @router.get(
     "/organizations",
     summary="Обзор организаций (super_admin)",
-    description="Все организации платформы с email владельца и числом участников. Фильтры is_deleted и search, сортировка, пагинация.",
+    description="Все организации платформы с email владельца и числом участников. "
+    "Фильтры is_deleted и search, сортировка, пагинация.",
 )
 async def list_organizations(
     user: SuperAdminDep,
@@ -160,7 +164,8 @@ async def list_organizations(
 @router.get(
     "/stats",
     summary="Сводная статистика платформы (super_admin)",
-    description="Агрегаты для дашборда: пользователи, организации, активные смены, смены за сегодня и неделю.",
+    description="Агрегаты для дашборда: пользователи, организации, активные смены, "
+    "смены за сегодня и неделю.",
 )
 async def stats(
     user: SuperAdminDep,

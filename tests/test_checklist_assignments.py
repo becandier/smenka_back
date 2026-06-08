@@ -420,7 +420,7 @@ class TestEffectiveTemplates:
         ctx = await _setup_org_with_roles_and_member(
             client, db_session, super_admin_headers,
         )
-        other_user = await _create_user(db_session, "other@example.com")
+        await _create_user(db_session, "other@example.com")
         other_headers = await _login_as(client, "other@example.com")
         invite_resp = await client.get(
             f"/api/v1/organizations/{ctx['org_id']}",

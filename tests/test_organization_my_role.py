@@ -142,7 +142,7 @@ class TestListMyOrganizations:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         # Org1: user is owner
-        other_admin = await _create_user(
+        await _create_user(
             db_session, "other@example.com", role=UserRole.super_admin,
         )
         other_admin_headers = await _login_as(client, "other@example.com")
@@ -228,7 +228,7 @@ class TestSuperAdminAll:
     async def test_my_role_null_for_foreign_org(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
-        other = await _create_user(
+        await _create_user(
             db_session, "other-sa@example.com", role=UserRole.super_admin,
         )
         other_headers = await _login_as(client, "other-sa@example.com")
@@ -279,7 +279,7 @@ class TestNoNPlusOne:
             )
         invites = []
         for i in range(3):
-            other = await _create_user(
+            await _create_user(
                 db_session, f"sa-{i}@example.com", role=UserRole.super_admin,
             )
             oh = await _login_as(client, f"sa-{i}@example.com")

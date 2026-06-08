@@ -15,8 +15,12 @@ class AdminUserResponse(BaseModel):
 
 
 class AdminUserDetailResponse(AdminUserResponse):
-    owned_organizations_count: int = Field(description="Сколько активных организаций пользователь владеет")
-    member_organizations_count: int = Field(description="В скольких организациях состоит участником")
+    owned_organizations_count: int = Field(
+        description="Сколько активных организаций пользователь владеет"
+    )
+    member_organizations_count: int = Field(
+        description="В скольких организациях состоит участником"
+    )
     shifts_count: int = Field(description="Общее число смен пользователя")
 
 

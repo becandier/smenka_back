@@ -1,8 +1,10 @@
 import uuid
+from typing import Any
 
 from fastapi import APIRouter
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.organization_role import OrganizationRole
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.organization_role import (
     MemberRoleAssignRequest,
@@ -19,7 +21,7 @@ router = APIRouter(
 )
 
 
-def _role_to_response(role) -> dict:
+def _role_to_response(role: OrganizationRole) -> dict[str, Any]:
     return RoleResponse(
         id=str(role.id),
         name=role.name,
@@ -31,7 +33,10 @@ def _role_to_response(role) -> dict:
     "/roles",
     status_code=201,
     summary="Создать кастомную роль",
-    description="Создаёт кастомную роль в организации (например: бариста, кассир). Доступно владельцу и админам.",
+    description=(
+        "Создаёт кастомную роль в организации (например: бариста, кассир). "
+        "Доступно владельцу и админам."
+    ),
 )
 async def create_role(
     org_id: uuid.UUID,
@@ -84,7 +89,10 @@ async def update_role(
 @router.delete(
     "/roles/{role_id}",
     summary="Удалить роль",
-    description="Удаляет кастомную роль. У всех участников с этой ролью role_id обнуляется. Доступно владельцу и админам.",
+    description=(
+        "Удаляет кастомную роль. У всех участников с этой ролью role_id обнуляется. "
+        "Доступно владельцу и админам."
+    ),
 )
 async def delete_role(
     org_id: uuid.UUID,
@@ -100,7 +108,11 @@ async def delete_role(
 @router.patch(
     "/members/{user_id}/custom-role",
     summary="Назначить кастомную роль участнику",
-    description="Назначает или снимает кастомную роль у участника. role_id=null — снять роль. Доступно владельцу и админам. Системная роль (admin/employee) меняется отдельным эндпоинтом.",
+    description=(
+        "Назначает или снимает кастомную роль у участника. role_id=null — снять роль. "
+        "Доступно владельцу и админам. Системная роль (admin/employee) меняется "
+        "отдельным эндпоинтом."
+    ),
 )
 async def assign_member_role(
     org_id: uuid.UUID,

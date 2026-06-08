@@ -1,11 +1,11 @@
 import uuid
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import func
-
 from src.app.core.logging import get_logger
+from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
 from src.app.services.common import ensure_admin_or_owner
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 
 async def _check_admin_or_owner(
-    session: AsyncSession, org, user_id: uuid.UUID,
+    session: AsyncSession, org: Organization, user_id: uuid.UUID,
 ) -> None:
     """Владелец, admin или super_admin. Делегирует в services.common."""
     await ensure_admin_or_owner(
@@ -55,7 +55,7 @@ async def update_settings(
     session: AsyncSession,
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
-    **fields,
+    **fields: Any,
 ) -> OrganizationSettings:
     settings = await get_settings(session, org_id, requester_id)
 

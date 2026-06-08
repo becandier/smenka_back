@@ -1,8 +1,10 @@
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.checklist import ChecklistTemplate, ChecklistTemplateItem
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import (
     ItemsReorderRequest,
@@ -23,7 +25,7 @@ router = APIRouter(
 )
 
 
-def _template_to_response(template, items_count: int) -> dict:
+def _template_to_response(template: ChecklistTemplate, items_count: int) -> dict[str, Any]:
     return TemplateResponse(
         id=str(template.id),
         name=template.name,
@@ -36,7 +38,7 @@ def _template_to_response(template, items_count: int) -> dict:
     ).model_dump(mode="json")
 
 
-def _item_to_response(item) -> dict:
+def _item_to_response(item: ChecklistTemplateItem) -> dict[str, Any]:
     return TemplateItemResponse(
         id=str(item.id),
         text=item.text,
@@ -45,7 +47,7 @@ def _item_to_response(item) -> dict:
     ).model_dump(mode="json")
 
 
-def _template_detail_to_response(template) -> dict:
+def _template_detail_to_response(template: ChecklistTemplate) -> dict[str, Any]:
     return TemplateDetailResponse(
         id=str(template.id),
         name=template.name,
@@ -82,7 +84,10 @@ async def create_template(
 @router.get(
     "",
     summary="Список шаблонов",
-    description="Список шаблонов организации. По умолчанию архивные скрыты. Доступно владельцу и админам.",
+    description=(
+        "Список шаблонов организации. По умолчанию архивные скрыты. "
+        "Доступно владельцу и админам."
+    ),
 )
 async def list_templates(
     org_id: uuid.UUID,
@@ -120,7 +125,10 @@ async def get_template_detail(
 @router.patch(
     "/{template_id}",
     summary="Обновить шаблон",
-    description="Обновляет поля шаблона (передавайте только изменяемые). Доступно владельцу и админам.",
+    description=(
+        "Обновляет поля шаблона (передавайте только изменяемые). "
+        "Доступно владельцу и админам."
+    ),
 )
 async def update_template(
     org_id: uuid.UUID,
@@ -145,7 +153,11 @@ async def update_template(
 @router.delete(
     "/{template_id}",
     summary="Архивировать шаблон",
-    description="Помечает шаблон как архивный (is_archived=true). Для назначения новым сменам шаблон больше не используется. Существующие экземпляры в активных сменах сохраняются.",
+    description=(
+        "Помечает шаблон как архивный (is_archived=true). Для назначения новым "
+        "сменам шаблон больше не используется. Существующие экземпляры в активных "
+        "сменах сохраняются."
+    ),
 )
 async def delete_template(
     org_id: uuid.UUID,
@@ -222,7 +234,10 @@ async def delete_item(
 @router.put(
     "/{template_id}/items/reorder",
     summary="Изменить порядок пунктов",
-    description="Принимает полный список UUID пунктов в нужном порядке. Должен содержать ВСЕ пункты шаблона без дубликатов.",
+    description=(
+        "Принимает полный список UUID пунктов в нужном порядке. Должен содержать "
+        "ВСЕ пункты шаблона без дубликатов."
+    ),
 )
 async def reorder_items(
     org_id: uuid.UUID,

@@ -168,7 +168,11 @@ async def _auto_finish_stale_for_user(
                     pause.finished_at = shift_finish
             shift.status = ShiftStatus.finished
             shift.finished_at = shift_finish
-            logger.info("stale_shift_auto_finished_inline", shift_id=str(shift.id), user_id=str(user_id))
+            logger.info(
+                "stale_shift_auto_finished_inline",
+                shift_id=str(shift.id),
+                user_id=str(user_id),
+            )
 
     await session.flush()
 
@@ -359,7 +363,7 @@ async def get_shift_stats(
     session: AsyncSession,
     user_id: uuid.UUID,
     period: str,
-) -> dict:
+) -> dict[str, Any]:
     """Calculate shift statistics for the given period."""
     if period not in VALID_PERIODS:
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
@@ -429,7 +433,7 @@ async def get_org_stats(
     session: AsyncSession,
     organization_id: uuid.UUID,
     period: str,
-) -> dict:
+) -> dict[str, Any]:
     """Calculate org-wide shift statistics."""
     if period not in VALID_PERIODS:
         raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
@@ -459,6 +463,7 @@ async def get_org_stats(
     avg = total_seconds // count if count > 0 else 0
 
     from collections import defaultdict
+
     from src.app.models.user import User
 
     by_user: dict[uuid.UUID, list[Shift]] = defaultdict(list)

@@ -4,17 +4,16 @@ Revision ID: c2d3e4f51234
 Revises: b1c2d3e4f501
 Create Date: 2026-04-18 11:00:00.000000+00:00
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
-
 revision: str = 'c2d3e4f51234'
-down_revision: Union[str, None] = 'b1c2d3e4f501'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = 'b1c2d3e4f501'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

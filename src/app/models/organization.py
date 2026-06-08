@@ -2,6 +2,7 @@ import enum
 import secrets
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -9,8 +10,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database import Base
 
+if TYPE_CHECKING:
+    from src.app.models.organization_role import OrganizationRole
+    from src.app.models.organization_settings import OrganizationSettings
+    from src.app.models.user import User
+    from src.app.models.work_location import WorkLocation
 
-class MemberRole(str, enum.Enum):
+
+class MemberRole(enum.StrEnum):
     admin = "admin"
     employee = "employee"
 

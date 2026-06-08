@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+      - name: Ruff (lint)
+        run: uv run ruff check src/ tests/ scripts/
+      - name: Mypy (typecheck)
+        run: uv run mypy src/
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: smenka
+          POSTGRES_PASSWORD: smenka
+          POSTGRES_DB: smenka
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smenka"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: smenka
+      POSTGRES_PASSWORD: smenka
+      POSTGRES_DB: smenka
+      SECRET_KEY: ci-test-secret-key
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+      - name: Create test database
+        run: PGPASSWORD=smenka psql -h localhost -U smenka -d smenka -c "CREATE DATABASE smenka_test;"
+      - name: Pytest
+        run: uv run pytest tests/ -q

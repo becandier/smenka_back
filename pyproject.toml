@@ -33,9 +33,25 @@ dev = [
 [tool.ruff]
 target-version = "py312"
 line-length = 99
+# Авто-сгенерированные Alembic-миграции не линтуем.
+extend-exclude = ["src/migrations"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "A", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI-инъекции в дефолтах аргументов — идиоматичны, не B008.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.Security",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -47,3 +63,15 @@ testpaths = ["tests"]
 python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
+exclude = ["src/migrations/"]
+
+# Сторонние библиотеки без type-stubs.
+[[tool.mypy.overrides]]
+module = ["jose.*", "passlib.*"]
+ignore_missing_imports = true
+
+# Декораторы Celery (@app.task) нетипизированы — ослабляем только это правило
+# для модулей задач, остальной strict сохраняется.
+[[tool.mypy.overrides]]
+module = ["src.app.tasks.*"]
+disallow_untyped_decorators = false

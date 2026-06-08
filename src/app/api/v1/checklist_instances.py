@@ -1,8 +1,10 @@
 import uuid
+from typing import Any
 
 from fastapi import APIRouter
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.checklist import ChecklistInstance, ChecklistInstanceItem
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import (
     ChecklistInstanceDetailResponse,
@@ -17,7 +19,9 @@ from src.app.services import checklist_instance as instance_service
 router = APIRouter(prefix="/shifts/{shift_id}/checklists", tags=["checklist-instances"])
 
 
-def _instance_to_response(instance, total: int, completed: int) -> dict:
+def _instance_to_response(
+    instance: ChecklistInstance, total: int, completed: int
+) -> dict[str, Any]:
     return ChecklistInstanceResponse(
         id=str(instance.id),
         name=instance.name,
@@ -30,7 +34,7 @@ def _instance_to_response(instance, total: int, completed: int) -> dict:
     ).model_dump(mode="json")
 
 
-def _item_to_response(item) -> dict:
+def _item_to_response(item: ChecklistInstanceItem) -> dict[str, Any]:
     return InstanceItemResponse(
         id=str(item.id),
         text=item.text,
@@ -43,7 +47,7 @@ def _item_to_response(item) -> dict:
     ).model_dump(mode="json")
 
 
-def _instance_detail_to_response(instance) -> dict:
+def _instance_detail_to_response(instance: ChecklistInstance) -> dict[str, Any]:
     return ChecklistInstanceDetailResponse(
         id=str(instance.id),
         name=instance.name,
@@ -62,7 +66,8 @@ def _instance_detail_to_response(instance) -> dict:
 @router.get(
     "",
     summary="Чек-листы смены",
-    description="Список экземпляров чек-листов смены со сводкой. Доступно владельцу смены, владельцу и админам организации.",
+    description="Список экземпляров чек-листов смены со сводкой. Доступно владельцу "
+    "смены, владельцу и админам организации.",
 )
 async def list_shift_checklists(
     shift_id: uuid.UUID,
@@ -97,7 +102,8 @@ async def get_instance(
 @router.patch(
     "/{instance_id}/items/{item_id}",
     summary="Обновить пункт",
-    description="Отметить/снять пункт и добавить комментарий. Только владелец смены, только пока смена активна.",
+    description="Отметить/снять пункт и добавить комментарий. Только владелец смены, "
+    "только пока смена активна.",
 )
 async def update_item(
     shift_id: uuid.UUID,

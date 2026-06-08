@@ -10,7 +10,6 @@ from src.app.models.checklist import (
     ChecklistInstance,
     ChecklistInstanceItem,
     ChecklistInstanceStatus,
-    ChecklistTemplate,
     ChecklistTemplateItem,
 )
 from src.app.models.organization import OrganizationMember

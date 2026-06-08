@@ -1,4 +1,6 @@
+import uuid
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
@@ -15,7 +17,7 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
-def _finalize_shift_checklists_sync(session: Session, shift_id) -> bool:
+def _finalize_shift_checklists_sync(session: Session, shift_id: uuid.UUID) -> bool:
     """Sync version of checklist_instance.finalize_shift_checklists.
 
     Returns True if the shift now has incomplete required checklists.
@@ -77,7 +79,7 @@ def auto_finish_stale_shifts() -> None:
         )
 
         for shift in org_result.scalars().all():
-            org_s = all_org_settings.get(shift.organization_id)
+            org_s = all_org_settings.get(cast(uuid.UUID, shift.organization_id))
             if org_s is None:
                 hours = global_hours
             elif org_s.auto_finish_hours is None:
@@ -135,7 +137,7 @@ def auto_finish_stale_pauses() -> None:
 
         count = 0
         for shift in paused_shifts:
-            org_s = org_settings_map.get(shift.organization_id)
+            org_s = org_settings_map.get(cast(uuid.UUID, shift.organization_id))
             if org_s is None or org_s.max_pause_minutes is None:
                 continue
 

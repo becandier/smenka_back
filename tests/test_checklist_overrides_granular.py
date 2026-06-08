@@ -177,7 +177,7 @@ class TestListOverrides:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
-        other_user = await _create_user(db_session, "other@example.com")
+        await _create_user(db_session, "other@example.com")
         other_headers = await _login_as(client, "other@example.com")
         await client.post(
             f"/api/v1/organizations/join/{ctx['invite_code']}",

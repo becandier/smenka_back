@@ -7,6 +7,7 @@ Provides structured logging with two modes:
 
 import logging
 import sys
+from typing import cast
 
 import structlog
 
@@ -72,4 +73,4 @@ def setup_logging(json_logs: bool = False, log_level: str = "INFO") -> None:
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger bound with the given module name."""
-    return structlog.get_logger(name)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))

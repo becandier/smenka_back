@@ -309,7 +309,7 @@ async def update_member_role(
             "INVALID_ROLE",
             f"Роль должна быть: {', '.join(r.value for r in MemberRole)}",
             400,
-        )
+        ) from None
 
     result = await session.execute(
         select(OrganizationMember)

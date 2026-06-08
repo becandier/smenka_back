@@ -1,6 +1,7 @@
 import enum
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -17,18 +18,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.app.core.database import Base
 
+if TYPE_CHECKING:
+    from src.app.models.shift import Shift
 
-class ChecklistType(str, enum.Enum):
+
+class ChecklistType(enum.StrEnum):
     shift_start = "shift_start"
     shift_end = "shift_end"
 
 
-class OverrideType(str, enum.Enum):
+class OverrideType(enum.StrEnum):
     add = "add"
     remove = "remove"
 
 
-class ChecklistInstanceStatus(str, enum.Enum):
+class ChecklistInstanceStatus(enum.StrEnum):
     pending = "pending"
     completed = "completed"
     incomplete = "incomplete"

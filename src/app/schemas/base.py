@@ -12,7 +12,9 @@ class ApiError(BaseModel):
 
 
 class ApiResponse(BaseModel):
-    data: Any | None = Field(default=None, description="Полезная нагрузка ответа (null при ошибке)")
+    data: Any | None = Field(
+        default=None, description="Полезная нагрузка ответа (null при ошибке)"
+    )
     error: ApiError | None = Field(default=None, description="Описание ошибки (null при успехе)")
 
     @classmethod

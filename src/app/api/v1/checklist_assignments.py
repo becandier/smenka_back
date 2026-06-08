@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.organization import OrganizationMember
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import (
     AssignmentResponse,
@@ -20,7 +21,7 @@ router = APIRouter(
 )
 
 
-def _member_info(member) -> MemberInfo:
+def _member_info(member: OrganizationMember) -> MemberInfo:
     return MemberInfo(
         user_id=str(member.user_id),
         user_name=member.user.name,
@@ -31,7 +32,8 @@ def _member_info(member) -> MemberInfo:
 @router.put(
     "/checklist-templates/{template_id}/roles",
     summary="Назначить шаблон ролям",
-    description="PUT-семантика: передайте полный список ролей. Отсутствующие — удаляются, новые — добавляются.",
+    description="PUT-семантика: передайте полный список ролей. "
+    "Отсутствующие — удаляются, новые — добавляются.",
 )
 async def assign_template_to_roles(
     org_id: uuid.UUID,
@@ -75,7 +77,8 @@ async def get_template_assignments(
 @router.put(
     "/members/{user_id}/checklist-overrides",
     summary="Установить личные переопределения",
-    description="PUT-семантика: передайте полный список overrides. Отсутствующие в запросе — удаляются.",
+    description="PUT-семантика: передайте полный список overrides. "
+    "Отсутствующие в запросе — удаляются.",
 )
 async def set_member_overrides(
     org_id: uuid.UUID,
@@ -102,7 +105,9 @@ async def set_member_overrides(
 @router.get(
     "/members/{user_id}/checklists",
     summary="Эффективные чек-листы сотрудника",
-    description="Вычисляет итоговый набор чек-листов по формуле: (шаблоны роли − remove) + add. Доступно владельцу, админам и самому сотруднику.",
+    description="Вычисляет итоговый набор чек-листов по формуле: "
+    "(шаблоны роли − remove) + add. "
+    "Доступно владельцу, админам и самому сотруднику.",
 )
 async def get_member_effective_checklists(
     org_id: uuid.UUID,

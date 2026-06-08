@@ -4,9 +4,12 @@ from pydantic import BaseModel, Field
 class OrganizationSettingsResponse(BaseModel):
     organization_id: str = Field(description="UUID организации")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
-    auto_finish_hours: int | None = Field(description="Часы до автозавершения смены (null — отключено, по умолчанию 16)")
+    auto_finish_hours: int | None = Field(
+        description="Часы до автозавершения смены (null — отключено, по умолчанию 16)"
+    )
     max_pause_minutes: int | None = Field(
-        default=None, description="Максимальная длительность паузы в минутах (null — без ограничений)"
+        default=None,
+        description="Максимальная длительность паузы в минутах (null — без ограничений)",
     )
     max_pauses_per_shift: int | None = Field(
         default=None,

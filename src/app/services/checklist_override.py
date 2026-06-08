@@ -10,7 +10,6 @@ from src.app.models.checklist import (
     ChecklistTemplate,
     OverrideType,
 )
-from src.app.models.organization import OrganizationMember
 from src.app.services.checklist_assignment import _get_member
 from src.app.services.checklist_template import (
     ChecklistError,

@@ -1,19 +1,26 @@
 # src/app/api/v1/shifts.py
 import uuid
 from datetime import datetime as dt_datetime
+from typing import Any
 
 from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.shift import Shift
 from src.app.schemas.base import ApiResponse
-from src.app.schemas.shift import ShiftListResponse, ShiftResponse, ShiftStartRequest, ShiftStatsResponse
+from src.app.schemas.shift import (
+    ShiftListResponse,
+    ShiftResponse,
+    ShiftStartRequest,
+    ShiftStatsResponse,
+)
 from src.app.services import shift as shift_service
 from src.app.services.shift import calculate_worked_seconds
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 
 
-def _shift_to_response(shift) -> dict:
+def _shift_to_response(shift: Shift) -> dict[str, Any]:
     return ShiftResponse(
         id=str(shift.id),
         user_id=str(shift.user_id),
@@ -37,13 +44,22 @@ def _shift_to_response(shift) -> dict:
     ).model_dump(mode="json")
 
 
-@router.get("", summary="История смен", description="Список персональных смен текущего пользователя с пагинацией. Поддерживает фильтрацию по статусу и дате.")
+@router.get(
+    "",
+    summary="История смен",
+    description="Список персональных смен текущего пользователя с пагинацией. "
+    "Поддерживает фильтрацию по статусу и дате.",
+)
 async def list_shifts(
     user: CurrentUserDep,
     session: SessionDep,
     status: str | None = Query(None, description="Filter by status: active, paused, finished"),
-    date_from: dt_datetime | None = Query(None, description="Filter shifts started after this datetime"),
-    date_to: dt_datetime | None = Query(None, description="Filter shifts started before this datetime"),
+    date_from: dt_datetime | None = Query(
+        None, description="Filter shifts started after this datetime"
+    ),
+    date_to: dt_datetime | None = Query(
+        None, description="Filter shifts started before this datetime"
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
@@ -61,7 +77,7 @@ async def list_shifts(
                 "INVALID_STATUS",
                 f"Статус должен быть: {', '.join(s.value for s in ShiftStatus)}",
                 400,
-            )
+            ) from None
 
     shifts, total = await shift_service.get_shifts(
         session,
@@ -85,7 +101,12 @@ async def list_shifts(
     )
 
 
-@router.get("/stats", summary="Статистика смен", description="Агрегированная статистика персональных смен за период (день/неделя/месяц): суммарное время, количество, среднее.")
+@router.get(
+    "/stats",
+    summary="Статистика смен",
+    description="Агрегированная статистика персональных смен за период "
+    "(день/неделя/месяц): суммарное время, количество, среднее.",
+)
 async def shift_stats(
     user: CurrentUserDep,
     session: SessionDep,
@@ -98,7 +119,15 @@ async def shift_stats(
     )
 
 
-@router.post("/start", status_code=201, summary="Начать смену", description="Начинает новую смену. Без `organization_id` — персональная смена. С `organization_id` — организационная смена (требуется членство, при включённой геопроверке нужны координаты). Допускается одна активная персональная смена + по одной на каждую организацию одновременно.")
+@router.post(
+    "/start",
+    status_code=201,
+    summary="Начать смену",
+    description="Начинает новую смену. Без `organization_id` — персональная смена. "
+    "С `organization_id` — организационная смена (требуется членство, при включённой "
+    "геопроверке нужны координаты). Допускается одна активная персональная смена + "
+    "по одной на каждую организацию одновременно.",
+)
 async def start_shift(
     user: CurrentUserDep,
     session: SessionDep,
@@ -122,7 +151,12 @@ async def start_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/pause", summary="Поставить на паузу", description="Ставит активную смену на паузу. Для организационных смен может быть ограничено настройкой `max_pauses_per_shift`.")
+@router.post(
+    "/{shift_id}/pause",
+    summary="Поставить на паузу",
+    description="Ставит активную смену на паузу. Для организационных смен может быть "
+    "ограничено настройкой `max_pauses_per_shift`.",
+)
 async def pause_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
@@ -133,7 +167,11 @@ async def pause_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/resume", summary="Возобновить смену", description="Снимает смену с паузы и возвращает в статус active.")
+@router.post(
+    "/{shift_id}/resume",
+    summary="Возобновить смену",
+    description="Снимает смену с паузы и возвращает в статус active.",
+)
 async def resume_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
@@ -144,7 +182,12 @@ async def resume_shift(
     return ApiResponse.success(_shift_to_response(shift))
 
 
-@router.post("/{shift_id}/finish", summary="Завершить смену", description="Завершает активную или стоящую на паузе смену. Все открытые паузы автоматически закрываются.")
+@router.post(
+    "/{shift_id}/finish",
+    summary="Завершить смену",
+    description="Завершает активную или стоящую на паузе смену. Все открытые паузы "
+    "автоматически закрываются.",
+)
 async def finish_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,

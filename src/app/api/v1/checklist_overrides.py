@@ -21,7 +21,8 @@ router = APIRouter(
 @router.get(
     "/members/{user_id}/checklist-overrides",
     summary="Все личные overrides сотрудника",
-    description="Возвращает все личные переопределения сотрудника включая overrides архивных шаблонов. Доступно владельцу, админам и самому сотруднику.",
+    description="Возвращает все личные переопределения сотрудника включая overrides "
+    "архивных шаблонов. Доступно владельцу, админам и самому сотруднику.",
 )
 async def list_member_overrides(
     org_id: uuid.UUID,
@@ -50,7 +51,8 @@ async def list_member_overrides(
 @router.put(
     "/checklist-templates/{template_id}/personal/{user_id}",
     summary="Установить личный override для (шаблон, сотрудник)",
-    description="Upsert-семантика: создаёт или обновляет override для пары (template, user). На архивных шаблонах запрещено.",
+    description="Upsert-семантика: создаёт или обновляет override для пары (template, user). "
+    "На архивных шаблонах запрещено.",
 )
 async def upsert_personal_override(
     org_id: uuid.UUID,
@@ -76,7 +78,8 @@ async def upsert_personal_override(
 @router.delete(
     "/checklist-templates/{template_id}/personal/{user_id}",
     summary="Снять личный override",
-    description="Идемпотентно удаляет override для пары (template, user). Возвращает 200 даже если override отсутствует.",
+    description="Идемпотентно удаляет override для пары (template, user). Возвращает 200 "
+    "даже если override отсутствует.",
 )
 async def delete_personal_override(
     org_id: uuid.UUID,
