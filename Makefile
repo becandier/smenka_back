@@ -2,7 +2,7 @@
        shell dbshell redis-cli migrate rollback migration migration-check db-current \
        test test-cov lint lint-fix typecheck check clean
 
-COMPOSE = docker-compose
+COMPOSE = docker compose
 API     = $(COMPOSE) exec api
 DB_USER = smenka
 DB_NAME = smenka

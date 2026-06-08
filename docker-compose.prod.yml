@@ -1,0 +1,118 @@
+# Прод-стек целиком. Образы тянутся из ghcr (не собираются здесь).
+# Запуск на сервере: docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# Отличия от dev docker-compose.yml:
+#   - образы из ghcr вместо локальной сборки;
+#   - наружу торчит только Caddy (80/443); БД/Redis/API/Admin — внутренняя сеть;
+#   - миграции вынесены в one-shot сервис `migrate` (гонок при старте нет);
+#   - Caddy выдаёт TLS (Let's Encrypt) автоматически.
+name: smenka
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - admin
+
+  # one-shot: гоняет миграции до старта api/worker, затем выходит
+  migrate:
+    image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
+    restart: "no"
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+    command: alembic -c src/alembic.ini upgrade head
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+    command: uvicorn src.app.main:app --host 0.0.0.0 --port 8000
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PYTHONPATH: /app
+    # один воркер с встроенным Beat (-B). При горизонтальном масштабировании
+    # Beat выносится в отдельный сервис, чтобы расписание не дублировалось.
+    command: celery -A src.app.core.celery_app:celery_app worker -B -l info --scheduler celery.beat:PersistentScheduler
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  admin:
+    image: ghcr.io/becandier/smenka_admin:${ADMIN_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "80"
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

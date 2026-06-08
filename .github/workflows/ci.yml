@@ -1,0 +1,67 @@
+name: CI
+
+# Обратная связь на PR и ветках. НЕ блокирует деплой:
+# образ собирается в release.yml независимо (см. там).
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: smenka
+          POSTGRES_PASSWORD: smenka
+          POSTGRES_DB: smenka_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U smenka"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      APP_ENV: test
+      DEBUG: "true"
+      SECRET_KEY: test-secret-key
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: smenka
+      POSTGRES_PASSWORD: smenka
+      POSTGRES_DB: smenka_test
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (with dev extra)
+        run: uv sync --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check src/ tests/
+
+      - name: Mypy
+        run: uv run mypy src/
+
+      - name: Pytest
+        run: uv run pytest -q
