@@ -6,6 +6,18 @@
 
 ---
 
+## Фича — Видимость владельца смены (`shift_owner_visibility`) `[x]`
+ТЗ: `../docs/tasks/shift_owner_visibility/backend.md`
+- [x] `ShiftResponse` +4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`, схема БД не меняется)
+- [x] `build_org_shift_identities` — обогащение орг-смен без N+1 (два batch-запроса, `custom_role` через `selectinload`)
+- [x] `_shift_to_response(shift, identity=None)` — персональный контекст → поля `null`
+- [x] `GET /organizations/{id}/shifts` — наполняет identity сотрудника в каждом item
+- [x] `GET /organizations/{id}/shifts/{shift_id}` — деталь чужой смены для owner/admin (строгая проверка `organization_id`, иначе 404)
+- [x] Edge: исключённый из org сотрудник — имя/почта остаются, роль/кастомная роль = `null`
+- [x] 16 тестов (обогащение, кастомная роль, super_admin, фильтры/пагинация, 403/404-семантика, персональный контекст null)
+
+---
+
 ## Фаза 0 — Скелет проекта `[x]`
 - [x] Структура директорий
 - [x] pyproject.toml, Dockerfile, docker-compose.yml

@@ -32,6 +32,26 @@ class ShiftResponse(BaseModel):
         description="После завершения смены: был ли хотя бы один обязательный "
         "чек-лист не заполнен",
     )
+    user_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника (User.name). Заполнено в орг-контексте, "
+        "в персональном — null",
+    )
+    user_email: str | None = Field(
+        default=None,
+        description="Email сотрудника (User.email). Заполнено в орг-контексте, "
+        "в персональном — null",
+    )
+    role: str | None = Field(
+        default=None,
+        description="Системная роль в org: admin | employee. null, если участник "
+        "исключён из org или персональный контекст",
+    )
+    custom_role_name: str | None = Field(
+        default=None,
+        description="Плоское имя кастомной роли (OrganizationRole.name). null, если "
+        "кастомная роль не назначена / участник исключён / персональный контекст",
+    )
 
     model_config = {"from_attributes": True}
 

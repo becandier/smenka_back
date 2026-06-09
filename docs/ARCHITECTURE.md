@@ -63,7 +63,8 @@
 | DELETE | `/api/v1/organizations/{id}/locations/{loc_id}` | Удалить точку | Bearer |
 | GET | `/api/v1/organizations/{id}/settings` | Настройки организации | Bearer (owner) |
 | PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
-| GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников (обогащены identity сотрудника) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/shifts/{shift_id}` | Деталь смены сотрудника (кликабельная карточка) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/stats` | Статистика организации | Bearer (owner/admin) |
 | POST | `/api/v1/organizations/{id}/roles` | Создать кастомную роль | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/roles` | Список ролей | Bearer (member) |
@@ -96,6 +97,8 @@
 | GET | `/api/v1/admin/stats` | Сводная статистика платформы (дашборд) | Bearer (super_admin) |
 
 > **Сквозной доступ super_admin.** Все org-эндпоинты (`members`, `settings`, `locations`, `roles`, `checklist-*`, `shifts`, `stats`) пускают `super_admin`, даже если он не состоит в организации. Проверки прав вынесены в `services/common.py` (`ensure_owner` / `ensure_member` / `ensure_admin_or_owner`), и в каждой добавлена ветка super_admin. `GET /shifts` и `GET /organizations/{id}/shifts` дополнительно принимают `sort` (`started_at`/`finished_at`) и `order` (`asc`/`desc`).
+
+> **Видимость владельца смены (orgrouted enrichment).** `ShiftResponse` несёт 4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`). Они вычисляются на чтении (`services/shift.build_org_shift_identities`: имя/почта из `users`, роль/кастомная роль из `organization_members` — два batch-запроса без N+1, `custom_role` через `selectinload`) и наполняются ТОЛЬКО в орг-контексте: `GET /organizations/{id}/shifts` (список) и `GET /organizations/{id}/shifts/{shift_id}` (деталь). В персональном `GET /shifts` остаются `null` (сериализатор `_shift_to_response` без `identity`). Исключённый из org сотрудник: имя/почта сохраняются, `role`/`custom_role_name` = `null`. Деталь чужой org-смены строго проверяет `shift.organization_id == org_id` → иначе `404 SHIFT_NOT_FOUND` (персональные/чужие смены не раскрываются). Схема БД не меняется — денормализация в `shifts` отвергнута.
 
 > **CORS.** Подключён `CORSMiddleware` (`main.py`), источники — из `Settings.cors_origins` (env `CORS_ORIGINS`, CSV; пусто = выключено). Нужен для браузерной админки `smenka_admin`.
 

@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -540,3 +541,99 @@ async def get_org_shifts(
     shifts = list(result.scalars().all())
 
     return shifts, total
+
+
+async def get_org_shift_detail(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    shift_id: uuid.UUID,
+) -> Shift:
+    """Load a single org shift (with pauses) for owner/admin review.
+
+    Возвращает только смену, принадлежащую данной организации. Любая другая
+    смена (персональная `organization_id=null` или смена другой org) трактуется
+    как отсутствующая — `SHIFT_NOT_FOUND`, чтобы не раскрывать существование
+    чужих/персональных смен.
+    """
+    result = await session.execute(
+        select(Shift)
+        .options(selectinload(Shift.pauses))
+        .where(
+            Shift.id == shift_id,
+            Shift.organization_id == organization_id,
+        )
+    )
+    shift = result.scalar_one_or_none()
+    if shift is None:
+        raise ShiftError("SHIFT_NOT_FOUND", "Смена не найдена", 404)
+    return shift
+
+
+@dataclass(frozen=True)
+class ShiftIdentity:
+    """Идентификация сотрудника для орг-обогащения ShiftResponse.
+
+    Вычисляется на чтении: имя/почта из `users`, роль/кастомная роль из
+    `organization_members`. В `shifts` ничего не денормализуется.
+    """
+
+    user_name: str | None
+    user_email: str | None
+    role: str | None
+    custom_role_name: str | None
+
+
+async def build_org_shift_identities(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    shifts: list[Shift],
+) -> dict[uuid.UUID, ShiftIdentity]:
+    """Map user_id → ShiftIdentity для страницы орг-смен, без N+1.
+
+    Два batch-запроса вне зависимости от размера страницы:
+    - `users` (имя/почта) по множеству user_id страницы;
+    - `organization_members` (системная роль + eager `custom_role`) по тому же
+      множеству в пределах организации.
+
+    Если сотрудник исключён из org (записи `OrganizationMember` нет) — имя/почта
+    всё равно отдаются из `users`, а `role`/`custom_role_name` будут `null`.
+    """
+    from src.app.models.organization import OrganizationMember
+    from src.app.models.user import User
+
+    user_ids = {s.user_id for s in shifts}
+    if not user_ids:
+        return {}
+
+    users_result = await session.execute(
+        select(User.id, User.name, User.email).where(User.id.in_(user_ids))
+    )
+    users_map = {uid: (name, email) for uid, name, email in users_result.all()}
+
+    members_result = await session.execute(
+        select(OrganizationMember)
+        .options(selectinload(OrganizationMember.custom_role))
+        .where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id.in_(user_ids),
+        )
+    )
+    members_map = {m.user_id: m for m in members_result.scalars().all()}
+
+    identities: dict[uuid.UUID, ShiftIdentity] = {}
+    for uid in user_ids:
+        name, email = users_map.get(uid, (None, None))
+        member = members_map.get(uid)
+        role = member.role.value if member is not None else None
+        custom_role_name = (
+            member.custom_role.name
+            if member is not None and member.custom_role is not None
+            else None
+        )
+        identities[uid] = ShiftIdentity(
+            user_name=name,
+            user_email=email,
+            role=role,
+            custom_role_name=custom_role_name,
+        )
+    return identities
