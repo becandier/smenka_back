@@ -422,13 +422,42 @@ async def list_org_shifts(
         sort=sort,
         order=order,
     )
+    identities = await shift_service.build_org_shift_identities(session, org_id, shifts)
     return ApiResponse.success(
         ShiftListResponse(
-            items=[_shift_to_response(s) for s in shifts],
+            items=[_shift_to_response(s, identities.get(s.user_id)) for s in shifts],
             total=total,
             limit=limit,
             offset=offset,
         ).model_dump(mode="json")
+    )
+
+
+@router.get(
+    "/{org_id}/shifts/{shift_id}",
+    summary="Деталь смены сотрудника",
+    description=(
+        "Деталь конкретной смены сотрудника организации для обзора владельцем "
+        "(Owner) или админом. Делает карточку списка кликабельной. Содержит имя/"
+        "почту/роль сотрудника и полный список пауз. Чек-листы смены — отдельным "
+        "запросом `GET /shifts/{shift_id}/checklists`."
+    ),
+)
+async def get_org_shift(
+    org_id: uuid.UUID,
+    shift_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    from src.app.services.work_location import _check_admin_or_owner
+
+    org = await org_service.get_organization(session, org_id)
+    await _check_admin_or_owner(session, org, user.id)
+
+    shift = await shift_service.get_org_shift_detail(session, org_id, shift_id)
+    identities = await shift_service.build_org_shift_identities(session, org_id, [shift])
+    return ApiResponse.success(
+        _shift_to_response(shift, identities.get(shift.user_id))
     )
 
 
