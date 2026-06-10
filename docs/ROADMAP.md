@@ -6,6 +6,18 @@
 
 ---
 
+## Фича — Фильтры по диапазону дат (`date_filters`) `[x]`
+ТЗ: `../docs/tasks/date_filters/backend.md`
+- [x] `validate_date_range` — 400 `INVALID_DATE_RANGE` на всех 4 эндпоинтах (оба конца заданы и `date_from > date_to`); открытый диапазон допустим
+- [x] `resolve_stats_window` — ровно один источник окна stats: `period` ЛИБО `date_from`/`date_to` (`MISSING_STATS_RANGE` / `AMBIGUOUS_STATS_RANGE`, порядок валидации по ТЗ)
+- [x] `GET /shifts/stats` и `GET /organizations/{id}/stats`: `period` стал опциональным; кастомное окно `[date_from, date_to]` включительно по `started_at`; `period = null` в ответе при кастоме
+- [x] Новые поля ответа stats `range_from`/`range_to` (пресет → вычисленное начало + «сейчас»; кастом → переданные границы)
+- [x] `ensure_utc` — naive datetime трактуется как UTC, aware приводится к UTC (единая семантика списков и stats, фильтры и эхо-поля)
+- [x] Пресеты `day/week/month` не изменены; обратная совместимость со старыми билдами (period-ветка идентична)
+- [x] Без миграций (схема БД не менялась); 34 теста (`tests/test_date_filters.py`)
+
+---
+
 ## Фича — Видимость владельца смены (`shift_owner_visibility`) `[x]`
 ТЗ: `../docs/tasks/shift_owner_visibility/backend.md`
 - [x] `ShiftResponse` +4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`, схема БД не меняется)

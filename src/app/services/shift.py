@@ -309,6 +309,115 @@ async def resume_shift(
 VALID_PERIODS = {"day", "week", "month"}
 
 
+def ensure_utc(value: datetime) -> datetime:
+    """Нормализовать границу окна к UTC (контракт: все даты в UTC).
+
+    Naive datetime трактуется как UTC; aware — приводится к UTC, чтобы SQL-фильтры
+    и эхо-поля ответа (`range_from`/`range_to`) были в едином поясе.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def validate_date_range(
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> None:
+    """400 INVALID_DATE_RANGE, если обе границы заданы и date_from > date_to.
+
+    Открытый диапазон (только одна граница) допустим.
+    """
+    if date_from is None or date_to is None:
+        return
+    if ensure_utc(date_from) > ensure_utc(date_to):
+        raise ShiftError(
+            "INVALID_DATE_RANGE",
+            "date_from не может быть позже date_to",
+            400,
+        )
+
+
+def _preset_window_start(period: str, now: datetime) -> datetime:
+    if period == "day":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "week":
+        return (now - timedelta(days=now.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+    # month
+    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass(frozen=True)
+class StatsWindow:
+    """Окно статистики: пресет либо кастомный диапазон.
+
+    `range_from`/`range_to` — фактические границы окна для ответа.
+    Фильтр по `started_at` строится из `filter_from`/`filter_to`: для пресета
+    верхняя граница не применяется (поведение пресетов не меняется), для
+    кастомного диапазона обе границы включительны.
+    """
+
+    period: str | None
+    range_from: datetime | None
+    range_to: datetime | None
+    filter_from: datetime | None
+    filter_to: datetime | None
+
+
+def resolve_stats_window(
+    period: str | None,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> StatsWindow:
+    """Выбрать ровно один источник окна stats: пресет ЛИБО кастомный диапазон.
+
+    Порядок валидации: MISSING_STATS_RANGE → AMBIGUOUS_STATS_RANGE →
+    INVALID_PERIOD → INVALID_DATE_RANGE.
+    """
+    has_range = date_from is not None or date_to is not None
+    if period is None and not has_range:
+        raise ShiftError(
+            "MISSING_STATS_RANGE",
+            "Укажите period либо date_from/date_to",
+            400,
+        )
+    if period is not None and has_range:
+        raise ShiftError(
+            "AMBIGUOUS_STATS_RANGE",
+            "period и date_from/date_to взаимоисключающи",
+            400,
+        )
+    if period is not None:
+        if period not in VALID_PERIODS:
+            raise ShiftError(
+                "INVALID_PERIOD",
+                f"Период должен быть: {', '.join(VALID_PERIODS)}",
+                400,
+            )
+        now = datetime.now(UTC)
+        start = _preset_window_start(period, now)
+        return StatsWindow(
+            period=period,
+            range_from=start,
+            range_to=now,
+            filter_from=start,
+            filter_to=None,
+        )
+
+    validate_date_range(date_from, date_to)
+    norm_from = ensure_utc(date_from) if date_from is not None else None
+    norm_to = ensure_utc(date_to) if date_to is not None else None
+    return StatsWindow(
+        period=None,
+        range_from=norm_from,
+        range_to=norm_to,
+        filter_from=norm_from,
+        filter_to=norm_to,
+    )
+
+
 _SHIFT_SORT_COLUMNS = {
     "started_at": Shift.started_at,
     "finished_at": Shift.finished_at,
@@ -339,9 +448,9 @@ async def get_shifts(
     if status is not None:
         conditions.append(Shift.status == status)
     if date_from is not None:
-        conditions.append(Shift.started_at >= date_from)
+        conditions.append(Shift.started_at >= ensure_utc(date_from))
     if date_to is not None:
-        conditions.append(Shift.started_at <= date_to)
+        conditions.append(Shift.started_at <= ensure_utc(date_to))
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
     total = (await session.execute(count_query)).scalar_one()
@@ -363,29 +472,24 @@ async def get_shifts(
 async def get_shift_stats(
     session: AsyncSession,
     user_id: uuid.UUID,
-    period: str,
+    period: str | None = None,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> dict[str, Any]:
-    """Calculate shift statistics for the given period."""
-    if period not in VALID_PERIODS:
-        raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
+    """Статистика смен за пресет (day/week/month) либо кастомный диапазон."""
+    window = resolve_stats_window(period, date_from, date_to)
 
-    now = datetime.now(UTC)
-    if period == "day":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "week":
-        start = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-    else:  # month
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    conditions = [Shift.user_id == user_id]
+    if window.filter_from is not None:
+        conditions.append(Shift.started_at >= window.filter_from)
+    if window.filter_to is not None:
+        conditions.append(Shift.started_at <= window.filter_to)
 
     result = await session.execute(
         select(Shift)
         .options(selectinload(Shift.pauses))
-        .where(
-            Shift.user_id == user_id,
-            Shift.started_at >= start,
-        )
+        .where(*conditions)
     )
     shifts = list(result.scalars().all())
 
@@ -394,10 +498,12 @@ async def get_shift_stats(
     avg = total_seconds // count if count > 0 else 0
 
     return {
-        "period": period,
+        "period": window.period,
         "total_worked_seconds": total_seconds,
         "shift_count": count,
         "average_shift_seconds": avg,
+        "range_from": window.range_from,
+        "range_to": window.range_to,
     }
 
 
@@ -433,29 +539,24 @@ async def finish_shift(
 async def get_org_stats(
     session: AsyncSession,
     organization_id: uuid.UUID,
-    period: str,
+    period: str | None = None,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> dict[str, Any]:
-    """Calculate org-wide shift statistics."""
-    if period not in VALID_PERIODS:
-        raise ShiftError("INVALID_PERIOD", f"Период должен быть: {', '.join(VALID_PERIODS)}", 400)
+    """Орг-статистика за пресет (day/week/month) либо кастомный диапазон."""
+    window = resolve_stats_window(period, date_from, date_to)
 
-    now = datetime.now(UTC)
-    if period == "day":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    elif period == "week":
-        start = (now - timedelta(days=now.weekday())).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-    else:
-        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    conditions = [Shift.organization_id == organization_id]
+    if window.filter_from is not None:
+        conditions.append(Shift.started_at >= window.filter_from)
+    if window.filter_to is not None:
+        conditions.append(Shift.started_at <= window.filter_to)
 
     result = await session.execute(
         select(Shift)
         .options(selectinload(Shift.pauses))
-        .where(
-            Shift.organization_id == organization_id,
-            Shift.started_at >= start,
-        )
+        .where(*conditions)
     )
     shifts = list(result.scalars().all())
 
@@ -493,11 +594,13 @@ async def get_org_stats(
             })
 
     return {
-        "period": period,
+        "period": window.period,
         "total_worked_seconds": total_seconds,
         "shift_count": count,
         "average_shift_seconds": avg,
         "per_employee": per_employee,
+        "range_from": window.range_from,
+        "range_to": window.range_to,
     }
 
 
@@ -522,9 +625,9 @@ async def get_org_shifts(
     if status is not None:
         conditions.append(Shift.status == status)
     if date_from is not None:
-        conditions.append(Shift.started_at >= date_from)
+        conditions.append(Shift.started_at >= ensure_utc(date_from))
     if date_to is not None:
-        conditions.append(Shift.started_at <= date_to)
+        conditions.append(Shift.started_at <= ensure_utc(date_to))
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
     total = (await session.execute(count_query)).scalar_one()

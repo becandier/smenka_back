@@ -92,6 +92,8 @@ async def list_shifts(
                 400,
             ) from None
 
+    shift_service.validate_date_range(date_from, date_to)
+
     shifts, total = await shift_service.get_shifts(
         session,
         user.id,
@@ -117,18 +119,30 @@ async def list_shifts(
 @router.get(
     "/stats",
     summary="Статистика смен",
-    description="Агрегированная статистика персональных смен за период "
-    "(день/неделя/месяц): суммарное время, количество, среднее.",
+    description="Агрегированная статистика персональных смен: суммарное время, "
+    "количество, среднее. Окно — пресет `period` (день/неделя/месяц) ЛИБО "
+    "произвольный диапазон `date_from`/`date_to` (UTC, включительно по началу "
+    "смены). Источники окна взаимоисключающи.",
 )
 async def shift_stats(
     user: CurrentUserDep,
     session: SessionDep,
-    period: str = Query(..., description="Period: day, week, month"),
+    period: str | None = Query(
+        None, description="Пресет окна: day, week, month. Взаимоисключающ с date_from/date_to"
+    ),
+    date_from: dt_datetime | None = Query(
+        None, description="Нижняя граница окна по started_at, включительно (UTC)"
+    ),
+    date_to: dt_datetime | None = Query(
+        None, description="Верхняя граница окна по started_at, включительно (UTC)"
+    ),
 ) -> ApiResponse:
-    stats = await shift_service.get_shift_stats(session, user.id, period)
+    stats = await shift_service.get_shift_stats(
+        session, user.id, period, date_from=date_from, date_to=date_to,
+    )
     await session.commit()
     return ApiResponse.success(
-        ShiftStatsResponse(**stats).model_dump()
+        ShiftStatsResponse(**stats).model_dump(mode="json")
     )
 
 

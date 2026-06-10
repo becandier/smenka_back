@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-04-18 (фаза 7 — чек-листы и кастомные роли)
+Последнее обновление: 2026-06-10 (date_filters — кастомный диапазон дат в stats)
 
 ---
 
@@ -41,7 +41,7 @@
 | GET | `/api/v1/users/me` | Текущий пользователь | Bearer |
 | PATCH | `/api/v1/users/me` | Обновление профиля (name, phone) | Bearer |
 | GET | `/api/v1/shifts` | История смен (пагинация, фильтры) | Bearer |
-| GET | `/api/v1/shifts/stats` | Статистика (день/неделя/месяц) | Bearer |
+| GET | `/api/v1/shifts/stats` | Статистика: пресет `period` ЛИБО диапазон `date_from`/`date_to` | Bearer |
 | POST | `/api/v1/shifts/start` | Начать с��ену | Bearer |
 | POST | `/api/v1/shifts/{id}/pause` | Поставить на паузу | Bearer |
 | POST | `/api/v1/shifts/{id}/resume` | Возобновить | Bearer |
@@ -65,7 +65,7 @@
 | PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
 | GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников (обогащены identity сотрудника) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/shifts/{shift_id}` | Деталь смены сотрудника (кликабельная карточка) | Bearer (owner/admin) |
-| GET | `/api/v1/organizations/{id}/stats` | Статистика организации | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/stats` | Статистика организации: пресет `period` ЛИБО диапазон `date_from`/`date_to` | Bearer (owner/admin) |
 | POST | `/api/v1/organizations/{id}/roles` | Создать кастомную роль | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/roles` | Список ролей | Bearer (member) |
 | PATCH | `/api/v1/organizations/{id}/roles/{role_id}` | Переименовать | Bearer (owner/admin) |
@@ -101,6 +101,8 @@
 > **Видимость владельца смены (orgrouted enrichment).** `ShiftResponse` несёт 4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`). Они вычисляются на чтении (`services/shift.build_org_shift_identities`: имя/почта из `users`, роль/кастомная роль из `organization_members` — два batch-запроса без N+1, `custom_role` через `selectinload`) и наполняются ТОЛЬКО в орг-контексте: `GET /organizations/{id}/shifts` (список) и `GET /organizations/{id}/shifts/{shift_id}` (деталь). В персональном `GET /shifts` остаются `null` (сериализатор `_shift_to_response` без `identity`). Исключённый из org сотрудник: имя/почта сохраняются, `role`/`custom_role_name` = `null`. Деталь чужой org-смены строго проверяет `shift.organization_id == org_id` → иначе `404 SHIFT_NOT_FOUND` (персональные/чужие смены не раскрываются). Схема БД не меняется — денормализация в `shifts` отвергнута.
 
 > **CORS.** Подключён `CORSMiddleware` (`main.py`), источники — из `Settings.cors_origins` (env `CORS_ORIGINS`, CSV; пусто = выключено). Нужен для браузерной админки `smenka_admin`.
+
+> **Фильтры диапазона дат (date_filters).** Оба stats-эндпоинта принимают ровно один источник окна: пресет `period` (`day`/`week`/`month`, поведение не менялось) ЛИБО кастомный диапазон `date_from`/`date_to` (включительно по `Shift.started_at`, допускается открытый диапазон). Ошибки: `MISSING_STATS_RANGE` → `AMBIGUOUS_STATS_RANGE` → `INVALID_PERIOD` → `INVALID_DATE_RANGE` (этот порядок). В ответах stats добавлены `range_from`/`range_to` (фактически применённое окно), `period` стал nullable. Списочные эндпоинты смен получили валидацию `INVALID_DATE_RANGE`. Все границы нормализуются `services/shift.ensure_utc` (naive → UTC, aware → приведение к UTC) и в фильтрах, и в эхо-полях.
 
 ---
 
