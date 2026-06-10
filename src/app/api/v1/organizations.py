@@ -411,6 +411,8 @@ async def list_org_shifts(
                 400,
             ) from None
 
+    shift_service.validate_date_range(date_from, date_to)
+
     shifts, total = await shift_service.get_org_shifts(
         session, org_id,
         user_id=user_id,
@@ -465,22 +467,35 @@ async def get_org_shift(
     "/{org_id}/stats",
     summary="Статистика организации",
     description=(
-        "Агрегированная статистика по организации за период с разбивкой по "
-        "каждому сотруднику. Доступно владельцу (Owner) и админам."
+        "Агрегированная статистика по организации с разбивкой по каждому "
+        "сотруднику. Окно — пресет `period` (день/неделя/месяц) ЛИБО "
+        "произвольный диапазон `date_from`/`date_to` (UTC, включительно по "
+        "началу смены); источники окна взаимоисключающи. Доступно владельцу "
+        "(Owner) и админам."
     ),
 )
 async def org_stats(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    period: str = Query(..., description="Период агрегации: day, week, month"),
+    period: str | None = Query(
+        None, description="Пресет окна: day, week, month. Взаимоисключающ с date_from/date_to"
+    ),
+    date_from: dt_datetime | None = Query(
+        None, description="Нижняя граница окна по started_at, включительно (UTC)"
+    ),
+    date_to: dt_datetime | None = Query(
+        None, description="Верхняя граница окна по started_at, включительно (UTC)"
+    ),
 ) -> ApiResponse:
     from src.app.services.work_location import _check_admin_or_owner
 
     org = await org_service.get_organization(session, org_id)
     await _check_admin_or_owner(session, org, user.id)
 
-    stats = await shift_service.get_org_stats(session, org_id, period)
+    stats = await shift_service.get_org_stats(
+        session, org_id, period, date_from=date_from, date_to=date_to,
+    )
     return ApiResponse.success(
-        OrgStatsResponse(**stats).model_dump()
+        OrgStatsResponse(**stats).model_dump(mode="json")
     )

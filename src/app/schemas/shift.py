@@ -64,10 +64,23 @@ class ShiftListResponse(BaseModel):
 
 
 class ShiftStatsResponse(BaseModel):
-    period: str = Field(description="Период: day, week, month")
+    period: str | None = Field(
+        default=None,
+        description="Период: day, week, month. null при кастомном диапазоне date_from/date_to",
+    )
     total_worked_seconds: int = Field(description="Суммарное отработанное время за период")
     shift_count: int = Field(description="Количество смен за период")
     average_shift_seconds: int = Field(description="Среднее время одной смены")
+    range_from: datetime | None = Field(
+        default=None,
+        description="Фактически применённая нижняя граница окна (UTC). "
+        "Пресет → вычисленное начало, кастом → переданный date_from",
+    )
+    range_to: datetime | None = Field(
+        default=None,
+        description="Фактически применённая верхняя граница окна (UTC). "
+        "Пресет → момент сервера «сейчас», кастом → переданный date_to",
+    )
 
 
 class ShiftStartRequest(BaseModel):
