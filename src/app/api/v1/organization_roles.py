@@ -80,7 +80,11 @@ async def update_role(
     session: SessionDep,
 ) -> ApiResponse:
     role = await role_service.update_role(
-        session, org_id, role_id, body.name, user.id,
+        session,
+        org_id,
+        role_id,
+        body.name,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(_role_to_response(role))
@@ -123,8 +127,13 @@ async def assign_member_role(
 ) -> ApiResponse:
     role_uuid = uuid.UUID(body.role_id) if body.role_id else None
     member = await role_service.assign_role_to_member(
-        session, org_id, user_id, role_uuid, user.id,
+        session,
+        org_id,
+        user_id,
+        role_uuid,
+        user.id,
     )
     await session.commit()
     from src.app.api.v1.organizations import _member_to_response
+
     return ApiResponse.success(_member_to_response(member))

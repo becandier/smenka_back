@@ -31,9 +31,7 @@ class TestPauseShift:
         start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
         shift_id = start_resp.json()["data"]["id"]
 
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["status"] == "paused"
@@ -45,9 +43,7 @@ class TestPauseShift:
         shift_id = start_resp.json()["data"]["id"]
 
         await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "SHIFT_NOT_ACTIVE"
 
@@ -56,9 +52,7 @@ class TestPauseShift:
         shift_id = start_resp.json()["data"]["id"]
 
         await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "SHIFT_NOT_ACTIVE"
 
@@ -76,9 +70,7 @@ class TestResumeShift:
         shift_id = start_resp.json()["data"]["id"]
 
         await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["status"] == "active"
@@ -89,9 +81,7 @@ class TestResumeShift:
         start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
         shift_id = start_resp.json()["data"]["id"]
 
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers)
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "SHIFT_NOT_PAUSED"
 
@@ -108,9 +98,7 @@ class TestFinishShift:
         start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
         shift_id = start_resp.json()["data"]["id"]
 
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["status"] == "finished"
@@ -121,9 +109,7 @@ class TestFinishShift:
         shift_id = start_resp.json()["data"]["id"]
 
         await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
         assert response.status_code == 200
         data = response.json()["data"]
         assert data["status"] == "finished"
@@ -134,9 +120,7 @@ class TestFinishShift:
         shift_id = start_resp.json()["data"]["id"]
 
         await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
-        response = await client.post(
-            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-        )
+        response = await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "SHIFT_ALREADY_FINISHED"
 
@@ -147,9 +131,7 @@ class TestFinishShift:
         )
         assert response.status_code == 404
 
-    async def test_can_start_new_shift_after_finish(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_can_start_new_shift_after_finish(self, client: AsyncClient, auth_headers):
         start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
         shift_id = start_resp.json()["data"]["id"]
 
@@ -207,9 +189,7 @@ class TestListShifts:
         assert data["items"][0]["status"] == "active"
         assert data["items"][1]["status"] == "finished"
 
-    async def test_list_shifts_filter_by_status(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_list_shifts_filter_by_status(self, client: AsyncClient, auth_headers):
         start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
         shift_id = start_resp.json()["data"]["id"]
         await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
@@ -224,13 +204,9 @@ class TestListShifts:
 
     async def test_list_shifts_pagination(self, client: AsyncClient, auth_headers):
         for _ in range(3):
-            start_resp = await client.post(
-                "/api/v1/shifts/start", headers=auth_headers
-            )
+            start_resp = await client.post("/api/v1/shifts/start", headers=auth_headers)
             shift_id = start_resp.json()["data"]["id"]
-            await client.post(
-                f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-            )
+            await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
 
         response = await client.get(
             "/api/v1/shifts",
@@ -319,9 +295,7 @@ class TestShiftStats:
         assert data["total_worked_seconds"] >= 0
         assert data["average_shift_seconds"] >= 0
 
-    async def test_stats_includes_active_shift(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_stats_includes_active_shift(self, client: AsyncClient, auth_headers):
         await client.post("/api/v1/shifts/start", headers=auth_headers)
 
         response = await client.get(
@@ -341,9 +315,7 @@ class TestShiftStats:
         assert response.status_code == 400
 
     async def test_stats_unauthorized(self, client: AsyncClient):
-        response = await client.get(
-            "/api/v1/shifts/stats", params={"period": "day"}
-        )
+        response = await client.get("/api/v1/shifts/stats", params={"period": "day"})
         assert response.status_code in (401, 403)
 
 
@@ -354,26 +326,18 @@ class TestShiftLifecycle:
         assert resp.status_code == 201
         shift_id = resp.json()["data"]["id"]
 
-        resp = await client.post(
-            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-        )
+        resp = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
         assert resp.json()["data"]["status"] == "paused"
 
-        resp = await client.post(
-            f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
-        )
+        resp = await client.post(f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers)
         assert resp.json()["data"]["status"] == "active"
         assert resp.json()["data"]["pauses"][0]["finished_at"] is not None
 
-        resp = await client.post(
-            f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-        )
+        resp = await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
         assert resp.json()["data"]["status"] == "paused"
         assert len(resp.json()["data"]["pauses"]) == 2
 
-        resp = await client.post(
-            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-        )
+        resp = await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
         data = resp.json()["data"]
         assert data["status"] == "finished"
         assert data["finished_at"] is not None
@@ -386,14 +350,8 @@ class TestShiftLifecycle:
         shift_id = resp.json()["data"]["id"]
 
         for _ in range(3):
-            await client.post(
-                f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers
-            )
-            await client.post(
-                f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers
-            )
+            await client.post(f"/api/v1/shifts/{shift_id}/pause", headers=auth_headers)
+            await client.post(f"/api/v1/shifts/{shift_id}/resume", headers=auth_headers)
 
-        resp = await client.post(
-            f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers
-        )
+        resp = await client.post(f"/api/v1/shifts/{shift_id}/finish", headers=auth_headers)
         assert len(resp.json()["data"]["pauses"]) == 3

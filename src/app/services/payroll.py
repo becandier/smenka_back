@@ -75,9 +75,7 @@ async def _ensure_no_rate_at(
     ]
     if exclude_id is not None:
         conditions.append(OrganizationMemberRate.id != exclude_id)
-    result = await session.execute(
-        select(OrganizationMemberRate.id).where(*conditions)
-    )
+    result = await session.execute(select(OrganizationMemberRate.id).where(*conditions))
     if result.scalar_one_or_none() is not None:
         raise PayrollError(
             "RATE_EFFECTIVE_FROM_TAKEN",
@@ -196,7 +194,10 @@ async def update_rate(
         fields["effective_from"] = new_effective_from
         if new_effective_from != rate.effective_from:
             await _ensure_no_rate_at(
-                session, member.id, new_effective_from, exclude_id=rate.id,
+                session,
+                member.id,
+                new_effective_from,
+                exclude_id=rate.id,
             )
 
     for key, value in fields.items():
@@ -384,7 +385,10 @@ async def get_org_payroll(
     norm_to = ensure_utc(date_to) if date_to is not None else None
 
     shifts = await _get_finished_shifts(
-        session, org_id, date_from=norm_from, date_to=norm_to,
+        session,
+        org_id,
+        date_from=norm_from,
+        date_to=norm_to,
     )
 
     shifts_by_user: dict[uuid.UUID, list[Shift]] = defaultdict(list)
@@ -399,7 +403,7 @@ async def get_org_payroll(
         users_result = await session.execute(
             select(User.id, User.name).where(User.id.in_(user_ids))
         )
-        users_map = {uid: name for uid, name in users_result.all()}
+        users_map = dict(users_result.tuples().all())
 
         members_result = await session.execute(
             select(OrganizationMember).where(
@@ -416,11 +420,13 @@ async def get_org_payroll(
         member_id = member_id_by_user.get(uid)
         rates_asc = rates_by_member.get(member_id, []) if member_id else []
         earnings = _calc_earnings(user_shifts, rates_asc)
-        items.append({
-            "user_id": str(uid),
-            "user_name": users_map.get(uid, "Unknown"),
-            **earnings,
-        })
+        items.append(
+            {
+                "user_id": str(uid),
+                "user_name": users_map.get(uid, "Unknown"),
+                **earnings,
+            }
+        )
     items.sort(key=lambda item: (item["user_name"], item["user_id"]))
 
     totals = {
@@ -460,7 +466,9 @@ async def get_my_earnings(
     member = member_result.scalar_one_or_none()
     if member is None:
         raise PayrollError(
-            "FORBIDDEN", "Вы не являетесь участником организации", 403,
+            "FORBIDDEN",
+            "Вы не являетесь участником организации",
+            403,
         )
 
     validate_date_range(date_from, date_to)
@@ -468,7 +476,11 @@ async def get_my_earnings(
     norm_to = ensure_utc(date_to) if date_to is not None else None
 
     shifts = await _get_finished_shifts(
-        session, org_id, user_id=user_id, date_from=norm_from, date_to=norm_to,
+        session,
+        org_id,
+        user_id=user_id,
+        date_from=norm_from,
+        date_to=norm_to,
     )
     rates_by_member = await _load_rates_asc(session, [member.id])
     rates_asc = rates_by_member.get(member.id, [])

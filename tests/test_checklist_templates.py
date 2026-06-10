@@ -38,7 +38,9 @@ async def _make_org(
     owner_headers: dict[str, str],
 ) -> str:
     resp = await client.post(
-        "/api/v1/organizations", headers=owner_headers, json={"name": "Cafe"},
+        "/api/v1/organizations",
+        headers=owner_headers,
+        json={"name": "Cafe"},
     )
     return resp.json()["data"]["id"]
 
@@ -60,9 +62,7 @@ async def _make_template(
 
 
 class TestCreateTemplate:
-    async def test_owner_creates(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_owner_creates(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         response = await client.post(
             f"/api/v1/organizations/{org_id}/checklist-templates",
@@ -77,9 +77,7 @@ class TestCreateTemplate:
         assert data["items_count"] == 0
         assert data["is_archived"] is False
 
-    async def test_invalid_type(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_invalid_type(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         response = await client.post(
             f"/api/v1/organizations/{org_id}/checklist-templates",
@@ -94,13 +92,15 @@ class TestCreateTemplate:
     ):
         org_id = await _make_org(client, super_admin_headers)
         invite_resp = await client.get(
-            f"/api/v1/organizations/{org_id}", headers=super_admin_headers,
+            f"/api/v1/organizations/{org_id}",
+            headers=super_admin_headers,
         )
         invite_code = invite_resp.json()["data"]["invite_code"]
         await _create_user(db_session, "emp@example.com")
         emp_headers = await _login_as(client, "emp@example.com")
         await client.post(
-            f"/api/v1/organizations/join/{invite_code}", headers=emp_headers,
+            f"/api/v1/organizations/join/{invite_code}",
+            headers=emp_headers,
         )
         response = await client.post(
             f"/api/v1/organizations/{org_id}/checklist-templates",
@@ -120,9 +120,7 @@ class TestListTemplates:
         assert response.status_code == 200
         assert response.json()["data"]["items"] == []
 
-    async def test_archived_hidden_by_default(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_archived_hidden_by_default(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         await client.delete(
@@ -135,9 +133,7 @@ class TestListTemplates:
         )
         assert response.json()["data"]["items"] == []
 
-    async def test_include_archived(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_include_archived(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         await client.delete(
@@ -152,9 +148,7 @@ class TestListTemplates:
         assert len(items) == 1
         assert items[0]["is_archived"] is True
 
-    async def test_items_count(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_items_count(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         for i in range(3):
@@ -171,9 +165,7 @@ class TestListTemplates:
 
 
 class TestUpdateTemplate:
-    async def test_partial_update(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_partial_update(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         response = await client.patch(
@@ -187,9 +179,7 @@ class TestUpdateTemplate:
         assert data["is_required"] is False
         assert data["type"] == "shift_start"
 
-    async def test_update_type(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_update_type(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         response = await client.patch(
@@ -199,9 +189,7 @@ class TestUpdateTemplate:
         )
         assert response.json()["data"]["type"] == "shift_end"
 
-    async def test_not_found(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_not_found(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         response = await client.patch(
             f"/api/v1/organizations/{org_id}/checklist-templates/{uuid.uuid4()}",
@@ -223,9 +211,7 @@ class TestDeleteTemplate:
 
 
 class TestItems:
-    async def test_add_item(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_add_item(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         response = await client.post(
@@ -239,9 +225,7 @@ class TestItems:
         assert data["position"] == 0
         assert data["is_required"] is True
 
-    async def test_position_auto_increment(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_position_auto_increment(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         positions = []
@@ -254,9 +238,7 @@ class TestItems:
             positions.append(resp.json()["data"]["position"])
         assert positions == [0, 1, 2]
 
-    async def test_update_item(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_update_item(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         item_resp = await client.post(
@@ -274,9 +256,7 @@ class TestItems:
         assert response.json()["data"]["text"] == "Новый"
         assert response.json()["data"]["is_required"] is True
 
-    async def test_delete_item(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_delete_item(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         item_resp = await client.post(
@@ -297,9 +277,7 @@ class TestItems:
         )
         assert detail.json()["data"]["items"] == []
 
-    async def test_detail_returns_items_ordered(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_detail_returns_items_ordered(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         for name in ["A", "B", "C"]:
@@ -318,9 +296,7 @@ class TestItems:
 
 
 class TestReorder:
-    async def test_reorder_success(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_reorder_success(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         ids = []
@@ -345,9 +321,7 @@ class TestReorder:
         items = detail.json()["data"]["items"]
         assert [i["text"] for i in items] == ["C", "B", "A"]
 
-    async def test_reorder_mismatch(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_reorder_mismatch(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         ids = []

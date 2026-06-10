@@ -14,9 +14,7 @@ if TYPE_CHECKING:
 
 class OrganizationRole(Base):
     __tablename__ = "organization_roles"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "name", name="uq_org_role_name"),
-    )
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_org_role_name"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

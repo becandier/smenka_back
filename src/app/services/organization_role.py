@@ -27,7 +27,10 @@ async def _check_admin_or_owner(
 ) -> None:
     """Владелец, admin или super_admin. Делегирует в services.common."""
     await ensure_admin_or_owner(
-        session, org, user_id, message="Нет прав для управления ролями",
+        session,
+        org,
+        user_id,
+        message="Нет прав для управления ролями",
     )
 
 

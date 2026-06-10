@@ -15,11 +15,16 @@ logger = get_logger(__name__)
 
 
 async def _check_admin_or_owner(
-    session: AsyncSession, org: Organization, user_id: uuid.UUID,
+    session: AsyncSession,
+    org: Organization,
+    user_id: uuid.UUID,
 ) -> None:
     """Владелец, admin или super_admin. Делегирует в services.common."""
     await ensure_admin_or_owner(
-        session, org, user_id, message="Нет прав для управления настройками",
+        session,
+        org,
+        user_id,
+        message="Нет прав для управления настройками",
     )
 
 
@@ -44,7 +49,9 @@ async def get_settings(
 
 async def _count_locations(session: AsyncSession, org_id: uuid.UUID) -> int:
     result = await session.execute(
-        select(func.count()).select_from(WorkLocation).where(
+        select(func.count())
+        .select_from(WorkLocation)
+        .where(
             WorkLocation.organization_id == org_id,
         )
     )

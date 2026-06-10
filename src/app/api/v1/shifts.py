@@ -138,12 +138,14 @@ async def shift_stats(
     ),
 ) -> ApiResponse:
     stats = await shift_service.get_shift_stats(
-        session, user.id, period, date_from=date_from, date_to=date_to,
+        session,
+        user.id,
+        period,
+        date_from=date_from,
+        date_to=date_to,
     )
     await session.commit()
-    return ApiResponse.success(
-        ShiftStatsResponse(**stats).model_dump(mode="json")
-    )
+    return ApiResponse.success(ShiftStatsResponse(**stats).model_dump(mode="json"))
 
 
 @router.post(
@@ -169,7 +171,8 @@ async def start_shift(
         lng = body.longitude
 
     shift = await shift_service.start_shift(
-        session, user.id,
+        session,
+        user.id,
         organization_id=org_id,
         latitude=lat,
         longitude=lng,

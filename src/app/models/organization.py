@@ -70,9 +70,7 @@ class Organization(Base):
 
 class OrganizationMember(Base):
     __tablename__ = "organization_members"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "user_id", name="uq_org_member"),
-    )
+    __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_org_member"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

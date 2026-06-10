@@ -87,7 +87,9 @@ class TestRoleAssignment:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         role1 = ctx["role_id"]
         role2_resp = await client.post(
@@ -127,7 +129,9 @@ class TestRoleAssignment:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         other_org_resp = await client.post(
             "/api/v1/organizations",
@@ -158,7 +162,9 @@ class TestAssignmentView:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl_id = await _make_template(client, super_admin_headers, ctx["org_id"])
 
@@ -189,13 +195,21 @@ class TestMemberOverrides:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl_a = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="A",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
         )
         tpl_b = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="B",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="B",
         )
 
         resp = await client.put(
@@ -227,7 +241,9 @@ class TestMemberOverrides:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"])
         resp = await client.put(
@@ -247,7 +263,9 @@ class TestMemberOverrides:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"])
         resp = await client.put(
@@ -266,7 +284,9 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         resp = await client.get(
             f"/api/v1/organizations/{ctx['org_id']}/members/{ctx['member_user'].id}/checklists",
@@ -279,10 +299,15 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="T1",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="T1",
         )
         await client.put(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl}/roles",
@@ -308,7 +333,9 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"])
         await client.put(
@@ -328,13 +355,21 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl_a = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="A",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
         )
         tpl_b = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="B",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="B",
         )
         await client.put(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl_a}/roles",
@@ -367,7 +402,9 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"])
         await client.put(
@@ -394,7 +431,9 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"])
         await client.put(
@@ -418,7 +457,9 @@ class TestEffectiveTemplates:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         await _create_user(db_session, "other@example.com")
         other_headers = await _login_as(client, "other@example.com")

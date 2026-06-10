@@ -48,7 +48,10 @@ async def organization(db_session: AsyncSession, verified_user: User) -> Organiz
 
 class TestGetSettings:
     async def test_owner_can_get_settings(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.get(
             f"/api/v1/organizations/{organization.id}/settings",
@@ -110,7 +113,10 @@ class TestGetSettings:
 
 class TestUpdateSettings:
     async def test_owner_can_update(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.patch(
             f"/api/v1/organizations/{organization.id}/settings",
@@ -152,7 +158,10 @@ class TestUpdateSettings:
         assert data["max_pause_minutes"] == 15
 
     async def test_set_auto_finish_hours_to_null(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.patch(
             f"/api/v1/organizations/{organization.id}/settings",
@@ -164,7 +173,10 @@ class TestUpdateSettings:
         assert data["auto_finish_hours"] is None
 
     async def test_set_auto_finish_hours_back_from_null(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         # disable
         await client.patch(
@@ -207,7 +219,10 @@ class TestUpdateSettings:
 
 class TestGeoCheckEnabled:
     async def test_org_response_contains_geo_check_enabled(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.get(
             f"/api/v1/organizations/{organization.id}",
@@ -219,7 +234,10 @@ class TestGeoCheckEnabled:
         assert data["geo_check_enabled"] is False
 
     async def test_org_list_contains_geo_check_enabled(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.get(
             "/api/v1/organizations",
@@ -231,7 +249,10 @@ class TestGeoCheckEnabled:
         assert "geo_check_enabled" in items[0]
 
     async def test_cannot_enable_geo_check_without_locations(
-        self, client: AsyncClient, auth_headers: dict, organization: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
     ):
         resp = await client.patch(
             f"/api/v1/organizations/{organization.id}/settings",

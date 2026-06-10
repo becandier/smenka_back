@@ -1,5 +1,6 @@
 # tests/test_payroll.py
 """Фича payroll: история ставок участников и расчёт зарплаты."""
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -114,7 +115,9 @@ async def org(db_session: AsyncSession, owner: User) -> Organization:
 
 @pytest.fixture
 async def employee_member(
-    db_session: AsyncSession, org: Organization, verified_user: User,
+    db_session: AsyncSession,
+    org: Organization,
+    verified_user: User,
 ) -> OrganizationMember:
     """verified_user (conftest) как employee организации."""
     member = OrganizationMember(
@@ -129,7 +132,9 @@ async def employee_member(
 
 @pytest.fixture
 async def admin_member(
-    db_session: AsyncSession, org: Organization, admin_user: User,
+    db_session: AsyncSession,
+    org: Organization,
+    admin_user: User,
 ) -> OrganizationMember:
     member = OrganizationMember(
         organization_id=org.id,
@@ -327,19 +332,26 @@ class TestRateHistory:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 15000,
+            db_session,
+            employee_member.id,
+            15000,
             effective_from=datetime(2026, 1, 1, tzinfo=UTC),
         )
         await _make_rate(
-            db_session, employee_member.id, 18000,
+            db_session,
+            employee_member.id,
+            18000,
             effective_from=datetime(2026, 3, 1, tzinfo=UTC),
         )
         await _make_rate(
-            db_session, employee_member.id, 16000,
+            db_session,
+            employee_member.id,
+            16000,
             effective_from=datetime(2026, 2, 1, tzinfo=UTC),
         )
         resp = await client.get(
-            _rates_url(org.id, employee_member.id), headers=owner_headers,
+            _rates_url(org.id, employee_member.id),
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]
@@ -353,7 +365,8 @@ class TestRateHistory:
         employee_member: OrganizationMember,
     ) -> None:
         resp = await client.get(
-            _rates_url(org.id, employee_member.id), headers=auth_headers,
+            _rates_url(org.id, employee_member.id),
+            headers=auth_headers,
         )
         assert resp.status_code == 403
 
@@ -388,11 +401,15 @@ class TestUpdateRate:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 15000,
+            db_session,
+            employee_member.id,
+            15000,
             effective_from=datetime(2026, 1, 1, tzinfo=UTC),
         )
         rate2 = await _make_rate(
-            db_session, employee_member.id, 18000,
+            db_session,
+            employee_member.id,
+            18000,
             effective_from=datetime(2026, 3, 1, tzinfo=UTC),
         )
         resp = await client.patch(
@@ -484,26 +501,31 @@ class TestCurrentRateInMembers:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 15000,
+            db_session,
+            employee_member.id,
+            15000,
             effective_from=datetime(2026, 1, 1, tzinfo=UTC),
         )
         await _make_rate(
-            db_session, employee_member.id, 18000,
+            db_session,
+            employee_member.id,
+            18000,
             effective_from=datetime(2026, 3, 1, tzinfo=UTC),
         )
         # будущая ставка не действует
         await _make_rate(
-            db_session, employee_member.id, 99000,
+            db_session,
+            employee_member.id,
+            99000,
             effective_from=datetime(2030, 1, 1, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/members", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/members",
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]
-        member_payload = next(
-            i for i in items if i["id"] == str(employee_member.id)
-        )
+        member_payload = next(i for i in items if i["id"] == str(employee_member.id))
         assert member_payload["current_rate"] is not None
         assert member_payload["current_rate"]["rate_amount_minor"] == 18000
         assert member_payload["current_rate"]["rate_type"] == "hourly"
@@ -518,11 +540,14 @@ class TestCurrentRateInMembers:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 18000,
+            db_session,
+            employee_member.id,
+            18000,
             effective_from=datetime(2030, 1, 1, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/members", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/members",
+            headers=owner_headers,
         )
         items = resp.json()["data"]["items"]
         assert all(i["current_rate"] is None for i in items)
@@ -535,7 +560,8 @@ class TestCurrentRateInMembers:
         employee_member: OrganizationMember,
     ) -> None:
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/members", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/members",
+            headers=owner_headers,
         )
         items = resp.json()["data"]["items"]
         assert all(i["current_rate"] is None for i in items)
@@ -553,7 +579,8 @@ class TestCurrentRateInMembers:
         await _make_rate(db_session, employee_member.id, 18000)
         await _make_rate(db_session, admin_member.id, 25000)
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/members", headers=auth_headers,
+            f"/api/v1/organizations/{org.id}/members",
+            headers=auth_headers,
         )
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]
@@ -571,12 +598,11 @@ class TestCurrentRateInMembers:
     ) -> None:
         await _make_rate(db_session, employee_member.id, 18000)
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/members", headers=admin_headers,
+            f"/api/v1/organizations/{org.id}/members",
+            headers=admin_headers,
         )
         items = resp.json()["data"]["items"]
-        member_payload = next(
-            i for i in items if i["id"] == str(employee_member.id)
-        )
+        member_payload = next(i for i in items if i["id"] == str(employee_member.id))
         assert member_payload["current_rate"]["rate_amount_minor"] == 18000
 
 
@@ -593,12 +619,16 @@ class TestPayrollReport:
         """180 ₽/час (18000 коп.), 2ч + 1ч → 54000 коп."""
         await _make_rate(db_session, employee_member.id, 18000)
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 3, 11, 0, tzinfo=UTC),
         )
@@ -640,26 +670,35 @@ class TestPayrollReport:
     ) -> None:
         """Каждая смена считается по ставке, действовавшей на её started_at."""
         await _make_rate(
-            db_session, employee_member.id, 10000,
+            db_session,
+            employee_member.id,
+            10000,
             effective_from=datetime(2026, 1, 1, tzinfo=UTC),
         )
         await _make_rate(
-            db_session, employee_member.id, 20000,
+            db_session,
+            employee_member.id,
+            20000,
             effective_from=datetime(2026, 6, 2, tzinfo=UTC),
         )
         # 2ч по старой ставке + 1ч по новой
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 3, 11, 0, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         item = resp.json()["data"]["items"][0]
@@ -675,20 +714,28 @@ class TestPayrollReport:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 50000, rate_type=RateType.per_shift,
+            db_session,
+            employee_member.id,
+            50000,
+            rate_type=RateType.per_shift,
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
         assert item["gross_amount_minor"] == 100000
@@ -704,27 +751,36 @@ class TestPayrollReport:
     ) -> None:
         """rate_type меняется по истории: каждая смена — по типу своей ставки."""
         await _make_rate(
-            db_session, employee_member.id, 10000,
+            db_session,
+            employee_member.id,
+            10000,
             rate_type=RateType.hourly,
             effective_from=datetime(2026, 1, 1, tzinfo=UTC),
         )
         await _make_rate(
-            db_session, employee_member.id, 30000,
+            db_session,
+            employee_member.id,
+            30000,
             rate_type=RateType.per_shift,
             effective_from=datetime(2026, 6, 2, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 11, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 3, 12, 0, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
         assert item["gross_amount_minor"] == 10000 + 30000
@@ -739,22 +795,29 @@ class TestPayrollReport:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_rate(
-            db_session, employee_member.id, 18000,
+            db_session,
+            employee_member.id,
+            18000,
             effective_from=datetime(2026, 6, 2, tzinfo=UTC),
         )
         # до первой ставки — неоплачиваемая
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 3, 11, 0, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
         assert item["worked_seconds"] == 10800
@@ -778,12 +841,15 @@ class TestPayrollReport:
         await _make_rate(db_session, employee_member.id, 10001)
         for day in (1, 3):
             await _make_finished_shift(
-                db_session, verified_user.id, org.id,
+                db_session,
+                verified_user.id,
+                org.id,
                 datetime(2026, 6, day, 10, 0, tzinfo=UTC),
                 datetime(2026, 6, day, 10, 30, tzinfo=UTC),
             )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
         assert item["gross_amount_minor"] == 10001
@@ -800,7 +866,9 @@ class TestPayrollReport:
         """worked_seconds — за вычетом пауз (calculate_worked_seconds)."""
         await _make_rate(db_session, employee_member.id, 36000)
         shift = await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
@@ -813,7 +881,8 @@ class TestPayrollReport:
         await db_session.commit()
 
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
         assert item["worked_seconds"] == 5400
@@ -830,13 +899,16 @@ class TestPayrollReport:
     ) -> None:
         await _make_rate(db_session, employee_member.id, 18000)
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
             status=ShiftStatus.active,
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         assert resp.json()["data"]["items"] == []
 
@@ -852,13 +924,17 @@ class TestPayrollReport:
         await _make_rate(db_session, employee_member.id, 18000)
         boundary = datetime(2026, 6, 5, 10, 0, tzinfo=UTC)
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             boundary,
             datetime(2026, 6, 5, 11, 0, tzinfo=UTC),
         )
         # вне окна
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 5, 1, 11, 0, tzinfo=UTC),
         )
@@ -885,7 +961,9 @@ class TestPayrollReport:
         """Исключение участника каскадом удаляет ставки → его смены unpaid."""
         await _make_rate(db_session, employee_member.id, 18000)
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
@@ -893,7 +971,8 @@ class TestPayrollReport:
         await db_session.commit()
 
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
         )
         items = resp.json()["data"]["items"]
         assert len(items) == 1
@@ -909,16 +988,20 @@ class TestPayrollReport:
         employee_member: OrganizationMember,
     ) -> None:
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/payroll", headers=auth_headers,
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=auth_headers,
         )
         assert resp.status_code == 403
         assert resp.json()["error"]["code"] == "FORBIDDEN"
 
     async def test_org_not_found(
-        self, client: AsyncClient, owner_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
-            f"/api/v1/organizations/{uuid.uuid4()}/payroll", headers=owner_headers,
+            f"/api/v1/organizations/{uuid.uuid4()}/payroll",
+            headers=owner_headers,
         )
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "ORG_NOT_FOUND"
@@ -956,13 +1039,17 @@ class TestMyEarnings:
         await _make_rate(db_session, employee_member.id, 18000)
         await _make_rate(db_session, admin_member.id, 99000)
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         # чужая смена не учитывается
         await _make_finished_shift(
-            db_session, admin_user.id, org.id,
+            db_session,
+            admin_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
         )
@@ -994,12 +1081,15 @@ class TestMyEarnings:
         employee_member: OrganizationMember,
     ) -> None:
         await _make_finished_shift(
-            db_session, verified_user.id, org.id,
+            db_session,
+            verified_user.id,
+            org.id,
             datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
             datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/my-earnings", headers=auth_headers,
+            f"/api/v1/organizations/{org.id}/my-earnings",
+            headers=auth_headers,
         )
         assert resp.status_code == 200
         data = resp.json()["data"]
@@ -1016,7 +1106,8 @@ class TestMyEarnings:
     ) -> None:
         """Owner — не member (ADR-001): в my-earnings не участвует."""
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/my-earnings", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/my-earnings",
+            headers=owner_headers,
         )
         assert resp.status_code == 403
         assert resp.json()["error"]["code"] == "FORBIDDEN"
@@ -1029,15 +1120,19 @@ class TestMyEarnings:
     ) -> None:
         """Пользователь без членства (admin_member не создан) → 403."""
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/my-earnings", headers=admin_headers,
+            f"/api/v1/organizations/{org.id}/my-earnings",
+            headers=admin_headers,
         )
         assert resp.status_code == 403
 
     async def test_org_not_found(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
-            f"/api/v1/organizations/{uuid.uuid4()}/my-earnings", headers=auth_headers,
+            f"/api/v1/organizations/{uuid.uuid4()}/my-earnings",
+            headers=auth_headers,
         )
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "ORG_NOT_FOUND"

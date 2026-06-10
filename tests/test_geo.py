@@ -1,4 +1,3 @@
-
 from src.app.utils.geo import haversine_distance, is_within_radius
 
 

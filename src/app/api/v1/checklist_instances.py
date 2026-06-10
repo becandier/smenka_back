@@ -56,10 +56,7 @@ def _instance_detail_to_response(instance: ChecklistInstance) -> dict[str, Any]:
         status=instance.status.value,
         completed_at=instance.completed_at,
         created_at=instance.created_at,
-        items=[
-            _item_to_response(it)
-            for it in sorted(instance.items, key=lambda x: x.position)
-        ],
+        items=[_item_to_response(it) for it in sorted(instance.items, key=lambda x: x.position)],
     ).model_dump(mode="json")
 
 
@@ -94,7 +91,10 @@ async def get_instance(
     session: SessionDep,
 ) -> ApiResponse:
     instance = await instance_service.get_instance_detail(
-        session, shift_id, instance_id, user.id,
+        session,
+        shift_id,
+        instance_id,
+        user.id,
     )
     return ApiResponse.success(_instance_detail_to_response(instance))
 
@@ -114,7 +114,11 @@ async def update_item(
     session: SessionDep,
 ) -> ApiResponse:
     item = await instance_service.update_instance_item(
-        session, shift_id, instance_id, item_id, user.id,
+        session,
+        shift_id,
+        instance_id,
+        item_id,
+        user.id,
         is_completed=body.is_completed,
         comment=body.comment,
     )

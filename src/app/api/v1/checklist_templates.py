@@ -56,9 +56,7 @@ def _template_detail_to_response(template: ChecklistTemplate) -> dict[str, Any]:
         is_archived=template.is_archived,
         created_at=template.created_at,
         updated_at=template.updated_at,
-        items=[
-            _item_to_response(it) for it in sorted(template.items, key=lambda x: x.position)
-        ],
+        items=[_item_to_response(it) for it in sorted(template.items, key=lambda x: x.position)],
     ).model_dump(mode="json")
 
 
@@ -75,7 +73,12 @@ async def create_template(
     session: SessionDep,
 ) -> ApiResponse:
     template = await tpl_service.create_template(
-        session, org_id, body.name, body.type, body.is_required, user.id,
+        session,
+        org_id,
+        body.name,
+        body.type,
+        body.is_required,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(_template_to_response(template, 0))
@@ -85,8 +88,7 @@ async def create_template(
     "",
     summary="Список шаблонов",
     description=(
-        "Список шаблонов организации. По умолчанию архивные скрыты. "
-        "Доступно владельцу и админам."
+        "Список шаблонов организации. По умолчанию архивные скрыты. Доступно владельцу и админам."
     ),
 )
 async def list_templates(
@@ -96,7 +98,10 @@ async def list_templates(
     include_archived: bool = Query(False, description="Включить архивные шаблоны"),
 ) -> ApiResponse:
     templates = await tpl_service.get_templates(
-        session, org_id, user.id, include_archived=include_archived,
+        session,
+        org_id,
+        user.id,
+        include_archived=include_archived,
     )
     return ApiResponse.success(
         TemplateListResponse(
@@ -117,7 +122,10 @@ async def get_template_detail(
     session: SessionDep,
 ) -> ApiResponse:
     template = await tpl_service.get_template_detail(
-        session, org_id, template_id, user.id,
+        session,
+        org_id,
+        template_id,
+        user.id,
     )
     return ApiResponse.success(_template_detail_to_response(template))
 
@@ -126,8 +134,7 @@ async def get_template_detail(
     "/{template_id}",
     summary="Обновить шаблон",
     description=(
-        "Обновляет поля шаблона (передавайте только изменяемые). "
-        "Доступно владельцу и админам."
+        "Обновляет поля шаблона (передавайте только изменяемые). Доступно владельцу и админам."
     ),
 )
 async def update_template(
@@ -184,7 +191,12 @@ async def add_item(
     session: SessionDep,
 ) -> ApiResponse:
     item = await tpl_service.add_item(
-        session, org_id, template_id, body.text, body.is_required, user.id,
+        session,
+        org_id,
+        template_id,
+        body.text,
+        body.is_required,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(_item_to_response(item))
@@ -248,9 +260,11 @@ async def reorder_items(
 ) -> ApiResponse:
     ids = [uuid.UUID(s) for s in body.item_ids]
     items = await tpl_service.reorder_items(
-        session, org_id, template_id, ids, user.id,
+        session,
+        org_id,
+        template_id,
+        ids,
+        user.id,
     )
     await session.commit()
-    return ApiResponse.success(
-        {"items": [_item_to_response(it) for it in items]}
-    )
+    return ApiResponse.success({"items": [_item_to_response(it) for it in items]})

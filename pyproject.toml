@@ -37,7 +37,50 @@ line-length = 99
 extend-exclude = ["src/migrations"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP", "B", "A", "SIM"]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade (современный синтаксис 3.12)
+    "B",      # flake8-bugbear (вероятные баги)
+    "A",      # flake8-builtins (затенение встроенных имён)
+    "SIM",    # flake8-simplify
+    "ASYNC",  # flake8-async (блокирующие вызовы в async-коде)
+    "C4",     # flake8-comprehensions
+    "DTZ",    # flake8-datetimez (naive datetime запрещён — все timestamps UTC)
+    "T20",    # flake8-print (print в проде запрещён — есть structlog)
+    "PT",     # flake8-pytest-style
+    "RET",    # flake8-return
+    "RSE",    # flake8-raise (лишние скобки у raise)
+    "ISC",    # implicit string concatenation
+    "PIE",    # flake8-pie (misc-улучшения)
+    "PERF",   # perflint (антипаттерны производительности)
+    "RUF",    # специфичные правила ruff
+    "S",      # flake8-bandit (security)
+    "PGH",    # pygrep-hooks (blanket noqa / type: ignore без кода)
+]
+ignore = [
+    # Конфликтует с ruff format (форматтер сам управляет конкатенацией строк)
+    "ISC001",
+    # Кириллица в строках/докстрингах/комментариях — язык проекта русский,
+    # «похожие на латиницу» символы здесь не опечатка.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",   # assert — основа pytest
+    "S105",   # «хардкод-пароли» в фикстурах тестов
+    "S106",
+]
+# Синхронный bridge для Celery: asyncio.run / time.sleep здесь осознанны
+"src/app/tasks/**" = ["ASYNC251"]
+# CLI-скрипты: print — штатный вывод
+"scripts/**" = ["T201"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI-инъекции в дефолтах аргументов — идиоматичны, не B008.
@@ -62,8 +105,10 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+warn_unreachable = true
 plugins = ["pydantic.mypy"]
 exclude = ["src/migrations/"]
+
 
 # Сторонние библиотеки без type-stubs.
 [[tool.mypy.overrides]]

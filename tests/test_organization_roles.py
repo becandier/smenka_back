@@ -57,11 +57,11 @@ async def _create_org_with_member(
 
 
 class TestCreateRole:
-    async def test_owner_creates_role(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_owner_creates_role(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
 
@@ -76,11 +76,11 @@ class TestCreateRole:
         assert "id" in data
         assert "created_at" in data
 
-    async def test_duplicate_name_rejected(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_duplicate_name_rejected(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         await client.post(
@@ -100,10 +100,14 @@ class TestCreateRole:
         self, client: AsyncClient, super_admin_headers
     ):
         resp1 = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org1"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org1"},
         )
         resp2 = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org2"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org2"},
         )
         org1, org2 = resp1.json()["data"]["id"], resp2.json()["data"]["id"]
         r1 = await client.post(
@@ -123,7 +127,9 @@ class TestCreateRole:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         await client.patch(
             f"/api/v1/organizations/{org_id}/members/{member.id}/role",
@@ -143,7 +149,9 @@ class TestCreateRole:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, _, member_headers = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         response = await client.post(
             f"/api/v1/organizations/{org_id}/roles",
@@ -157,7 +165,9 @@ class TestCreateRole:
 class TestListRoles:
     async def test_list_empty(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         response = await client.get(
@@ -167,11 +177,11 @@ class TestListRoles:
         assert response.status_code == 200
         assert response.json()["data"]["items"] == []
 
-    async def test_list_ordered_by_creation(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_list_ordered_by_creation(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         for name in ["Бариста", "Кассир", "Стажёр"]:
@@ -191,7 +201,9 @@ class TestListRoles:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, _, member_headers = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         await client.post(
             f"/api/v1/organizations/{org_id}/roles",
@@ -209,7 +221,9 @@ class TestListRoles:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         await _create_user(db_session, "outsider@example.com")
@@ -224,7 +238,9 @@ class TestListRoles:
 class TestUpdateRole:
     async def test_rename_role(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         role_resp = await client.post(
@@ -241,11 +257,11 @@ class TestUpdateRole:
         assert response.status_code == 200
         assert response.json()["data"]["name"] == "Старший бариста"
 
-    async def test_rename_to_existing_rejected(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_rename_to_existing_rejected(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         await client.post(
@@ -267,7 +283,9 @@ class TestUpdateRole:
 
     async def test_update_nonexistent(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         response = await client.patch(
@@ -282,7 +300,9 @@ class TestUpdateRole:
 class TestDeleteRole:
     async def test_delete_role(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Org"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Org"},
         )
         org_id = create_resp.json()["data"]["id"]
         role_resp = await client.post(
@@ -306,7 +326,9 @@ class TestDeleteRole:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         role_resp = await client.post(
             f"/api/v1/organizations/{org_id}/roles",
@@ -339,7 +361,9 @@ class TestAssignRoleToMember:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         role_resp = await client.post(
             f"/api/v1/organizations/{org_id}/roles",
@@ -368,7 +392,9 @@ class TestAssignRoleToMember:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         response = await client.patch(
             f"/api/v1/organizations/{org_id}/members/{member.id}/custom-role",
@@ -382,10 +408,14 @@ class TestAssignRoleToMember:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org1_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         org2_resp = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers, json={"name": "Other"},
+            "/api/v1/organizations",
+            headers=super_admin_headers,
+            json={"name": "Other"},
         )
         org2_id = org2_resp.json()["data"]["id"]
         role_resp = await client.post(
@@ -405,7 +435,9 @@ class TestAssignRoleToMember:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, member_headers = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         role_resp = await client.post(
             f"/api/v1/organizations/{org_id}/roles",
@@ -424,7 +456,9 @@ class TestAssignRoleToMember:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         org_id, member, _ = await _create_org_with_member(
-            client, db_session, super_admin_headers,
+            client,
+            db_session,
+            super_admin_headers,
         )
         role_resp = await client.post(
             f"/api/v1/organizations/{org_id}/roles",

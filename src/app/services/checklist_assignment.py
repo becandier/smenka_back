@@ -82,9 +82,7 @@ async def assign_template_to_roles(
         await session.delete(existing[role_id])
 
     for role_id in target - current:
-        session.add(
-            ChecklistRoleAssignment(template_id=template_id, role_id=role_id)
-        )
+        session.add(ChecklistRoleAssignment(template_id=template_id, role_id=role_id))
 
     await session.flush()
     logger.info(
@@ -197,7 +195,7 @@ async def set_member_overrides(
         )
     )
     existing = {o.template_id: o for o in existing_result.scalars().all()}
-    target = {tpl_id: t for tpl_id, t in parsed}
+    target = dict(parsed)
 
     for tpl_id in set(existing.keys()) - set(target.keys()):
         await session.delete(existing[tpl_id])
@@ -262,9 +260,7 @@ async def _compute_effective(
     )
     overrides = list(overrides_result.scalars().all())
     add_ids = {o.template_id for o in overrides if o.override_type == OverrideType.add}
-    remove_ids = {
-        o.template_id for o in overrides if o.override_type == OverrideType.remove
-    }
+    remove_ids = {o.template_id for o in overrides if o.override_type == OverrideType.remove}
 
     effective_role_ids = role_template_ids - remove_ids
 
@@ -281,12 +277,13 @@ async def _compute_effective(
     )
     templates = {t.id: t for t in templates_result.scalars().all()}
 
-    result: list[tuple[ChecklistTemplate, str]] = []
-    for tpl_id in effective_role_ids:
-        if tpl_id in templates:
-            result.append((templates[tpl_id], "role"))
-    for tpl_id in add_ids:
-        if tpl_id in templates and tpl_id not in effective_role_ids:
-            result.append((templates[tpl_id], "personal_add"))
+    result: list[tuple[ChecklistTemplate, str]] = [
+        (templates[tpl_id], "role") for tpl_id in effective_role_ids if tpl_id in templates
+    ]
+    result.extend(
+        (templates[tpl_id], "personal_add")
+        for tpl_id in add_ids
+        if tpl_id in templates and tpl_id not in effective_role_ids
+    )
     result.sort(key=lambda pair: pair[0].created_at)
     return result

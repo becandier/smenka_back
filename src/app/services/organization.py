@@ -33,6 +33,7 @@ async def create_organization(
     await session.flush()
 
     from src.app.models.organization_settings import OrganizationSettings
+
     settings = OrganizationSettings(organization_id=org.id, auto_finish_hours=16)
     session.add(settings)
     await session.flush()

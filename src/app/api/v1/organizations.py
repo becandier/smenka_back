@@ -125,10 +125,7 @@ async def list_organizations(
     roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[
-                _org_to_response(o, *roles.get(o.id, (None, None)))
-                for o in orgs
-            ],
+            items=[_org_to_response(o, *roles.get(o.id, (None, None))) for o in orgs],
         ).model_dump(mode="json")
     )
 
@@ -150,10 +147,7 @@ async def list_all_organizations(
     roles = await org_service.batch_get_my_roles(session, orgs, user.id)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[
-                _org_to_response(o, *roles.get(o.id, (None, None)))
-                for o in orgs
-            ],
+            items=[_org_to_response(o, *roles.get(o.id, (None, None))) for o in orgs],
         ).model_dump(mode="json")
     )
 
@@ -197,9 +191,7 @@ async def update_organization(
     "/{org_id}",
     status_code=200,
     summary="Удалить организацию",
-    description=(
-        "Мягкое удаление организации (soft delete). Только для владельца (Owner)."
-    ),
+    description=("Мягкое удаление организации (soft delete). Только для владельца (Owner)."),
 )
 async def delete_organization(
     org_id: uuid.UUID,
@@ -216,8 +208,7 @@ async def delete_organization(
     status_code=200,
     summary="Ротация инвайт-кода",
     description=(
-        "Генерирует новый инвайт-код. Старый перестаёт работать. Только для "
-        "владельца (Owner)."
+        "Генерирует новый инвайт-код. Старый перестаёт работать. Только для владельца (Owner)."
     ),
 )
 async def rotate_invite_code(
@@ -227,9 +218,7 @@ async def rotate_invite_code(
 ) -> ApiResponse:
     new_code = await org_service.rotate_invite_code(session, org_id, user.id)
     await session.commit()
-    return ApiResponse.success(
-        InviteCodeResponse(invite_code=new_code).model_dump()
-    )
+    return ApiResponse.success(InviteCodeResponse(invite_code=new_code).model_dump())
 
 
 @router.post(
@@ -288,7 +277,8 @@ async def list_members(
         pass
     else:
         current_rates = await payroll_service.get_current_rates(
-            session, [m.id for m in members],
+            session,
+            [m.id for m in members],
         )
 
     return ApiResponse.success(
@@ -322,8 +312,7 @@ async def remove_member(
     "/{org_id}/members/{member_user_id}/role",
     summary="Изменить роль участника",
     description=(
-        "Назначает или снимает роль admin у участника. Доступно владельцу "
-        "(Owner) и super_admin."
+        "Назначает или снимает роль admin у участника. Доступно владельцу (Owner) и super_admin."
     ),
 )
 async def update_member_role(
@@ -347,9 +336,7 @@ async def update_member_role(
     from src.app.services import payroll as payroll_service
 
     current_rates = await payroll_service.get_current_rates(session, [member.id])
-    return ApiResponse.success(
-        _member_to_response(member, current_rates.get(member.id))
-    )
+    return ApiResponse.success(_member_to_response(member, current_rates.get(member.id)))
 
 
 def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
@@ -395,7 +382,10 @@ async def update_org_settings(
 ) -> ApiResponse:
     fields = body.model_dump(exclude_unset=True)
     settings = await settings_service.update_settings(
-        session, org_id, user.id, **fields,
+        session,
+        org_id,
+        user.id,
+        **fields,
     )
     await session.commit()
     return ApiResponse.success(_settings_to_response(settings))
@@ -445,7 +435,8 @@ async def list_org_shifts(
     shift_service.validate_date_range(date_from, date_to)
 
     shifts, total = await shift_service.get_org_shifts(
-        session, org_id,
+        session,
+        org_id,
         user_id=user_id,
         status=status_enum,
         date_from=date_from,
@@ -489,9 +480,7 @@ async def get_org_shift(
 
     shift = await shift_service.get_org_shift_detail(session, org_id, shift_id)
     identities = await shift_service.build_org_shift_identities(session, org_id, [shift])
-    return ApiResponse.success(
-        _shift_to_response(shift, identities.get(shift.user_id))
-    )
+    return ApiResponse.success(_shift_to_response(shift, identities.get(shift.user_id)))
 
 
 @router.get(
@@ -525,8 +514,10 @@ async def org_stats(
     await _check_admin_or_owner(session, org, user.id)
 
     stats = await shift_service.get_org_stats(
-        session, org_id, period, date_from=date_from, date_to=date_to,
+        session,
+        org_id,
+        period,
+        date_from=date_from,
+        date_to=date_to,
     )
-    return ApiResponse.success(
-        OrgStatsResponse(**stats).model_dump(mode="json")
-    )
+    return ApiResponse.success(OrgStatsResponse(**stats).model_dump(mode="json"))

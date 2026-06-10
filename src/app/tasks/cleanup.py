@@ -31,9 +31,7 @@ def cleanup_expired_tokens() -> None:
         # Delete expired verification codes
         codes_result = cast(
             "CursorResult[Any]",
-            session.execute(
-                delete(VerificationCode).where(VerificationCode.expires_at < now)
-            ),
+            session.execute(delete(VerificationCode).where(VerificationCode.expires_at < now)),
         )
         codes_deleted = codes_result.rowcount
 

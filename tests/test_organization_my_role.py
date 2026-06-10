@@ -35,9 +35,7 @@ async def _login_as(client: AsyncClient, email: str) -> dict[str, str]:
 
 
 class TestListMyOrganizations:
-    async def test_owner(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_owner(self, client: AsyncClient, super_admin_headers):
         create_resp = await client.post(
             "/api/v1/organizations",
             headers=super_admin_headers,
@@ -47,7 +45,8 @@ class TestListMyOrganizations:
         assert create_resp.json()["data"]["my_custom_role"] is None
 
         list_resp = await client.get(
-            "/api/v1/organizations", headers=super_admin_headers,
+            "/api/v1/organizations",
+            headers=super_admin_headers,
         )
         items = list_resp.json()["data"]["items"]
         assert len(items) == 1
@@ -66,11 +65,13 @@ class TestListMyOrganizations:
         await _create_user(db_session, "emp@example.com")
         emp_headers = await _login_as(client, "emp@example.com")
         await client.post(
-            f"/api/v1/organizations/join/{invite}", headers=emp_headers,
+            f"/api/v1/organizations/join/{invite}",
+            headers=emp_headers,
         )
 
         list_resp = await client.get(
-            "/api/v1/organizations", headers=emp_headers,
+            "/api/v1/organizations",
+            headers=emp_headers,
         )
         items = list_resp.json()["data"]["items"]
         assert len(items) == 1
@@ -90,7 +91,8 @@ class TestListMyOrganizations:
         member = await _create_user(db_session, "mod@example.com")
         member_headers = await _login_as(client, "mod@example.com")
         await client.post(
-            f"/api/v1/organizations/join/{invite}", headers=member_headers,
+            f"/api/v1/organizations/join/{invite}",
+            headers=member_headers,
         )
         await client.patch(
             f"/api/v1/organizations/{org_id}/members/{member.id}/role",
@@ -98,7 +100,8 @@ class TestListMyOrganizations:
             json={"role": "admin"},
         )
         list_resp = await client.get(
-            "/api/v1/organizations", headers=member_headers,
+            "/api/v1/organizations",
+            headers=member_headers,
         )
         assert list_resp.json()["data"]["items"][0]["my_role"] == "admin"
 
@@ -122,7 +125,8 @@ class TestListMyOrganizations:
         member = await _create_user(db_session, "barista@example.com")
         member_headers = await _login_as(client, "barista@example.com")
         await client.post(
-            f"/api/v1/organizations/join/{invite}", headers=member_headers,
+            f"/api/v1/organizations/join/{invite}",
+            headers=member_headers,
         )
         await client.patch(
             f"/api/v1/organizations/{org_id}/members/{member.id}/custom-role",
@@ -130,7 +134,8 @@ class TestListMyOrganizations:
             json={"role_id": role_id},
         )
         list_resp = await client.get(
-            "/api/v1/organizations", headers=member_headers,
+            "/api/v1/organizations",
+            headers=member_headers,
         )
         item = list_resp.json()["data"]["items"][0]
         assert item["my_role"] == "employee"
@@ -143,7 +148,9 @@ class TestListMyOrganizations:
     ):
         # Org1: user is owner
         await _create_user(
-            db_session, "other@example.com", role=UserRole.super_admin,
+            db_session,
+            "other@example.com",
+            role=UserRole.super_admin,
         )
         other_admin_headers = await _login_as(client, "other@example.com")
 
@@ -166,7 +173,8 @@ class TestListMyOrganizations:
         )
 
         list_resp = await client.get(
-            "/api/v1/organizations", headers=super_admin_headers,
+            "/api/v1/organizations",
+            headers=super_admin_headers,
         )
         items = list_resp.json()["data"]["items"]
         by_id = {i["id"]: i for i in items}
@@ -175,9 +183,7 @@ class TestListMyOrganizations:
 
 
 class TestGetOrganizationById:
-    async def test_owner_by_id(
-        self, client: AsyncClient, super_admin_headers
-    ):
+    async def test_owner_by_id(self, client: AsyncClient, super_admin_headers):
         create = await client.post(
             "/api/v1/organizations",
             headers=super_admin_headers,
@@ -185,7 +191,8 @@ class TestGetOrganizationById:
         )
         org_id = create.json()["data"]["id"]
         resp = await client.get(
-            f"/api/v1/organizations/{org_id}", headers=super_admin_headers,
+            f"/api/v1/organizations/{org_id}",
+            headers=super_admin_headers,
         )
         assert resp.json()["data"]["my_role"] == "owner"
         assert resp.json()["data"]["my_custom_role"] is None
@@ -209,7 +216,8 @@ class TestGetOrganizationById:
         member = await _create_user(db_session, "cash@example.com")
         member_headers = await _login_as(client, "cash@example.com")
         await client.post(
-            f"/api/v1/organizations/join/{invite}", headers=member_headers,
+            f"/api/v1/organizations/join/{invite}",
+            headers=member_headers,
         )
         await client.patch(
             f"/api/v1/organizations/{org_id}/members/{member.id}/custom-role",
@@ -217,7 +225,8 @@ class TestGetOrganizationById:
             json={"role_id": role_id},
         )
         resp = await client.get(
-            f"/api/v1/organizations/{org_id}", headers=member_headers,
+            f"/api/v1/organizations/{org_id}",
+            headers=member_headers,
         )
         data = resp.json()["data"]
         assert data["my_role"] == "employee"
@@ -229,7 +238,9 @@ class TestSuperAdminAll:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         await _create_user(
-            db_session, "other-sa@example.com", role=UserRole.super_admin,
+            db_session,
+            "other-sa@example.com",
+            role=UserRole.super_admin,
         )
         other_headers = await _login_as(client, "other-sa@example.com")
         foreign = await client.post(
@@ -240,11 +251,12 @@ class TestSuperAdminAll:
         foreign_id = foreign.json()["data"]["id"]
 
         resp = await client.get(
-            "/api/v1/organizations/all", headers=super_admin_headers,
+            "/api/v1/organizations/all",
+            headers=super_admin_headers,
         )
         items = resp.json()["data"]["items"]
         assert len(items) >= 1
-        found = [i for i in items if i["id"] == foreign_id][0]
+        found = next(i for i in items if i["id"] == foreign_id)
         assert found["my_role"] is None
         assert found["my_custom_role"] is None
 
@@ -258,9 +270,10 @@ class TestSuperAdminAll:
         )
         own_id = own.json()["data"]["id"]
         resp = await client.get(
-            "/api/v1/organizations/all", headers=super_admin_headers,
+            "/api/v1/organizations/all",
+            headers=super_admin_headers,
         )
-        found = [i for i in resp.json()["data"]["items"] if i["id"] == own_id][0]
+        found = next(i for i in resp.json()["data"]["items"] if i["id"] == own_id)
         assert found["my_role"] == "owner"
 
 
@@ -280,7 +293,9 @@ class TestNoNPlusOne:
         invites = []
         for i in range(3):
             await _create_user(
-                db_session, f"sa-{i}@example.com", role=UserRole.super_admin,
+                db_session,
+                f"sa-{i}@example.com",
+                role=UserRole.super_admin,
             )
             oh = await _login_as(client, f"sa-{i}@example.com")
             r = await client.post(
@@ -305,7 +320,8 @@ class TestNoNPlusOne:
         event.listen(sync_engine, "before_cursor_execute", on_execute)
         try:
             resp = await client.get(
-                "/api/v1/organizations", headers=super_admin_headers,
+                "/api/v1/organizations",
+                headers=super_admin_headers,
             )
         finally:
             event.remove(sync_engine, "before_cursor_execute", on_execute)

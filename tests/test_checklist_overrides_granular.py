@@ -103,11 +103,17 @@ class TestListOverrides:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         t_add = await _make_template(
-            client, super_admin_headers, ctx["org_id"], name="Alpha",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="Alpha",
         )
         t_rem = await _make_template(
-            client, super_admin_headers, ctx["org_id"],
-            name="Omega", type_="shift_end",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="Omega",
+            type_="shift_end",
         )
         await client.put(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{t_add}/personal/{ctx['member_user'].id}",
@@ -243,7 +249,9 @@ class TestUpsertOverride:
         )
         other_org_id = other_org_resp.json()["data"]["id"]
         foreign_t = await _make_template(
-            client, super_admin_headers, other_org_id,
+            client,
+            super_admin_headers,
+            other_org_id,
         )
         resp = await client.put(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{foreign_t}/personal/{ctx['member_user'].id}",
@@ -369,11 +377,14 @@ class TestDeleteOverride:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         other = await client.post(
-            "/api/v1/organizations", headers=super_admin_headers,
+            "/api/v1/organizations",
+            headers=super_admin_headers,
             json={"name": "Other"},
         )
         foreign_t = await _make_template(
-            client, super_admin_headers, other.json()["data"]["id"],
+            client,
+            super_admin_headers,
+            other.json()["data"]["id"],
         )
         resp = await client.delete(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{foreign_t}/personal/{ctx['member_user'].id}",

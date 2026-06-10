@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     # App
     app_env: str = "development"
     debug: bool = False
-    secret_key: str = "change-me-in-production"
+    secret_key: str = "change-me-in-production"  # noqa: S105 — dev-дефолт, в проде из env
 
     # CORS (источники для браузерной админки; CSV в env CORS_ORIGINS, пусто = [])
     # NoDecode отключает JSON-предпарсинг pydantic-settings, чтобы CSV-строка
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "smenka"
-    postgres_password: str = "smenka"
+    postgres_password: str = "smenka"  # noqa: S105 — dev-дефолт, в проде из env
     postgres_db: str = "smenka"
 
     # Auth

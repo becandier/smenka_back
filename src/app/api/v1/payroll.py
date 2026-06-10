@@ -184,7 +184,11 @@ async def org_payroll(
     ),
 ) -> ApiResponse:
     report = await payroll_service.get_org_payroll(
-        session, org_id, user.id, date_from=date_from, date_to=date_to,
+        session,
+        org_id,
+        user.id,
+        date_from=date_from,
+        date_to=date_to,
     )
     return ApiResponse.success(PayrollResponse(**report).model_dump(mode="json"))
 
@@ -210,7 +214,11 @@ async def my_earnings(
     ),
 ) -> ApiResponse:
     earnings = await payroll_service.get_my_earnings(
-        session, org_id, user.id, date_from=date_from, date_to=date_to,
+        session,
+        org_id,
+        user.id,
+        date_from=date_from,
+        date_to=date_to,
     )
     current_rate = earnings.pop("current_rate")
     return ApiResponse.success(

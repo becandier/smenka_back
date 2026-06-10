@@ -218,14 +218,10 @@ async def get_stats(session: AsyncSession) -> dict[str, int]:
         )
     ).scalar_one()
     shifts_today = (
-        await session.execute(
-            select(func.count(Shift.id)).where(Shift.started_at >= today_start)
-        )
+        await session.execute(select(func.count(Shift.id)).where(Shift.started_at >= today_start))
     ).scalar_one()
     shifts_week = (
-        await session.execute(
-            select(func.count(Shift.id)).where(Shift.started_at >= week_start)
-        )
+        await session.execute(select(func.count(Shift.id)).where(Shift.started_at >= week_start))
     ).scalar_one()
 
     return {

@@ -133,7 +133,9 @@ class ChecklistMemberOverride(Base):
     __tablename__ = "checklist_member_overrides"
     __table_args__ = (
         UniqueConstraint(
-            "template_id", "member_id", name="uq_checklist_member_override",
+            "template_id",
+            "member_id",
+            name="uq_checklist_member_override",
         ),
     )
 
