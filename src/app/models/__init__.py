@@ -9,6 +9,7 @@ from src.app.models.checklist import (
     ChecklistType,
     OverrideType,
 )
+from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
@@ -20,6 +21,7 @@ __all__ = [
     "User", "RefreshToken", "VerificationCode",
     "Shift", "Pause",
     "Organization", "OrganizationMember", "MemberRole",
+    "OrganizationMemberRate", "RateType",
     "OrganizationRole",
     "OrganizationSettings",
     "WorkLocation",

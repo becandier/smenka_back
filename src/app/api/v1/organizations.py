@@ -62,7 +62,12 @@ def _org_to_response(
     ).model_dump(mode="json")
 
 
-def _member_to_response(member: "OrganizationMember") -> dict[str, Any]:
+def _member_to_response(
+    member: "OrganizationMember",
+    current_rate: Any = None,
+) -> dict[str, Any]:
+    from src.app.api.v1.payroll import current_rate_payload
+
     custom_role = None
     if member.custom_role is not None:
         custom_role = {
@@ -79,6 +84,7 @@ def _member_to_response(member: "OrganizationMember") -> dict[str, Any]:
         role=member.role.value,
         custom_role=custom_role,
         joined_at=member.joined_at,
+        current_rate=current_rate_payload(current_rate),
     ).model_dump(mode="json")
 
 
@@ -258,7 +264,8 @@ async def join_organization(
     summary="Список участников",
     description=(
         "Список всех участников организации с их ролями. Доступно владельцу и "
-        "участникам."
+        "участникам. Поле current_rate (действующая ставка) заполняется только "
+        "для владельца и админов; для остальных участников оно всегда null."
     ),
 )
 async def list_members(
@@ -266,10 +273,27 @@ async def list_members(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
+    from src.app.services import payroll as payroll_service
+    from src.app.services.common import AccessError, ensure_admin_or_owner
+
     members = await org_service.get_members(session, org_id, user.id)
+
+    # Ставки видят только owner/admin/super_admin (ТЗ payroll);
+    # для employee current_rate всегда null.
+    current_rates: dict[uuid.UUID, Any] = {}
+    org = await org_service.get_organization(session, org_id)
+    try:
+        await ensure_admin_or_owner(session, org, user.id)
+    except AccessError:
+        pass
+    else:
+        current_rates = await payroll_service.get_current_rates(
+            session, [m.id for m in members],
+        )
+
     return ApiResponse.success(
         MemberListResponse(
-            items=[_member_to_response(m) for m in members],
+            items=[_member_to_response(m, current_rates.get(m.id)) for m in members],
         ).model_dump(mode="json")
     )
 
@@ -318,7 +342,14 @@ async def update_member_role(
         is_super_admin=user.role == UserRole.super_admin,
     )
     await session.commit()
-    return ApiResponse.success(_member_to_response(member))
+
+    # Эндпоинт доступен только owner/super_admin — ставку показываем всегда
+    from src.app.services import payroll as payroll_service
+
+    current_rates = await payroll_service.get_current_rates(session, [member.id])
+    return ApiResponse.success(
+        _member_to_response(member, current_rates.get(member.id))
+    )
 
 
 def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:

@@ -20,6 +20,7 @@ from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
+from src.app.services.payroll import PayrollError
 from src.app.services.shift import ShiftError
 
 settings = get_settings()
@@ -148,6 +149,13 @@ app = FastAPI(
             ),
         },
         {
+            "name": "payroll",
+            "description": (
+                "Ставки участников (история с effective_from) и расчёт "
+                "зарплаты: отчёт по организации и личный заработок."
+            ),
+        },
+        {
             "name": "admin",
             "description": (
                 "Платформенные эндпоинты super_admin: пользователи, обзор "
@@ -268,6 +276,14 @@ async def access_error_handler(request: Request, exc: AccessError) -> JSONRespon
 
 @app.exception_handler(AdminError)
 async def admin_error_handler(request: Request, exc: AdminError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(PayrollError)
+async def payroll_error_handler(request: Request, exc: PayrollError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
