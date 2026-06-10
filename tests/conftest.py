@@ -117,7 +117,8 @@ async def super_admin_user(db_session: AsyncSession) -> User:
 
 @pytest.fixture
 async def super_admin_headers(
-    super_admin_user: User, client: AsyncClient,
+    super_admin_user: User,
+    client: AsyncClient,
 ) -> dict[str, str]:
     response = await client.post(
         "/api/v1/auth/login",

@@ -31,7 +31,10 @@ async def list_member_overrides(
     session: SessionDep,
 ) -> ApiResponse:
     pairs = await override_service.list_member_overrides(
-        session, org_id, user_id, user.id,
+        session,
+        org_id,
+        user_id,
+        user.id,
     )
     return ApiResponse.success(
         MemberOverrideListResponse(
@@ -63,7 +66,12 @@ async def upsert_personal_override(
     session: SessionDep,
 ) -> ApiResponse:
     override_type = await override_service.upsert_override(
-        session, org_id, template_id, user_id, body.type, user.id,
+        session,
+        org_id,
+        template_id,
+        user_id,
+        body.type,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(
@@ -89,7 +97,11 @@ async def delete_personal_override(
     session: SessionDep,
 ) -> ApiResponse:
     await override_service.delete_override(
-        session, org_id, template_id, user_id, user.id,
+        session,
+        org_id,
+        template_id,
+        user_id,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(None)

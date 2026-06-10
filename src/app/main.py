@@ -70,12 +70,12 @@ app = FastAPI(
         "\n"
         "Все ответы обёрнуты в единую структуру:\n"
         "```json\n"
-        "{\"data\": <payload>, \"error\": null}\n"
+        '{"data": <payload>, "error": null}\n'
         "```\n"
         "При ошибке:\n"
         "```json\n"
-        "{\"data\": null, \"error\": {\"code\": \"ERROR_CODE\", \"message\": \"Описание "
-        "ошибки\"}}\n"
+        '{"data": null, "error": {"code": "ERROR_CODE", "message": "Описание '
+        'ошибки"}}\n'
         "```\n"
         "\n"
         "## Авторизация\n"
@@ -115,8 +115,7 @@ app = FastAPI(
         {
             "name": "organization-roles",
             "description": (
-                "Кастомные роли организации (бариста, кассир и т.п.) и их "
-                "назначение участникам."
+                "Кастомные роли организации (бариста, кассир и т.п.) и их назначение участникам."
             ),
         },
         {
@@ -144,8 +143,7 @@ app = FastAPI(
         {
             "name": "work-locations",
             "description": (
-                "Рабочие точки организации. Используются для геопроверки при "
-                "начале смены."
+                "Рабочие точки организации. Используются для геопроверки при начале смены."
             ),
         },
         {
@@ -258,7 +256,8 @@ async def role_error_handler(request: Request, exc: RoleError) -> JSONResponse:
 
 @app.exception_handler(ChecklistError)
 async def checklist_error_handler(
-    request: Request, exc: ChecklistError,
+    request: Request,
+    exc: ChecklistError,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,

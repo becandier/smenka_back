@@ -59,15 +59,11 @@ def auto_finish_stale_shifts() -> None:
                 Shift.started_at < global_cutoff,
             )
         )
-        stale: list[tuple[Shift, int]] = [
-            (s, global_hours) for s in result.scalars().all()
-        ]
+        stale: list[tuple[Shift, int]] = [(s, global_hours) for s in result.scalars().all()]
 
         # 2. Org shifts — use per-org auto_finish_hours
         org_settings_result = session.execute(select(OrganizationSettings))
-        all_org_settings = {
-            s.organization_id: s for s in org_settings_result.scalars().all()
-        }
+        all_org_settings = {s.organization_id: s for s in org_settings_result.scalars().all()}
 
         org_result = session.execute(
             select(Shift)
@@ -127,13 +123,9 @@ def auto_finish_stale_pauses() -> None:
             return
 
         settings_result = session.execute(
-            select(OrganizationSettings).where(
-                OrganizationSettings.organization_id.in_(org_ids)
-            )
+            select(OrganizationSettings).where(OrganizationSettings.organization_id.in_(org_ids))
         )
-        org_settings_map = {
-            s.organization_id: s for s in settings_result.scalars().all()
-        }
+        org_settings_map = {s.organization_id: s for s in settings_result.scalars().all()}
 
         count = 0
         for shift in paused_shifts:

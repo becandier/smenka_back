@@ -38,7 +38,9 @@ class OrganizationMemberRate(Base):
     __tablename__ = "organization_member_rates"
     __table_args__ = (
         UniqueConstraint(
-            "member_id", "effective_from", name="uq_member_rate_effective_from",
+            "member_id",
+            "effective_from",
+            name="uq_member_rate_effective_from",
         ),
         Index(
             "ix_member_rates_member_id_effective_from_desc",

@@ -86,7 +86,9 @@ async def delete_work_location(
 
     # Auto-disable geo_check if no locations left
     remaining = await session.execute(
-        select(func.count()).select_from(WorkLocation).where(
+        select(func.count())
+        .select_from(WorkLocation)
+        .where(
             WorkLocation.organization_id == org_id,
         )
     )
@@ -129,5 +131,8 @@ async def _check_admin_or_owner(
 ) -> None:
     """Владелец, admin или super_admin. Делегирует в services.common."""
     await ensure_admin_or_owner(
-        session, org, user_id, message="Нет прав для управления точками",
+        session,
+        org,
+        user_id,
+        message="Нет прав для управления точками",
     )

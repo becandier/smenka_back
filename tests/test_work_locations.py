@@ -96,9 +96,7 @@ class TestCreateWorkLocation:
         )
         assert response.status_code == 403
 
-    async def test_create_location_invalid_coordinates(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_create_location_invalid_coordinates(self, client: AsyncClient, auth_headers):
         org = await _create_org(client, auth_headers)
 
         response = await client.post(

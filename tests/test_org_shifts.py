@@ -55,7 +55,9 @@ async def employee_headers(employee_user: User, client: AsyncClient) -> dict[str
 
 @pytest.fixture
 async def org_with_geo(
-    db_session: AsyncSession, owner: User, employee_user: User,
+    db_session: AsyncSession,
+    owner: User,
+    employee_user: User,
 ) -> Organization:
     """Org with geo_check_enabled and a work location in Moscow."""
     org = Organization(name="Geo Org", owner_id=owner.id)
@@ -90,7 +92,9 @@ async def org_with_geo(
 
 @pytest.fixture
 async def org_no_geo(
-    db_session: AsyncSession, owner: User, employee_user: User,
+    db_session: AsyncSession,
+    owner: User,
+    employee_user: User,
 ) -> Organization:
     """Org without geo check."""
     org = Organization(name="No Geo Org", owner_id=owner.id)
@@ -98,7 +102,9 @@ async def org_no_geo(
     await db_session.flush()
 
     settings = OrganizationSettings(
-        organization_id=org.id, geo_check_enabled=False, auto_finish_hours=16,
+        organization_id=org.id,
+        geo_check_enabled=False,
+        auto_finish_hours=16,
     )
     db_session.add(settings)
 
@@ -114,7 +120,10 @@ async def org_no_geo(
 
 class TestOrgShiftStart:
     async def test_start_org_shift_within_radius(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_with_geo: Organization,
     ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -131,7 +140,10 @@ class TestOrgShiftStart:
         assert data["status"] == "active"
 
     async def test_start_org_shift_outside_radius(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_with_geo: Organization,
     ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -146,7 +158,10 @@ class TestOrgShiftStart:
         assert resp.json()["error"]["code"] == "GEO_CHECK_FAILED"
 
     async def test_start_org_shift_no_geo_check(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_no_geo: Organization,
     ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -157,7 +172,10 @@ class TestOrgShiftStart:
         assert resp.json()["data"]["organization_id"] == str(org_no_geo.id)
 
     async def test_start_org_shift_geo_enabled_no_coords(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_with_geo: Organization,
     ) -> None:
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -168,7 +186,10 @@ class TestOrgShiftStart:
         assert resp.json()["error"]["code"] == "COORDS_REQUIRED"
 
     async def test_non_member_cannot_start_org_shift(
-        self, client: AsyncClient, auth_headers: dict[str, Any], org_with_geo: Organization,
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
+        org_with_geo: Organization,
     ) -> None:
         """verified_user (from conftest) is not a member of the org."""
         resp = await client.post(
@@ -183,7 +204,10 @@ class TestOrgShiftStart:
         assert resp.status_code == 403
 
     async def test_personal_and_org_shift_simultaneously(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_no_geo: Organization,
     ) -> None:
         # Start personal shift
         resp1 = await client.post(
@@ -204,7 +228,10 @@ class TestOrgShiftStart:
         assert resp2.json()["data"]["organization_id"] == str(org_no_geo.id)
 
     async def test_cannot_start_second_org_shift_same_org(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_no_geo: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_no_geo: Organization,
     ) -> None:
         await client.post(
             "/api/v1/shifts/start",
@@ -231,7 +258,9 @@ async def owner_headers(owner: User, client: AsyncClient) -> dict[str, str]:
 
 @pytest.fixture
 async def org_with_limits(
-    db_session: AsyncSession, owner: User, employee_user: User,
+    db_session: AsyncSession,
+    owner: User,
+    employee_user: User,
 ) -> Organization:
     """Org with pause limits: max 2 pauses, max 5 minutes per pause."""
     org = Organization(name="Limits Org", owner_id=owner.id)
@@ -259,7 +288,10 @@ async def org_with_limits(
 
 class TestPauseLimits:
     async def test_max_pauses_per_shift(
-        self, client: AsyncClient, employee_headers: dict[str, Any], org_with_limits: Organization,
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_with_limits: Organization,
     ) -> None:
         # Start org shift
         resp = await client.post(
@@ -283,7 +315,9 @@ class TestPauseLimits:
         assert resp.json()["error"]["code"] == "MAX_PAUSES_REACHED"
 
     async def test_personal_shift_no_pause_limits(
-        self, client: AsyncClient, employee_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
     ) -> None:
         # Start personal shift
         resp = await client.post(
@@ -296,11 +330,13 @@ class TestPauseLimits:
         # Should allow unlimited pauses
         for _ in range(5):
             resp_p = await client.post(
-                f"/api/v1/shifts/{shift_id}/pause", headers=employee_headers,
+                f"/api/v1/shifts/{shift_id}/pause",
+                headers=employee_headers,
             )
             assert resp_p.status_code == 200
             resp_r = await client.post(
-                f"/api/v1/shifts/{shift_id}/resume", headers=employee_headers,
+                f"/api/v1/shifts/{shift_id}/resume",
+                headers=employee_headers,
             )
             assert resp_r.status_code == 200
 
@@ -464,7 +500,9 @@ async def admin_user(db_session: AsyncSession) -> User:
 
 @pytest.fixture
 async def admin_member(
-    db_session: AsyncSession, admin_user: User, org_no_geo: Organization,
+    db_session: AsyncSession,
+    admin_user: User,
+    org_no_geo: Organization,
 ) -> OrganizationMember:
     """admin_user added to org_no_geo with the system `admin` role."""
     member = OrganizationMember(
@@ -503,7 +541,9 @@ async def employee2_user(db_session: AsyncSession) -> User:
 
 @pytest.fixture
 async def employee2_member(
-    db_session: AsyncSession, employee2_user: User, org_no_geo: Organization,
+    db_session: AsyncSession,
+    employee2_user: User,
+    org_no_geo: Organization,
 ) -> OrganizationMember:
     member = OrganizationMember(
         organization_id=org_no_geo.id,
@@ -526,7 +566,9 @@ async def employee2_headers(employee2_user: User, client: AsyncClient) -> dict[s
 
 
 async def _start_org_shift(
-    client: AsyncClient, headers: dict[str, str], org: Organization,
+    client: AsyncClient,
+    headers: dict[str, str],
+    org: Organization,
 ) -> str:
     resp = await client.post(
         "/api/v1/shifts/start",
@@ -551,7 +593,8 @@ class TestShiftOwnerVisibility:
         await _start_org_shift(client, employee_headers, org_no_geo)
 
         resp = await client.get(
-            f"/api/v1/organizations/{org_no_geo.id}/shifts", headers=owner_headers,
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         item = resp.json()["data"]["items"][0]
@@ -587,7 +630,8 @@ class TestShiftOwnerVisibility:
         await _start_org_shift(client, employee_headers, org_no_geo)
 
         resp = await client.get(
-            f"/api/v1/organizations/{org_no_geo.id}/shifts", headers=owner_headers,
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         item = resp.json()["data"]["items"][0]
@@ -601,7 +645,9 @@ class TestShiftOwnerVisibility:
     ) -> None:
         # Personal shift (no organization_id)
         resp = await client.post(
-            "/api/v1/shifts/start", headers=employee_headers, json={},
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={},
         )
         assert resp.status_code == 201
 
@@ -693,7 +739,9 @@ class TestShiftOwnerVisibility:
     ) -> None:
         # Employee's personal shift must not be visible via org detail endpoint
         resp = await client.post(
-            "/api/v1/shifts/start", headers=employee_headers, json={},
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={},
         )
         personal_shift_id = resp.json()["data"]["id"]
 
@@ -783,7 +831,8 @@ class TestShiftOwnerVisibility:
 
         # List: shift still present and enriched the same way
         resp = await client.get(
-            f"/api/v1/organizations/{org_no_geo.id}/shifts", headers=owner_headers,
+            f"/api/v1/organizations/{org_no_geo.id}/shifts",
+            headers=owner_headers,
         )
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]

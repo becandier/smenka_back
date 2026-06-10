@@ -114,9 +114,7 @@ class TestDeleteOrganization:
         )
         org_id = create_resp.json()["data"]["id"]
 
-        response = await client.delete(
-            f"/api/v1/organizations/{org_id}", headers=auth_headers
-        )
+        response = await client.delete(f"/api/v1/organizations/{org_id}", headers=auth_headers)
         assert response.status_code == 200
 
         list_resp = await client.get("/api/v1/organizations", headers=auth_headers)
@@ -133,9 +131,7 @@ class TestDeleteOrganization:
         await _create_second_user(db_session)
         other_headers = await _login_as(client, "second@example.com")
 
-        response = await client.delete(
-            f"/api/v1/organizations/{org_id}", headers=other_headers
-        )
+        response = await client.delete(f"/api/v1/organizations/{org_id}", headers=other_headers)
         assert response.status_code == 403
 
 
@@ -175,9 +171,7 @@ class TestInviteCode:
         assert data["role"] == "employee"
 
     async def test_join_invalid_code(self, client: AsyncClient, auth_headers):
-        response = await client.post(
-            "/api/v1/organizations/join/INVALID1", headers=auth_headers
-        )
+        response = await client.post("/api/v1/organizations/join/INVALID1", headers=auth_headers)
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "INVALID_INVITE"
 
@@ -232,9 +226,7 @@ class TestInviteCode:
 
 
 class TestMembers:
-    async def test_list_members(
-        self, client: AsyncClient, auth_headers, db_session: AsyncSession
-    ):
+    async def test_list_members(self, client: AsyncClient, auth_headers, db_session: AsyncSession):
         create_resp = await client.post(
             "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
         )

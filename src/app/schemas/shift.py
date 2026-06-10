@@ -34,8 +34,7 @@ class ShiftResponse(BaseModel):
     )
     user_name: str | None = Field(
         default=None,
-        description="Имя сотрудника (User.name). Заполнено в орг-контексте, "
-        "в персональном — null",
+        description="Имя сотрудника (User.name). Заполнено в орг-контексте, в персональном — null",
     )
     user_email: str | None = Field(
         default=None,
@@ -88,10 +87,14 @@ class ShiftStartRequest(BaseModel):
         default=None, description="UUID организации (не указывать для персональной смены)"
     )
     latitude: float | None = Field(
-        default=None, ge=-90, le=90,
+        default=None,
+        ge=-90,
+        le=90,
         description="Широта (обязательно при геопроверке организации)",
     )
     longitude: float | None = Field(
-        default=None, ge=-180, le=180,
+        default=None,
+        ge=-180,
+        le=180,
         description="Долгота (обязательно при геопроверке организации)",
     )

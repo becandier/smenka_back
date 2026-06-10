@@ -7,7 +7,8 @@ from src.app.models.member_rate import RateType
 
 class RateCreate(BaseModel):
     rate_amount_minor: int = Field(
-        gt=0, description="Ставка в копейках (целое, > 0). Смысл задаёт rate_type",
+        gt=0,
+        description="Ставка в копейках (целое, > 0). Смысл задаёт rate_type",
     )
     rate_type: RateType = Field(
         description="Тип ставки: hourly (₽/час) или per_shift (₽/смена)",
@@ -21,7 +22,9 @@ class RateCreate(BaseModel):
         description="Момент, с которого ставка действует (UTC)",
     )
     note: str | None = Field(
-        default=None, max_length=500, description="Необязательный комментарий",
+        default=None,
+        max_length=500,
+        description="Необязательный комментарий",
     )
 
 
@@ -69,10 +72,12 @@ class RateDeleteResponse(BaseModel):
 
 class PayrollPeriod(BaseModel):
     date_from: datetime | None = Field(
-        default=None, description="Нижняя граница периода (UTC) или null",
+        default=None,
+        description="Нижняя граница периода (UTC) или null",
     )
     date_to: datetime | None = Field(
-        default=None, description="Верхняя граница периода (UTC, включительно) или null",
+        default=None,
+        description="Верхняя граница периода (UTC, включительно) или null",
     )
 
 
@@ -119,7 +124,8 @@ class MyEarningsResponse(BaseModel):
     shifts_count: int = Field(description="Число завершённых смен за период")
     gross_amount_minor: int = Field(description="Заработок в копейках (half-up один раз)")
     current_rate: CurrentRateResponse | None = Field(
-        default=None, description="Действующая на сейчас ставка или null",
+        default=None,
+        description="Действующая на сейчас ставка или null",
     )
     has_missing_rate: bool = Field(
         description="true, если в периоде были смены без действующей ставки",

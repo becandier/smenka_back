@@ -1,5 +1,6 @@
 # tests/test_date_filters.py
 """Фича date_filters: валидация диапазона дат в списках и кастомное окно stats."""
+
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -83,7 +84,9 @@ async def org(db_session: AsyncSession, owner: User, verified_user: User) -> Org
 
 class TestShiftListDateRange:
     async def test_invalid_date_range(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts",
@@ -97,7 +100,9 @@ class TestShiftListDateRange:
         assert resp.json()["error"]["code"] == "INVALID_DATE_RANGE"
 
     async def test_open_range_only_date_from(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts",
@@ -107,7 +112,9 @@ class TestShiftListDateRange:
         assert resp.status_code == 200
 
     async def test_open_range_only_date_to(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts",
@@ -126,7 +133,10 @@ class TestShiftListDateRange:
         """date_from == date_to: точечное окно по started_at включает смену."""
         point = datetime(2026, 6, 1, 10, 0, 0, tzinfo=UTC)
         await _make_finished_shift(
-            db_session, verified_user.id, point, datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC),
+            db_session,
+            verified_user.id,
+            point,
+            datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC),
         )
         resp = await client.get(
             "/api/v1/shifts",
@@ -382,7 +392,9 @@ class TestPersonalStatsWindow:
         auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
-            "/api/v1/shifts/stats", headers=auth_headers, params={"period": "day"},
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day"},
         )
         assert resp.status_code == 200
         data = resp.json()["data"]
@@ -455,10 +467,16 @@ class TestPersonalStatsWindow:
         date_from = datetime(2026, 6, 1, 10, 0, 0, tzinfo=UTC)
         date_to = datetime(2026, 6, 2, 10, 0, 0, tzinfo=UTC)
         await _make_finished_shift(
-            db_session, verified_user.id, date_from, datetime(2026, 6, 1, 11, 0, 0, tzinfo=UTC),
+            db_session,
+            verified_user.id,
+            date_from,
+            datetime(2026, 6, 1, 11, 0, 0, tzinfo=UTC),
         )
         await _make_finished_shift(
-            db_session, verified_user.id, date_to, datetime(2026, 6, 2, 11, 0, 0, tzinfo=UTC),
+            db_session,
+            verified_user.id,
+            date_to,
+            datetime(2026, 6, 2, 11, 0, 0, tzinfo=UTC),
         )
         resp = await client.get(
             "/api/v1/shifts/stats",
@@ -543,14 +561,18 @@ class TestPersonalStatsWindow:
         assert data["range_to"] is not None
 
     async def test_missing_stats_range(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get("/api/v1/shifts/stats", headers=auth_headers)
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "MISSING_STATS_RANGE"
 
     async def test_ambiguous_stats_range(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts/stats",
@@ -561,7 +583,9 @@ class TestPersonalStatsWindow:
         assert resp.json()["error"]["code"] == "AMBIGUOUS_STATS_RANGE"
 
     async def test_ambiguous_wins_over_invalid_period(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         """Порядок валидации: AMBIGUOUS_STATS_RANGE раньше INVALID_PERIOD."""
         resp = await client.get(
@@ -573,16 +597,22 @@ class TestPersonalStatsWindow:
         assert resp.json()["error"]["code"] == "AMBIGUOUS_STATS_RANGE"
 
     async def test_invalid_period(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
-            "/api/v1/shifts/stats", headers=auth_headers, params={"period": "year"},
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "year"},
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "INVALID_PERIOD"
 
     async def test_invalid_date_range(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts/stats",
@@ -596,7 +626,9 @@ class TestPersonalStatsWindow:
         assert resp.json()["error"]["code"] == "INVALID_DATE_RANGE"
 
     async def test_empty_window_returns_zeros(
-        self, client: AsyncClient, auth_headers: dict[str, Any],
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
     ) -> None:
         resp = await client.get(
             "/api/v1/shifts/stats",
@@ -720,7 +752,8 @@ class TestOrgStatsWindow:
         org: Organization,
     ) -> None:
         resp = await client.get(
-            f"/api/v1/organizations/{org.id}/stats", headers=owner_headers,
+            f"/api/v1/organizations/{org.id}/stats",
+            headers=owner_headers,
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "MISSING_STATS_RANGE"

@@ -215,7 +215,11 @@ async def start_shift(
     # Organization-specific checks
     if organization_id is not None:
         await _validate_org_shift_start(
-            session, user_id, organization_id, latitude, longitude,
+            session,
+            user_id,
+            organization_id,
+            latitude,
+            longitude,
         )
 
     shift = Shift(user_id=user_id, organization_id=organization_id)
@@ -487,9 +491,7 @@ async def get_shift_stats(
         conditions.append(Shift.started_at <= window.filter_to)
 
     result = await session.execute(
-        select(Shift)
-        .options(selectinload(Shift.pauses))
-        .where(*conditions)
+        select(Shift).options(selectinload(Shift.pauses)).where(*conditions)
     )
     shifts = list(result.scalars().all())
 
@@ -554,9 +556,7 @@ async def get_org_stats(
         conditions.append(Shift.started_at <= window.filter_to)
 
     result = await session.execute(
-        select(Shift)
-        .options(selectinload(Shift.pauses))
-        .where(*conditions)
+        select(Shift).options(selectinload(Shift.pauses)).where(*conditions)
     )
     shifts = list(result.scalars().all())
 
@@ -575,23 +575,23 @@ async def get_org_stats(
     per_employee = []
     if by_user:
         user_ids = list(by_user.keys())
-        users_result = await session.execute(
-            select(User).where(User.id.in_(user_ids))
-        )
+        users_result = await session.execute(select(User).where(User.id.in_(user_ids)))
         users_map = {u.id: u for u in users_result.scalars().all()}
 
         for uid, user_shifts in by_user.items():
             user = users_map.get(uid)
             user_total = sum(calculate_worked_seconds(s) for s in user_shifts)
             user_count = len(user_shifts)
-            per_employee.append({
-                "user_id": str(uid),
-                "user_name": user.name if user else "Unknown",
-                "user_email": user.email if user else "",
-                "shift_count": user_count,
-                "total_worked_seconds": user_total,
-                "average_shift_seconds": user_total // user_count if user_count > 0 else 0,
-            })
+            per_employee.append(
+                {
+                    "user_id": str(uid),
+                    "user_name": user.name if user else "Unknown",
+                    "user_email": user.email if user else "",
+                    "shift_count": user_count,
+                    "total_worked_seconds": user_total,
+                    "average_shift_seconds": user_total // user_count if user_count > 0 else 0,
+                }
+            )
 
     return {
         "period": window.period,

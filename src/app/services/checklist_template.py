@@ -31,7 +31,10 @@ async def _check_admin_or_owner(
 ) -> None:
     """Владелец, admin или super_admin. Делегирует в services.common."""
     await ensure_admin_or_owner(
-        session, org, user_id, message="Нет прав для управления чек-листами",
+        session,
+        org,
+        user_id,
+        message="Нет прав для управления чек-листами",
     )
 
 
@@ -126,7 +129,7 @@ async def get_templates(
         .where(ChecklistTemplateItem.template_id.in_([t.id for t in templates]))
         .group_by(ChecklistTemplateItem.template_id)
     )
-    counts = {tpl_id: n for tpl_id, n in counts_result.all()}
+    counts = dict(counts_result.tuples().all())
     return [(t, counts.get(t.id, 0)) for t in templates]
 
 
@@ -316,5 +319,4 @@ async def reorder_items(
         items[item_id].position = position
 
     await session.flush()
-    ordered = sorted(items.values(), key=lambda it: it.position)
-    return ordered
+    return sorted(items.values(), key=lambda it: it.position)

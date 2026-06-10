@@ -51,7 +51,9 @@ async def create_location(
     session: SessionDep,
 ) -> ApiResponse:
     location = await wl_service.create_work_location(
-        session, org_id, user.id,
+        session,
+        org_id,
+        user.id,
         name=body.name,
         latitude=body.latitude,
         longitude=body.longitude,
@@ -96,7 +98,11 @@ async def update_location(
 ) -> ApiResponse:
     fields = body.model_dump(exclude_unset=True)
     location = await wl_service.update_work_location(
-        session, org_id, location_id, user.id, **fields,
+        session,
+        org_id,
+        location_id,
+        user.id,
+        **fields,
     )
     await session.commit()
     return ApiResponse.success(_location_to_response(location))

@@ -458,9 +458,7 @@ class TestCleanupExpiredTokens:
 
         db_session.expire_all()
 
-        result = await db_session.execute(
-            select(RefreshToken).where(RefreshToken.id == token_id)
-        )
+        result = await db_session.execute(select(RefreshToken).where(RefreshToken.id == token_id))
         assert result.scalar_one_or_none() is None
 
     async def test_valid_tokens_kept(self, db_session: AsyncSession):
@@ -485,7 +483,5 @@ class TestCleanupExpiredTokens:
 
         db_session.expire_all()
 
-        result = await db_session.execute(
-            select(RefreshToken).where(RefreshToken.id == token_id)
-        )
+        result = await db_session.execute(select(RefreshToken).where(RefreshToken.id == token_id))
         assert result.scalar_one_or_none() is not None

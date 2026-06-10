@@ -30,7 +30,9 @@ async def create_instances_for_shift(
         return []
 
     effective_pairs = await _compute_effective(
-        session, shift.organization_id, member,
+        session,
+        shift.organization_id,
+        member,
     )
     if not effective_pairs:
         return []
@@ -120,9 +122,7 @@ async def _check_shift_access(
 
 
 async def _get_shift(session: AsyncSession, shift_id: uuid.UUID) -> Shift:
-    result = await session.execute(
-        select(Shift).where(Shift.id == shift_id)
-    )
+    result = await session.execute(select(Shift).where(Shift.id == shift_id))
     shift = result.scalar_one_or_none()
     if shift is None:
         raise ChecklistError("SHIFT_NOT_FOUND", "Смена не найдена", 404)
@@ -150,9 +150,7 @@ async def get_shift_checklists(
         select(
             ChecklistInstanceItem.instance_id,
             ChecklistInstanceItem.is_completed,
-        ).where(
-            ChecklistInstanceItem.instance_id.in_([i.id for i in instances])
-        )
+        ).where(ChecklistInstanceItem.instance_id.in_([i.id for i in instances]))
     )
     totals: dict[uuid.UUID, int] = {i.id: 0 for i in instances}
     completed: dict[uuid.UUID, int] = {i.id: 0 for i in instances}

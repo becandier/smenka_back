@@ -49,7 +49,9 @@ async def _make_org(
     if with_settings:
         session.add(
             OrganizationSettings(
-                organization_id=org.id, geo_check_enabled=False, auto_finish_hours=16,
+                organization_id=org.id,
+                geo_check_enabled=False,
+                auto_finish_hours=16,
             )
         )
     await session.commit()
@@ -91,7 +93,7 @@ async def _add_shift(
 # ─── Block C: доступ только super_admin ─────────────────────────────────────
 class TestAdminAuth:
     @pytest.mark.parametrize(
-        "method,path",
+        ("method", "path"),
         [
             ("get", "/api/v1/admin/users"),
             ("get", "/api/v1/admin/organizations"),
@@ -99,7 +101,11 @@ class TestAdminAuth:
         ],
     )
     async def test_regular_user_forbidden(
-        self, client: AsyncClient, auth_headers, method, path,
+        self,
+        client: AsyncClient,
+        auth_headers,
+        method,
+        path,
     ):
         response = await getattr(client, method)(path, headers=auth_headers)
         assert response.status_code == 403
@@ -111,7 +117,9 @@ class TestAdminAuth:
         assert response.status_code in (401, 403)
 
     async def test_super_admin_allowed(
-        self, client: AsyncClient, super_admin_headers,
+        self,
+        client: AsyncClient,
+        super_admin_headers,
     ):
         response = await client.get("/api/v1/admin/users", headers=super_admin_headers)
         assert response.status_code == 200
@@ -120,12 +128,18 @@ class TestAdminAuth:
 # ─── Block C1: пользователи ─────────────────────────────────────────────────
 class TestAdminUsers:
     async def test_list_envelope_and_total(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         for i in range(4):
             await _make_user(db_session, f"u{i}@example.com")
         response = await client.get(
-            "/api/v1/admin/users", headers=super_admin_headers, params={"limit": 2, "offset": 0},
+            "/api/v1/admin/users",
+            headers=super_admin_headers,
+            params={"limit": 2, "offset": 0},
         )
         assert response.status_code == 200
         data = response.json()["data"]
@@ -139,41 +153,63 @@ class TestAdminUsers:
         )
 
     async def test_search_by_email(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         await _make_user(db_session, "needle@example.com", name="Needle")
         await _make_user(db_session, "other@example.com", name="Other")
         response = await client.get(
-            "/api/v1/admin/users", headers=super_admin_headers, params={"search": "needle"},
+            "/api/v1/admin/users",
+            headers=super_admin_headers,
+            params={"search": "needle"},
         )
         items = response.json()["data"]["items"]
         assert len(items) == 1
         assert items[0]["email"] == "needle@example.com"
 
     async def test_filter_role(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         await _make_user(db_session, "plain@example.com")
         response = await client.get(
-            "/api/v1/admin/users", headers=super_admin_headers, params={"role": "super_admin"},
+            "/api/v1/admin/users",
+            headers=super_admin_headers,
+            params={"role": "super_admin"},
         )
         items = response.json()["data"]["items"]
         assert all(u["role"] == "super_admin" for u in items)
         assert any(u["email"] == "admin@example.com" for u in items)
 
     async def test_filter_is_verified(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         await _make_user(db_session, "unverified@example.com", verified=False)
         response = await client.get(
-            "/api/v1/admin/users", headers=super_admin_headers, params={"is_verified": "false"},
+            "/api/v1/admin/users",
+            headers=super_admin_headers,
+            params={"is_verified": "false"},
         )
         items = response.json()["data"]["items"]
         assert len(items) == 1
         assert items[0]["email"] == "unverified@example.com"
 
     async def test_sort_email_asc(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         await _make_user(db_session, "zeta@example.com")
         await _make_user(db_session, "alpha@example.com")
@@ -186,7 +222,11 @@ class TestAdminUsers:
         assert emails == sorted(emails)
 
     async def test_user_detail_aggregates(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         target = await _make_user(db_session, "target@example.com")
         owner_of_other = await _make_user(db_session, "owner2@example.com")
@@ -201,7 +241,8 @@ class TestAdminUsers:
         await _add_shift(db_session, target.id, started_at=now - timedelta(days=1))
 
         response = await client.get(
-            f"/api/v1/admin/users/{target.id}", headers=super_admin_headers,
+            f"/api/v1/admin/users/{target.id}",
+            headers=super_admin_headers,
         )
         assert response.status_code == 200
         data = response.json()["data"]
@@ -210,16 +251,24 @@ class TestAdminUsers:
         assert data["shifts_count"] == 2
 
     async def test_user_detail_404(
-        self, client: AsyncClient, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        super_admin_user,
+        super_admin_headers,
     ):
         response = await client.get(
-            f"/api/v1/admin/users/{uuid.uuid4()}", headers=super_admin_headers,
+            f"/api/v1/admin/users/{uuid.uuid4()}",
+            headers=super_admin_headers,
         )
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "USER_NOT_FOUND"
 
     async def test_promote_user(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         target = await _make_user(db_session, "promote@example.com")
         response = await client.patch(
@@ -231,7 +280,10 @@ class TestAdminUsers:
         assert response.json()["data"]["role"] == "super_admin"
 
     async def test_cannot_demote_self(
-        self, client: AsyncClient, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        super_admin_user,
+        super_admin_headers,
     ):
         response = await client.patch(
             f"/api/v1/admin/users/{super_admin_user.id}/role",
@@ -242,7 +294,10 @@ class TestAdminUsers:
         assert response.json()["error"]["code"] == "CANNOT_DEMOTE_SELF"
 
     async def test_self_to_super_admin_noop_ok(
-        self, client: AsyncClient, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        super_admin_user,
+        super_admin_headers,
     ):
         response = await client.patch(
             f"/api/v1/admin/users/{super_admin_user.id}/role",
@@ -253,7 +308,10 @@ class TestAdminUsers:
         assert response.json()["data"]["role"] == "super_admin"
 
     async def test_update_role_404(
-        self, client: AsyncClient, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        super_admin_user,
+        super_admin_headers,
     ):
         response = await client.patch(
             f"/api/v1/admin/users/{uuid.uuid4()}/role",
@@ -264,7 +322,11 @@ class TestAdminUsers:
         assert response.json()["error"]["code"] == "USER_NOT_FOUND"
 
     async def test_update_role_invalid_value(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         target = await _make_user(db_session, "bad@example.com")
         response = await client.patch(
@@ -279,7 +341,11 @@ class TestAdminUsers:
 # ─── Block C2: обзор организаций ─────────────────────────────────────────────
 class TestAdminOrganizations:
     async def test_overview_fields_and_total(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         owner = await _make_user(db_session, "orgowner@example.com")
         org = await _make_org(db_session, owner.id, name="Visible")
@@ -287,7 +353,8 @@ class TestAdminOrganizations:
         await _add_member(db_session, org.id, member.id)
 
         response = await client.get(
-            "/api/v1/admin/organizations", headers=super_admin_headers,
+            "/api/v1/admin/organizations",
+            headers=super_admin_headers,
         )
         assert response.status_code == 200
         data = response.json()["data"]
@@ -298,7 +365,11 @@ class TestAdminOrganizations:
         assert item["is_deleted"] is False
 
     async def test_filter_is_deleted(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         owner = await _make_user(db_session, "o@example.com")
         await _make_org(db_session, owner.id, name="Active")
@@ -314,7 +385,11 @@ class TestAdminOrganizations:
         assert items[0]["name"] == "Trashed"
 
     async def test_search_by_name(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         owner = await _make_user(db_session, "o2@example.com")
         await _make_org(db_session, owner.id, name="Pizzeria")
@@ -332,7 +407,11 @@ class TestAdminOrganizations:
 # ─── Block C3: статистика ────────────────────────────────────────────────────
 class TestAdminStats:
     async def test_stats_counts(
-        self, client: AsyncClient, db_session: AsyncSession, super_admin_user, super_admin_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_user,
+        super_admin_headers,
     ):
         # пользователи: super_admin (verified) + 1 verified + 1 unverified
         u1 = await _make_user(db_session, "v1@example.com", verified=True)
@@ -344,7 +423,10 @@ class TestAdminStats:
         now = datetime.now(UTC)
         await _add_shift(db_session, u1.id, started_at=now, status=ShiftStatus.active)
         await _add_shift(
-            db_session, u1.id, started_at=now - timedelta(days=30), status=ShiftStatus.finished,
+            db_session,
+            u1.id,
+            started_at=now - timedelta(days=30),
+            status=ShiftStatus.finished,
         )
 
         response = await client.get("/api/v1/admin/stats", headers=super_admin_headers)
@@ -363,7 +445,9 @@ class TestAdminStats:
 class TestSuperAdminPassthrough:
     @pytest.fixture
     async def foreign_org(
-        self, db_session: AsyncSession, verified_user,
+        self,
+        db_session: AsyncSession,
+        verified_user,
     ) -> Organization:
         """Организация, которой владеет обычный пользователь (не super_admin)."""
         org = await _make_org(db_session, verified_user.id, name="Foreign")
@@ -384,7 +468,8 @@ class TestSuperAdminPassthrough:
         suffix,
     ):
         response = await client.get(
-            f"/api/v1/organizations/{foreign_org.id}{suffix}", headers=super_admin_headers,
+            f"/api/v1/organizations/{foreign_org.id}{suffix}",
+            headers=super_admin_headers,
         )
         assert response.status_code == 200, response.text
 
@@ -411,12 +496,18 @@ class TestSuperAdminPassthrough:
 # ─── Block B: сортировка списков смен ────────────────────────────────────────
 class TestShiftSort:
     async def test_personal_shifts_sort_started_at(
-        self, client: AsyncClient, db_session: AsyncSession, verified_user, auth_headers,
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        verified_user,
+        auth_headers,
     ):
         base = datetime.now(UTC)
         for hours in (3, 1, 2):
             await _add_shift(
-                db_session, verified_user.id, started_at=base - timedelta(hours=hours),
+                db_session,
+                verified_user.id,
+                started_at=base - timedelta(hours=hours),
             )
 
         asc = await client.get(

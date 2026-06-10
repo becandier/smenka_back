@@ -85,15 +85,21 @@ test-cov:  ## Тесты с покрытием
 
 # ─── Качество кода ───────────────────────────────────────────
 lint:  ## Проверить линтером (ruff)
-	$(API) python -m ruff check src/ tests/
+	$(API) python -m ruff check src/ tests/ scripts/
 
 lint-fix:  ## Автоисправление (ruff)
-	$(API) python -m ruff check src/ tests/ --fix
+	$(API) python -m ruff check src/ tests/ scripts/ --fix
+
+format:  ## Отформатировать код (ruff format)
+	$(API) python -m ruff format src/ tests/ scripts/
+
+format-check:  ## Проверить форматирование без изменений
+	$(API) python -m ruff format --check src/ tests/ scripts/
 
 typecheck:  ## Проверка типов (mypy)
 	$(API) python -m mypy src/
 
-check: lint typecheck  ## Линтер + типы
+check: lint format-check typecheck  ## Линтер + формат + типы
 
 # ─── Очистка ─────────────────────────────────────────────────
 clean:  ## Остановить сервисы и удалить volumes

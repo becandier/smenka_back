@@ -44,7 +44,11 @@ async def assign_template_to_roles(
 ) -> ApiResponse:
     role_uuids = [uuid.UUID(r) for r in body.role_ids]
     result_ids = await assign_service.assign_template_to_roles(
-        session, org_id, template_id, role_uuids, user.id,
+        session,
+        org_id,
+        template_id,
+        role_uuids,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success({"role_ids": [str(r) for r in result_ids]})
@@ -62,7 +66,10 @@ async def get_template_assignments(
     session: SessionDep,
 ) -> ApiResponse:
     role_ids, personal_add, personal_remove = await assign_service.get_template_assignments(
-        session, org_id, template_id, user.id,
+        session,
+        org_id,
+        template_id,
+        user.id,
     )
     return ApiResponse.success(
         AssignmentResponse(
@@ -89,15 +96,16 @@ async def set_member_overrides(
 ) -> ApiResponse:
     overrides = [(uuid.UUID(o.template_id), o.type) for o in body.overrides]
     parsed = await assign_service.set_member_overrides(
-        session, org_id, user_id, overrides, user.id,
+        session,
+        org_id,
+        user_id,
+        overrides,
+        user.id,
     )
     await session.commit()
     return ApiResponse.success(
         {
-            "overrides": [
-                {"template_id": str(tpl_id), "type": t.value}
-                for tpl_id, t in parsed
-            ],
+            "overrides": [{"template_id": str(tpl_id), "type": t.value} for tpl_id, t in parsed],
         }
     )
 
@@ -116,7 +124,10 @@ async def get_member_effective_checklists(
     session: SessionDep,
 ) -> ApiResponse:
     pairs = await assign_service.get_effective_templates(
-        session, org_id, user_id, user.id,
+        session,
+        org_id,
+        user_id,
+        user.id,
     )
     return ApiResponse.success(
         EffectiveTemplatesResponse(

@@ -125,18 +125,27 @@ class TestInstanceCreation:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             name="A",
             items=[("P1", True), ("P2", False)],
         )
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            name="B", type_="shift_end",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            name="B",
+            type_="shift_end",
             items=[("Q1", True)],
         )
 
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -152,7 +161,10 @@ class TestInstanceCreation:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("X", True)],
         )
 
@@ -173,11 +185,16 @@ class TestInstanceCreation:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", True), ("P2", False), ("P3", True)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -199,11 +216,16 @@ class TestItemUpdates:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", True)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -232,11 +254,16 @@ class TestItemUpdates:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", False)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -265,11 +292,16 @@ class TestItemUpdates:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", True), ("P2", True), ("P3", False)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -312,11 +344,16 @@ class TestItemUpdates:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", False)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -346,11 +383,16 @@ class TestItemUpdates:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             items=[("P1", False)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -377,19 +419,27 @@ class TestFinalize:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             name="Required",
             is_required=True,
             items=[("P1", True)],
         )
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             name="Optional",
             is_required=False,
             items=[("P1", True)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         finish_resp = await client.post(
             f"/api/v1/shifts/{shift_id}/finish",
@@ -411,12 +461,17 @@ class TestFinalize:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             is_required=False,
             items=[("P1", False)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         finish_resp = await client.post(
             f"/api/v1/shifts/{shift_id}/finish",
@@ -429,12 +484,17 @@ class TestFinalize:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             is_required=True,
             items=[("P1", True)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         list_resp = await client.get(
             f"/api/v1/shifts/{shift_id}/checklists",
@@ -464,12 +524,17 @@ class TestAutoFinishIntegration:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template_with_items(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             is_required=True,
             items=[("P1", True)],
         )
         shift_id = await _start_org_shift(
-            client, ctx["member_headers"], ctx["org_id"],
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
         )
         shift_uuid = uuid.UUID(shift_id)
 
