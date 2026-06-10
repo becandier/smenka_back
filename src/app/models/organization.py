@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.app.core.database import Base
 
 if TYPE_CHECKING:
+    from src.app.models.member_rate import OrganizationMemberRate
     from src.app.models.organization_role import OrganizationRole
     from src.app.models.organization_settings import OrganizationSettings
     from src.app.models.user import User
@@ -107,4 +108,8 @@ class OrganizationMember(Base):
     user: Mapped["User"] = relationship(back_populates="memberships")
     custom_role: Mapped["OrganizationRole | None"] = relationship(
         foreign_keys=[role_id],
+    )
+    rates: Mapped[list["OrganizationMemberRate"]] = relationship(
+        back_populates="member",
+        cascade="all, delete-orphan",
     )

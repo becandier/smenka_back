@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from src.app.schemas.organization_role import RoleResponse
+from src.app.schemas.payroll import CurrentRateResponse
 
 
 class OrganizationCreate(BaseModel):
@@ -50,6 +51,11 @@ class MemberResponse(BaseModel):
         description="Кастомная роль организации (или null)",
     )
     joined_at: datetime = Field(description="Дата присоединения")
+    current_rate: CurrentRateResponse | None = Field(
+        default=None,
+        description="Действующая ставка участника (видна только owner/admin; "
+        "null, если ставок нет, все ставки в будущем или у читателя нет прав)",
+    )
 
     model_config = {"from_attributes": True}
 

@@ -6,6 +6,18 @@
 
 ---
 
+## Фича — Ставки и расчёт зарплаты (`payroll`) `[x]`
+ТЗ: `../docs/tasks/payroll/backend.md`
+- [x] Модель `OrganizationMemberRate` (история ставок: member_id FK CASCADE, rate_amount_minor > 0 в копейках, enum `ratetype` hourly/per_shift, currency RUB, effective_from, note)
+- [x] Миграция `f7a8b9c0d1e2`: таблица + `UNIQUE (member_id, effective_from)` + индекс `(member_id, effective_from DESC)`; обратима (downgrade проверен)
+- [x] CRUD ставок: POST/GET/PATCH/DELETE `/organizations/{org_id}/members/{member_id}/rates[/{rate_id}]` (org_admin; 404 `MEMBER_NOT_FOUND`/`RATE_NOT_FOUND`, 409 `RATE_EFFECTIVE_FROM_TAKEN` + защита гонки через UNIQUE)
+- [x] `GET /organizations/{org_id}/payroll` — отчёт за период: ставка на момент `started_at` каждой завершённой смены, Decimal-накопление, half-up один раз на итог сотрудника, `unpaid_*`/`has_missing_rate`
+- [x] `GET /organizations/{org_id}/my-earnings` — личный заработок участника + `current_rate` (owner/посторонние → 403)
+- [x] `MemberResponse.current_rate` (additive nullable) — заполняется только для owner/admin/super_admin; для employee всегда null
+- [x] 41 тест (`tests/test_payroll.py`): CRUD, права, смена ставки по истории, mixed rate_type, unpaid, единое округление, паузы, границы периода, каскад при исключении участника
+
+---
+
 ## Фича — Фильтры по диапазону дат (`date_filters`) `[x]`
 ТЗ: `../docs/tasks/date_filters/backend.md`
 - [x] `validate_date_range` — 400 `INVALID_DATE_RANGE` на всех 4 эндпоинтах (оба конца заданы и `date_from > date_to`); открытый диапазон допустим

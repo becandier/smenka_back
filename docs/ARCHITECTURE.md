@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-06-10 (date_filters — кастомный диапазон дат в stats)
+Последнее обновление: 2026-06-10 (payroll — ставки и расчёт зарплаты)
 
 ---
 
@@ -15,6 +15,7 @@
 | `Pause` | `pauses` | Пауза внутри смены (shift_id, started_at, finished_at) |
 | `Organization` | `organizations` | Организация (name, owner_id, invite_code, is_deleted) |
 | `OrganizationMember` | `organization_members` | Участник (org_id, user_id, role, role_id → custom_role) |
+| `OrganizationMemberRate` | `organization_member_rates` | История ставок участника (rate_amount_minor в копейках, rate_type hourly/per_shift, effective_from; UNIQUE (member_id, effective_from)) |
 | `OrganizationRole` | `organization_roles` | Кастомная роль организации (org_id, name) |
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius) |
 | `OrganizationSettings` | `organization_settings` | Настройки организации (geo, лимиты пауз, auto-finish) |
@@ -90,6 +91,12 @@
 | GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены | Bearer (владелец смены / owner / admin) |
 | GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра | Bearer |
 | PATCH | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}` | Отметить пункт | Bearer (владелец смены) |
+| POST | `/api/v1/organizations/{id}/members/{member_id}/rates` | Назначить ставку (новая запись истории) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/members/{member_id}/rates` | История ставок участника (effective_from DESC) | Bearer (owner/admin) |
+| PATCH | `/api/v1/organizations/{id}/members/{member_id}/rates/{rate_id}` | Исправить запись истории | Bearer (owner/admin) |
+| DELETE | `/api/v1/organizations/{id}/members/{member_id}/rates/{rate_id}` | Удалить запись истории | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/payroll` | Отчёт по зарплате за период (`date_from`/`date_to` включительно) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/my-earnings` | Личный заработок за период + current_rate | Bearer (member; owner → 403) |
 | GET | `/api/v1/admin/users` | Список пользователей платформы (поиск, фильтры role/is_verified, sort, пагинация) | Bearer (super_admin) |
 | GET | `/api/v1/admin/users/{user_id}` | Детали пользователя + агрегаты (owned/member orgs, shifts) | Bearer (super_admin) |
 | PATCH | `/api/v1/admin/users/{user_id}/role` | Сменить глобальную роль (нельзя разжаловать себя) | Bearer (super_admin) |
@@ -101,6 +108,8 @@
 > **Видимость владельца смены (orgrouted enrichment).** `ShiftResponse` несёт 4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`). Они вычисляются на чтении (`services/shift.build_org_shift_identities`: имя/почта из `users`, роль/кастомная роль из `organization_members` — два batch-запроса без N+1, `custom_role` через `selectinload`) и наполняются ТОЛЬКО в орг-контексте: `GET /organizations/{id}/shifts` (список) и `GET /organizations/{id}/shifts/{shift_id}` (деталь). В персональном `GET /shifts` остаются `null` (сериализатор `_shift_to_response` без `identity`). Исключённый из org сотрудник: имя/почта сохраняются, `role`/`custom_role_name` = `null`. Деталь чужой org-смены строго проверяет `shift.organization_id == org_id` → иначе `404 SHIFT_NOT_FOUND` (персональные/чужие смены не раскрываются). Схема БД не меняется — денормализация в `shifts` отвергнута.
 
 > **CORS.** Подключён `CORSMiddleware` (`main.py`), источники — из `Settings.cors_origins` (env `CORS_ORIGINS`, CSV; пусто = выключено). Нужен для браузерной админки `smenka_admin`.
+
+> **Ставки и зарплата (payroll).** История ставок — источник истины: строка `organization_member_rates` действует с `effective_from`, прошлые записи не перезаписываются (новая ставка «с даты» = POST новой строки; PATCH — только исправление опечаток). Для каждой завершённой смены берётся ставка с максимальным `effective_from <= shift.started_at`; смены без ставки → `unpaid_seconds`/`unpaid_shifts_count`/`has_missing_rate` и не входят в `gross_amount_minor`. Деньги — целые копейки: накопление точным Decimal, half-up до копейки ровно один раз на итог сотрудника; `totals.gross` = сумма округлённых итогов. Расчёты не кэшируются. `MemberResponse.current_rate` (additive nullable) — действующая ставка `max(effective_from) <= now`, заполняется **только** для owner/admin/super_admin (для employee всегда null — приватность зарплат). Owner != member (ADR-001): в payroll-отчёте не фигурирует, `my-earnings` отвечает ему 403. Ошибки: `MEMBER_NOT_FOUND`/`RATE_NOT_FOUND` (404), `RATE_EFFECTIVE_FROM_TAKEN` (409, дубль по `UNIQUE (member_id, effective_from)` — закрывает и гонку), `INVALID_DATE_RANGE` (400, согласовано с date_filters).
 
 > **Фильтры диапазона дат (date_filters).** Оба stats-эндпоинта принимают ровно один источник окна: пресет `period` (`day`/`week`/`month`, поведение не менялось) ЛИБО кастомный диапазон `date_from`/`date_to` (включительно по `Shift.started_at`, допускается открытый диапазон). Ошибки: `MISSING_STATS_RANGE` → `AMBIGUOUS_STATS_RANGE` → `INVALID_PERIOD` → `INVALID_DATE_RANGE` (этот порядок). В ответах stats добавлены `range_from`/`range_to` (фактически применённое окно), `period` стал nullable. Списочные эндпоинты смен получили валидацию `INVALID_DATE_RANGE`. Все границы нормализуются `services/shift.ensure_utc` (naive → UTC, aware → приведение к UTC) и в фильтрах, и в эхо-полях.
 
@@ -121,6 +130,7 @@
 | `services/checklist_override.py` | Гранулярный upsert/delete/list личных overrides (ON CONFLICT DO UPDATE) |
 | `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, finalize |
 | `services/common.py` | Общие guard-функции org-доступа (`ensure_owner/ensure_member/ensure_admin_or_owner`) со сквозной веткой super_admin (`AccessError`) |
+| `services/payroll.py` | История ставок участников (CRUD, `PayrollError`), действующие ставки batch-запросом (DISTINCT ON), расчёт payroll/my-earnings «на лету» |
 | `services/admin.py` | Платформенные операции super_admin: список/детали пользователей, смена роли, обзор организаций, статистика (`AdminError`) |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule) |
 | `core/logging.py` | Конфигурация structlog |
