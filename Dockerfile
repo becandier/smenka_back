@@ -1,7 +1,7 @@
 # Базовый образ запиннен по digest (multi-arch manifest list) — воспроизводимость
 # сборки и контроль supply-chain. Обновляется осознанно через Dependabot (docker).
 # Тег python:3.12-slim на момент пина указывал на этот digest.
-FROM python:3.12-slim@sha256:a39549e211a16149edf74e5fdc9ef03a6767e46cd987c5048b6659b6c9904c94 AS base
+FROM python:3.14-slim@sha256:d7a925f9eb9639a93e455b9f12c167569358818c0f62b51b88edbc8fcf34c421 AS base
 
 # Непривилегированный пользователь — контейнер не работает под root.
 RUN useradd --create-home --uid 1000 appuser
