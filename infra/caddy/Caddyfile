@@ -1,13 +1,59 @@
 # Edge-прокси с автоматическим HTTPS (Let's Encrypt).
-# Домены приходят из окружения (API_DOMAIN / ADMIN_DOMAIN в .env), поэтому
-# конфиг не привязан к конкретному домену.
+# Домены приходят из окружения (API_DOMAIN / ADMIN_DOMAIN / FLOWER_DOMAIN в .env),
+# поэтому конфиг не привязан к конкретному домену.
+#
+# Rate-limit: per-IP лимит реализован на уровне приложения (slowapi + Redis, см.
+# security_hardening/backend.md). Он распределённый и видит реальный IP клиента —
+# Caddy по умолчанию проставляет X-Forwarded-For в upstream. Плагин caddy-ratelimit
+# здесь НЕ включаем (требует кастомной сборки Caddy); host-level fail2ban на
+# /api/v1/auth/* — в DEPLOY_NOTES.md §7. HTTP→HTTPS-редирект Caddy делает автоматически.
+
+# Общие security-заголовки (применяются ко всем ответам сайта).
+(security_headers) {
+	header {
+		# HSTS: год, включая поддомены.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Запрет MIME-sniffing.
+		X-Content-Type-Options "nosniff"
+		# Защита от кликджекинга.
+		X-Frame-Options "DENY"
+		# Не утекать полный URL в Referer на сторонние домены.
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Скрыть идентификацию сервера.
+		-Server
+	}
+}
 
 {$API_DOMAIN} {
+	import security_headers
+	# API не рендерит HTML и не должен фреймиться — максимально строгий CSP.
+	header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+	tls {
+		protocols tls1.2 tls1.3
+	}
 	encode zstd gzip
 	reverse_proxy api:8000
 }
 
 {$ADMIN_DOMAIN} {
+	import security_headers
+	# CSP для react-admin (SPA на MUI) подгоняется при заведении smenka_admin:
+	# минимум default-src 'self'; connect-src 'self' <API_DOMAIN>;
+	# style-src 'self' 'unsafe-inline' (MUI инлайнит стили). До готовности каркаса —
+	# без CSP, чтобы не блокировать разработку; остальные security-заголовки активны.
+	tls {
+		protocols tls1.2 tls1.3
+	}
 	encode zstd gzip
 	reverse_proxy admin:80
+}
+
+# Мониторинг Celery. Доступ закрыт basic-auth самого Flower (FLOWER_BASIC_AUTH).
+{$FLOWER_DOMAIN} {
+	import security_headers
+	tls {
+		protocols tls1.2 tls1.3
+	}
+	encode zstd gzip
+	reverse_proxy flower:5555
 }

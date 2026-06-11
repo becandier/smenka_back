@@ -3,9 +3,13 @@
 #
 # Отличия от dev docker-compose.yml:
 #   - образы из ghcr вместо локальной сборки;
-#   - наружу торчит только Caddy (80/443); БД/Redis/API/Admin — внутренняя сеть;
+#   - наружу торчит только Caddy (80/443); БД/Redis/API/Admin/Flower — внутренняя сеть;
 #   - миграции вынесены в one-shot сервис `migrate` (гонок при старте нет);
 #   - Caddy выдаёт TLS (Let's Encrypt) автоматически.
+#
+# Ресурсные лимиты (deploy.resources) — чтобы один контейнер не утянул весь VPS.
+# Числа — стартовые ориентиры; финальные подбираются под размер сервера (DEPLOY_NOTES §4).
+# Compose v2 (не Swarm) учитывает deploy.resources.limits при `docker compose up`.
 name: smenka
 
 services:
@@ -19,6 +23,8 @@ services:
     environment:
       API_DOMAIN: ${API_DOMAIN}
       ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      # Поддомен мониторинга Celery (Flower). Должен быть задан в .env.prod.
+      FLOWER_DOMAIN: ${FLOWER_DOMAIN}
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -26,6 +32,14 @@ services:
     depends_on:
       - api
       - admin
+      - flower
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
 
   # one-shot: гоняет миграции до старта api/worker, затем выходит
   migrate:
@@ -35,9 +49,18 @@ services:
     environment:
       PYTHONPATH: /app
     command: alembic -c src/alembic.ini upgrade head
+    # Образ несёт HTTP-healthcheck для api; для миграционного one-shot он не нужен
+    # (сервис ждут по service_completed_successfully, не по health).
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
 
   api:
     image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
@@ -61,6 +84,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          memory: 256M
 
   worker:
     image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
@@ -70,7 +100,16 @@ services:
       PYTHONPATH: /app
     # один воркер с встроенным Beat (-B). При горизонтальном масштабировании
     # Beat выносится в отдельный сервис, чтобы расписание не дублировалось.
-    command: celery -A src.app.core.celery_app:celery_app worker -B -l info --scheduler celery.beat:PersistentScheduler
+    # Файл расписания — в /tmp (writable под non-root appuser), не в /app.
+    command: celery -A src.app.core.celery_app:celery_app worker -B -l info --scheduler celery.beat:PersistentScheduler --schedule /tmp/celerybeat-schedule
+    # Переопределяем HTTP-healthcheck из образа: воркер не слушает HTTP.
+    # Авто-завершение смен критично — упавший beat не должен молча «жить».
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A src.app.core.celery_app:celery_app inspect ping --timeout 5 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     depends_on:
       db:
         condition: service_healthy
@@ -78,12 +117,48 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # Мониторинг Celery: очередь, упавшие/зависшие задачи авто-завершения.
+  # Наружу — только через Caddy на отдельном поддомене с basic-auth (FLOWER_BASIC_AUTH).
+  flower:
+    image: mher/flower:2.0
+    restart: unless-stopped
+    command: celery --broker=${CELERY_BROKER_URL} flower --port=5555
+    environment:
+      # Логин/пароль вида user:pass — задаётся в .env.prod (DEPLOY_NOTES §6).
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH}
+    expose:
+      - "5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+        reservations:
+          memory: 64M
 
   admin:
     image: ghcr.io/becandier/smenka_admin:${ADMIN_TAG:-latest}
     restart: unless-stopped
     expose:
       - "80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          memory: 32M
 
   db:
     image: postgres:16-alpine
@@ -99,6 +174,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
@@ -110,6 +192,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 64M
 
 volumes:
   pgdata:

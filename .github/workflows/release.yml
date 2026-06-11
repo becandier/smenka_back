@@ -40,6 +40,7 @@ jobs:
             type=semver,pattern=v{{version}}
 
       - name: Build & push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -49,6 +50,27 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Скан ровно того образа, что запушили (по digest, не по плавающему тегу).
+      # Сейчас warn-режим (exit-code 0): не блокирует выкладку — политику fail/warn
+      # согласуем при первом деплое (DEPLOY_NOTES §9). Для блокировки → exit-code '1'.
+      - name: Trivy — скан образа на CVE (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.28.0
+        with:
+          image-ref: ghcr.io/becandier/smenka_back@${{ steps.build.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+          exit-code: "0"
+
+      - name: SBOM (SPDX) как артефакт образа
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/becandier/smenka_back@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          artifact-name: sbom-smenka_back.spdx.json
+          output-file: sbom-smenka_back.spdx.json
 
   # автодеплой по SSH — выполняется только когда явно включён переменной репозитория
   deploy:

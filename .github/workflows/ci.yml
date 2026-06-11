@@ -71,3 +71,37 @@ jobs:
 
       - name: Pytest
         run: uv run pytest -q
+
+  # Сканеры безопасности: уязвимые зависимости и утёкшие секреты.
+  # Падение блокирует мердж PR (но не деплой — release.yml независим).
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks сканирует всю историю коммитов, а не только HEAD.
+          fetch-depth: 0
+
+      - name: Gitleaks (секреты в коде и истории)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE нужен только для GitHub-организаций; becandier —
+          # личный аккаунт, скан бесплатен.
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Экспорт зависимостей (без dev, без хешей, без самого проекта)
+        run: >-
+          uv export --frozen --no-dev --no-emit-project --no-hashes
+          --format requirements.txt --output-file requirements.txt
+
+      - name: pip-audit (известные CVE в зависимостях)
+        # Падает на любой известной уязвимости. Временный allowlist — флагом
+        # --ignore-vuln <GHSA/PYSEC-id> с комментарием и сроком пересмотра.
+        run: uvx pip-audit --requirement requirements.txt --strict

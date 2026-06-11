@@ -1,0 +1,30 @@
+# Автообновление зависимостей. Безопасность: вовремя поднимать CVE-фиксы и
+# двигать запиненный по digest базовый образ Docker и версии GitHub Actions.
+version: 2
+updates:
+  # Python-зависимости проекта (uv.lock / pyproject.toml).
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  # Базовый образ в Dockerfile (FROM ...@sha256:...) — обновляет пин на новый digest.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "docker"
+
+  # Версии экшенов в .github/workflows/*.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
