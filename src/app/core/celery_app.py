@@ -1,9 +1,17 @@
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
+from celery.signals import task_failure  # type: ignore[import-untyped]
 
 from src.app.core.config import get_settings
+from src.app.core.logging import get_logger
+from src.app.core.sentry import init_sentry
 
 settings = get_settings()
+logger = get_logger(__name__)
+
+# Worker тоже инициализирует Sentry: при включённом DSN падения задач
+# автоматически уходят в Sentry через CeleryIntegration. При пустом DSN — no-op.
+init_sentry()
 
 celery_app = Celery(
     "smenka",
@@ -16,6 +24,14 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     timezone="UTC",
+    # Мониторинг (видимость во Flower/мониторинге, поднимается в проде — devops.md).
+    task_track_started=True,
+    task_send_sent_event=True,
+    worker_send_task_events=True,
+    # Транзиентная устойчивость: задача переотдаётся при падении воркера,
+    # авто-завершение смен критично и не должно молча теряться.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
     include=[
         "src.app.tasks.shifts",
         "src.app.tasks.cleanup",
@@ -35,3 +51,22 @@ celery_app.conf.update(
         },
     },
 )
+
+
+def _on_task_failure(
+    sender: object = None,
+    task_id: object = None,
+    exception: BaseException | None = None,
+    **kwargs: object,
+) -> None:
+    """Падение задачи → структурированный лог (отправку в Sentry делает
+    CeleryIntegration, если DSN задан)."""
+    logger.error(
+        "celery_task_failed",
+        task=getattr(sender, "name", None),
+        task_id=task_id,
+        error=repr(exception),
+    )
+
+
+task_failure.connect(_on_task_failure)

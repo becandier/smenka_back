@@ -1,19 +1,58 @@
 # tests/conftest.py
-import uuid
-from collections.abc import AsyncGenerator
+import os
 
+# Тестовое окружение задаём ДО импорта приложения (settings кэшируется через
+# lru_cache при первом импорте src.*): rate-limit выключен по умолчанию (включаем
+# точечно фикстурой rate_limit_on), хранилище slowapi — in-memory без сети.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+os.environ.setdefault("RATE_LIMIT_STORAGE_URI", "memory://")
+
+import uuid
+from collections.abc import AsyncGenerator, Generator
+
+import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from src.app.core import redis as redis_module
 from src.app.core.config import get_settings
 from src.app.core.database import Base, get_session
+from src.app.core.rate_limit import limiter
 from src.app.core.security import hash_password
 from src.app.main import app
 from src.app.models.user import User, UserRole
 
 settings = get_settings()
+
+
+@pytest.fixture(autouse=True)
+async def _fake_redis() -> AsyncGenerator[None]:
+    """Подменяет общий Redis-клиент на fakeredis (lockout) — сеть не нужна.
+
+    Свежий инстанс на каждый тест даёт изоляцию счётчиков блокировки.
+    """
+    client: fakeredis.aioredis.FakeRedis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    redis_module._client = client
+    yield
+    await client.flushall()
+    redis_module._client = None
+
+
+@pytest.fixture
+def rate_limit_on() -> Generator[None]:
+    """Включить slowapi-лимит для конкретного теста (с чистым счётчиком)."""
+    limiter.reset()
+    limiter.enabled = True
+    yield
+    limiter.enabled = False
+    limiter.reset()
+
 
 TEST_DATABASE_URL = (
     f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"

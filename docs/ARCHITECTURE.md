@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-06-10 (payroll — ставки и расчёт зарплаты)
+Последнее обновление: 2026-06-11 (security_hardening — rate-limit, lockout, attempts, Sentry, аудит)
 
 ---
 
@@ -10,7 +10,7 @@
 |--------|---------|----------|
 | `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified, role: super_admin/user) |
 | `RefreshToken` | `refresh_tokens` | JWT refresh-токен (token, expires_at, revoked) |
-| `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at) |
+| `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at, **attempts** — счётчик неверных вводов; при `>= max_code_attempts` код «сжигается») |
 | `Shift` | `shifts` | Рабочая смена (user_id, organization_id, started_at, finished_at, status, has_incomplete_required_checklists) |
 | `Pause` | `pauses` | Пауза внутри смены (shift_id, started_at, finished_at) |
 | `Organization` | `organizations` | Организация (name, owner_id, invite_code, is_deleted) |
@@ -25,6 +25,7 @@
 | `ChecklistMemberOverride` | `checklist_member_overrides` | Личное переопределение (add/remove) |
 | `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
 | `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count) |
+| `AuditLog` | `audit_logs` | Append-only журнал чувствительных действий (organization_id NULL→CASCADE, actor_user_id NULL→SET NULL, action, resource_type, resource_id, summary jsonb, ip_address, created_at). Системные авто-действия Celery — `actor_user_id = null`. Индексы `(organization_id, created_at DESC)`, `(actor_user_id)`, `(action)` |
 
 ---
 
@@ -102,6 +103,7 @@
 | PATCH | `/api/v1/admin/users/{user_id}/role` | Сменить глобальную роль (нельзя разжаловать себя) | Bearer (super_admin) |
 | GET | `/api/v1/admin/organizations` | Обзор всех организаций (owner_email, member_count, фильтры) | Bearer (super_admin) |
 | GET | `/api/v1/admin/stats` | Сводная статистика платформы (дашборд) | Bearer (super_admin) |
+| GET | `/api/v1/organizations/{id}/audit-logs` | Лента аудита организации (фильтры action/actor/даты, пагинация, created_at DESC) | Bearer (owner/admin) |
 
 > **Сквозной доступ super_admin.** Все org-эндпоинты (`members`, `settings`, `locations`, `roles`, `checklist-*`, `shifts`, `stats`) пускают `super_admin`, даже если он не состоит в организации. Проверки прав вынесены в `services/common.py` (`ensure_owner` / `ensure_member` / `ensure_admin_or_owner`), и в каждой добавлена ветка super_admin. `GET /shifts` и `GET /organizations/{id}/shifts` дополнительно принимают `sort` (`started_at`/`finished_at`) и `order` (`asc`/`desc`).
 
@@ -112,6 +114,10 @@
 > **Ставки и зарплата (payroll).** История ставок — источник истины: строка `organization_member_rates` действует с `effective_from`, прошлые записи не перезаписываются (новая ставка «с даты» = POST новой строки; PATCH — только исправление опечаток). Для каждой завершённой смены берётся ставка с максимальным `effective_from <= shift.started_at`; смены без ставки → `unpaid_seconds`/`unpaid_shifts_count`/`has_missing_rate` и не входят в `gross_amount_minor`. Деньги — целые копейки: накопление точным Decimal, half-up до копейки ровно один раз на итог сотрудника; `totals.gross` = сумма округлённых итогов. Расчёты не кэшируются. `MemberResponse.current_rate` (additive nullable) — действующая ставка `max(effective_from) <= now`, заполняется **только** для owner/admin/super_admin (для employee всегда null — приватность зарплат). Owner != member (ADR-001): в payroll-отчёте не фигурирует, `my-earnings` отвечает ему 403. Ошибки: `MEMBER_NOT_FOUND`/`RATE_NOT_FOUND` (404), `RATE_EFFECTIVE_FROM_TAKEN` (409, дубль по `UNIQUE (member_id, effective_from)` — закрывает и гонку), `INVALID_DATE_RANGE` (400, согласовано с date_filters).
 
 > **Фильтры диапазона дат (date_filters).** Оба stats-эндпоинта принимают ровно один источник окна: пресет `period` (`day`/`week`/`month`, поведение не менялось) ЛИБО кастомный диапазон `date_from`/`date_to` (включительно по `Shift.started_at`, допускается открытый диапазон). Ошибки: `MISSING_STATS_RANGE` → `AMBIGUOUS_STATS_RANGE` → `INVALID_PERIOD` → `INVALID_DATE_RANGE` (этот порядок). В ответах stats добавлены `range_from`/`range_to` (фактически применённое окно), `period` стал nullable. Списочные эндпоинты смен получили валидацию `INVALID_DATE_RANGE`. Все границы нормализуются `services/shift.ensure_utc` (naive → UTC, aware → приведение к UTC) и в фильтрах, и в эхо-полях.
+
+> **Усиление безопасности (security_hardening).** Три класса защит. **(1) Rate-limit** (slowapi, `core/rate_limit.py`) на `register`/`verify`/`resend-code`/`login` — ключ = IP клиента (`utils/request.get_client_ip`, первый из `X-Forwarded-For` за Caddy). Хранилище счётчиков — Redis (`rate_limit_storage_uri`||`redis_url`; в тестах `memory://`), пороги из ENV (`*_RATE_LIMIT`). Превышение → `429 RATE_LIMIT_EXCEEDED` в конверте `{data,error}` + `Retry-After`. Лимитер выключаем флагом `rate_limit_enabled`. **(2) Счётчик попыток кода**: `verification_codes.attempts` атомарно (`UPDATE attempts = attempts+1`, commit до отдачи ошибки) растёт на каждый неверный `verify`; при `>= max_code_attempts` (5) код «сожжён» → `429 TOO_MANY_CODE_ATTEMPTS`, нужен `resend-code`. **(3) Блокировка аккаунта** (`services/lockout.py`, Redis-ключ `login_fail:{email}` с TTL = окно): после `max_login_failures` (10) неудач — `423 ACCOUNT_LOCKED` на `account_lockout_minutes` (15) независимо от верности пароля; успех сбрасывает счётчик. Блокировка по email одинаково для существующего/несуществующего email (без enumeration-оракула); per-IP rate-limit ловит распределённый перебор. **Sentry** (`core/sentry.py`) включается только при `SENTRY_DSN` (иначе no-op; dev/CI/тесты без сети), `send_default_pii=False`, `max_request_body_size="never"`. Глобальный `@app.exception_handler(Exception)` ловит необработанные 500: лог через structlog (repr) + `capture_exception`, клиенту — тот же конверт `{data:null, error:{code:"ERROR"}}` (доменные ошибки и `RequestValidationError` идут своими хендлерами и в Sentry не шлются). **Аудит** пишется в той же транзакции, что и действие (см. `services/audit.py`, ниже).
+
+> **Аудит действий (audit_logs).** Запись создаётся из endpoint-слоя ПОСЛЕ успешного сервисного вызова и ДО `session.commit()` — один commit, аудит не расходится с фактом. Покрытие: `org.update/delete/invite_rotate`, `member.join/remove/role_update`, `settings.update`, `location.create/update/delete`, `shift.finish` (actor = инициатор, IP из запроса), а также системные `shift.auto_finish`/`pause.auto_finish` из Celery (`record_sync`, `actor_user_id = null`). `summary` — ключевые поля без секретов (инвайт-код и токены не пишутся). Чтение — только `GET /organizations/{id}/audit-logs` (owner/admin, `created_at DESC`, фильтры `action`/`actor_user_id`/`date_from`/`date_to` с `date_to` включительно, пагинация limit≤200); `actor_name` подмешивается batch-запросом по `users` (или «Система» при null-акторе). Записи неизменяемы и не удаляются через API.
 
 ---
 
@@ -132,7 +138,12 @@
 | `services/common.py` | Общие guard-функции org-доступа (`ensure_owner/ensure_member/ensure_admin_or_owner`) со сквозной веткой super_admin (`AccessError`) |
 | `services/payroll.py` | История ставок участников (CRUD, `PayrollError`), действующие ставки batch-запросом (DISTINCT ON), расчёт payroll/my-earnings «на лету» |
 | `services/admin.py` | Платформенные операции super_admin: список/детали пользователей, смена роли, обзор организаций, статистика (`AdminError`) |
-| `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule) |
+| `services/audit.py` | Запись аудита (`record` async / `record_sync` для Celery, в той же транзакции) и чтение ленты организации с именами инициаторов |
+| `services/lockout.py` | Блокировка аккаунта по неудачным логинам (Redis-счётчик с TTL, по email) |
+| `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule, task-события для мониторинга, `acks_late`, сигнал `task_failure` → structlog; Sentry в воркере) |
+| `core/rate_limit.py` | slowapi-`Limiter` (ключ = IP, Redis-хранилище, пороги из ENV) |
+| `core/redis.py` | Общий асинхронный Redis-клиент приложения (lockout); ленивый, подменяется fakeredis в тестах |
+| `core/sentry.py` | Инициализация Sentry (только при `SENTRY_DSN`, без PII и тел запросов) |
 | `core/logging.py` | Конфигурация structlog |
 
 ---
@@ -164,6 +175,7 @@
 | Файл | Описание |
 |------|----------|
 | `utils/geo.py` | Haversine расчёт расстояния, проверка радиуса |
+| `utils/request.py` | `get_client_ip` — IP клиента из `X-Forwarded-For` (за Caddy) либо `request.client.host` (для rate-limit и аудита) |
 
 ---
 
@@ -171,13 +183,13 @@
 
 | Файл | Задача | Расписание |
 |------|--------|------------|
-| `tasks/shifts.py` | `auto_finish_stale_shifts` — завершение зависших смен | Каждые 5 мин |
-| `tasks/shifts.py` | `auto_finish_stale_pauses` — завершение просроченных пауз | Каждые 5 мин |
+| `tasks/shifts.py` | `auto_finish_stale_shifts` — завершение зависших смен (+ аудит `shift.auto_finish`, actor=null) | Каждые 5 мин |
+| `tasks/shifts.py` | `auto_finish_stale_pauses` — завершение просроченных пауз (+ аудит `pause.auto_finish`, actor=null) | Каждые 5 мин |
 | `tasks/cleanup.py` | `cleanup_expired_tokens` — очистка протухших токенов/кодов | Ежедневно 03:00 UTC |
 
 **Инфраструктура:**
-- Redis 7 — брокер Celery + будущий кэш
-- Celery worker с встроенным Beat (один контейнер)
+- Redis 7 — брокер Celery + хранилище rate-limit (slowapi) и счётчиков lockout
+- Celery worker с встроенным Beat (один контейнер); включены task-события (`task_track_started`/`*_send_*_event`) для мониторинга (Flower в проде), `acks_late`, сигнал `task_failure` → structlog (+ Sentry через CeleryIntegration)
 - Синхронные DB-сессии для задач (`sync_session_factory` в `database.py`)
 
 ---
@@ -196,7 +208,8 @@
 
 ## Внешние сервисы
 
-- **Redis** — брокер Celery, планируется для кэширования
+- **Redis** — брокер Celery, хранилище rate-limit (slowapi) и счётчиков блокировки аккаунтов
+- **Sentry** — error-tracking бэка (включается при `SENTRY_DSN`; провижининг — `DEPLOY_NOTES.md`)
 
 ---
 

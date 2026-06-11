@@ -9,9 +9,11 @@ from src.app.core.celery_app import celery_app
 from src.app.core.config import get_settings
 from src.app.core.database import get_sync_session
 from src.app.core.logging import get_logger
+from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Shift, ShiftStatus
+from src.app.services import audit as audit_service
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -97,6 +99,16 @@ def auto_finish_stale_shifts() -> None:
             shift.status = ShiftStatus.finished
             shift.finished_at = shift_finish
 
+            audit_service.record_sync(
+                session,
+                action=AuditAction.shift_auto_finish,
+                resource_type=AuditResource.shift,
+                organization_id=shift.organization_id,
+                actor_user_id=None,
+                resource_id=shift.id,
+                summary={"finished_at": shift_finish.isoformat(), "auto_finish_hours": hours},
+            )
+
         if stale:
             logger.info("stale_shifts_finished", count=len(stale))
 
@@ -136,9 +148,19 @@ def auto_finish_stale_pauses() -> None:
             max_pause = timedelta(minutes=org_s.max_pause_minutes)
             for pause in shift.pauses:
                 if pause.finished_at is None and (now - pause.started_at) > max_pause:
-                    pause.finished_at = pause.started_at + max_pause
+                    finished = pause.started_at + max_pause
+                    pause.finished_at = finished
                     shift.status = ShiftStatus.active
                     count += 1
+                    audit_service.record_sync(
+                        session,
+                        action=AuditAction.pause_auto_finish,
+                        resource_type=AuditResource.pause,
+                        organization_id=shift.organization_id,
+                        actor_user_id=None,
+                        resource_id=pause.id,
+                        summary={"finished_at": finished.isoformat()},
+                    )
                     break
 
         if count > 0:

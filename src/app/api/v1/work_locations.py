@@ -1,9 +1,10 @@
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.work_location import (
     WorkLocationCreate,
@@ -11,7 +12,9 @@ from src.app.schemas.work_location import (
     WorkLocationResponse,
     WorkLocationUpdate,
 )
+from src.app.services import audit as audit_service
 from src.app.services import work_location as wl_service
+from src.app.utils.request import get_client_ip
 
 if TYPE_CHECKING:
     from src.app.models.work_location import WorkLocation
@@ -49,6 +52,7 @@ async def create_location(
     body: WorkLocationCreate,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     location = await wl_service.create_work_location(
         session,
@@ -58,6 +62,21 @@ async def create_location(
         latitude=body.latitude,
         longitude=body.longitude,
         radius_meters=body.radius_meters,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.location_create,
+        resource_type=AuditResource.location,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=location.id,
+        summary={
+            "name": body.name,
+            "latitude": body.latitude,
+            "longitude": body.longitude,
+            "radius_meters": body.radius_meters,
+        },
+        ip_address=get_client_ip(request),
     )
     await session.commit()
     return ApiResponse.success(_location_to_response(location))
@@ -95,6 +114,7 @@ async def update_location(
     body: WorkLocationUpdate,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     fields = body.model_dump(exclude_unset=True)
     location = await wl_service.update_work_location(
@@ -103,6 +123,16 @@ async def update_location(
         location_id,
         user.id,
         **fields,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.location_update,
+        resource_type=AuditResource.location,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=location_id,
+        summary=fields,
+        ip_address=get_client_ip(request),
     )
     await session.commit()
     return ApiResponse.success(_location_to_response(location))
@@ -118,7 +148,17 @@ async def delete_location(
     location_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     await wl_service.delete_work_location(session, org_id, location_id, user.id)
+    await audit_service.record(
+        session,
+        action=AuditAction.location_delete,
+        resource_type=AuditResource.location,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=location_id,
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success({"message": "Точка удалена"})

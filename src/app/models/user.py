@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -97,6 +97,14 @@ class VerificationCode(Base):
     )
     code: Mapped[str] = mapped_column(String(10))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Счётчик неверных вводов этого кода в verify. При достижении
+    # settings.max_code_attempts код «сжигается» (TOO_MANY_CODE_ATTEMPTS).
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

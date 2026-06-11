@@ -236,7 +236,8 @@ async def remove_member(
     org_id: uuid.UUID,
     member_user_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> None:
+) -> uuid.UUID:
+    """Удалить участника. Возвращает id записи membership (для аудита)."""
     org = await get_organization(session, org_id)
 
     result = await session.execute(
@@ -248,18 +249,19 @@ async def remove_member(
     member = result.scalar_one_or_none()
     if member is None:
         raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+    member_id = member.id
 
     # Self-leave: any member can leave
     if member_user_id == requester_id:
         await session.delete(member)
         await session.flush()
-        return
+        return member_id
 
     # Owner can remove anyone
     if org.owner_id == requester_id:
         await session.delete(member)
         await session.flush()
-        return
+        return member_id
 
     # Admin can remove
     requester_member = await session.execute(
@@ -275,6 +277,7 @@ async def remove_member(
     await session.delete(member)
     await session.flush()
     logger.info("member_removed", org_id=str(org_id), user_id=str(member_user_id))
+    return member_id
 
 
 async def get_all_organizations(
