@@ -3,9 +3,10 @@ import uuid
 from datetime import datetime as dt_datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.shift import Shift
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.shift import (
@@ -14,8 +15,10 @@ from src.app.schemas.shift import (
     ShiftStartRequest,
     ShiftStatsResponse,
 )
+from src.app.services import audit as audit_service
 from src.app.services import shift as shift_service
 from src.app.services.shift import ShiftIdentity, calculate_worked_seconds
+from src.app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
 
@@ -222,7 +225,18 @@ async def finish_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     shift = await shift_service.finish_shift(session, shift_id, user.id)
+    await audit_service.record(
+        session,
+        action=AuditAction.shift_finish,
+        resource_type=AuditResource.shift,
+        organization_id=shift.organization_id,
+        actor_user_id=user.id,
+        resource_id=shift.id,
+        summary={"finished_at": shift.finished_at.isoformat() if shift.finished_at else None},
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success(_shift_to_response(shift))

@@ -19,6 +19,8 @@ dependencies = [
     "redis>=5.0.0",
     "structlog>=24.0.0",
     "psycopg2-binary>=2.9.0",
+    "slowapi>=0.1.9",
+    "sentry-sdk[fastapi]>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -28,6 +30,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    "fakeredis>=2.26.0",
 ]
 
 [tool.ruff]
@@ -112,7 +115,7 @@ exclude = ["src/migrations/"]
 
 # Сторонние библиотеки без type-stubs.
 [[tool.mypy.overrides]]
-module = ["jose.*", "passlib.*"]
+module = ["jose.*", "passlib.*", "slowapi.*"]
 ignore_missing_imports = true
 
 # Декораторы Celery (@app.task) нетипизированы — ослабляем только это правило

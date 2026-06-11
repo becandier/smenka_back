@@ -1,6 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from src.app.api.deps import SessionDep
+from src.app.core.config import get_settings
+from src.app.core.rate_limit import limiter
 from src.app.schemas.auth import (
     LoginRequest,
     LogoutRequest,
@@ -17,6 +19,7 @@ from src.app.schemas.base import ApiResponse
 from src.app.services import auth as auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+settings = get_settings()
 
 
 @router.post(
@@ -28,7 +31,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
         "подтверждения (TTL 15 мин). До подтверждения email вход невозможен."
     ),
 )
-async def register(body: RegisterRequest, session: SessionDep) -> ApiResponse:
+@limiter.limit(settings.register_rate_limit)
+async def register(request: Request, body: RegisterRequest, session: SessionDep) -> ApiResponse:
     user, code = await auth_service.register(
         session,
         body.email,
@@ -53,7 +57,8 @@ async def register(body: RegisterRequest, session: SessionDep) -> ApiResponse:
         "refresh_token (auto-login)."
     ),
 )
-async def verify(body: VerifyRequest, session: SessionDep) -> ApiResponse:
+@limiter.limit(settings.verify_rate_limit)
+async def verify(request: Request, body: VerifyRequest, session: SessionDep) -> ApiResponse:
     access_token, refresh_token = await auth_service.verify_email(
         session,
         body.email,
@@ -73,7 +78,10 @@ async def verify(body: VerifyRequest, session: SessionDep) -> ApiResponse:
     summary="Повторная отправка кода",
     description="Повторно отправляет код подтверждения. Cooldown — 30 сек между запросами.",
 )
-async def resend_code(body: ResendCodeRequest, session: SessionDep) -> ApiResponse:
+@limiter.limit(settings.resend_rate_limit)
+async def resend_code(
+    request: Request, body: ResendCodeRequest, session: SessionDep
+) -> ApiResponse:
     code = await auth_service.resend_code(session, body.email)
     await session.commit()
     return ApiResponse.success(
@@ -92,7 +100,8 @@ async def resend_code(body: ResendCodeRequest, session: SessionDep) -> ApiRespon
         "Email должен быть подтверждён."
     ),
 )
-async def login(body: LoginRequest, session: SessionDep) -> ApiResponse:
+@limiter.limit(settings.login_rate_limit)
+async def login(request: Request, body: LoginRequest, session: SessionDep) -> ApiResponse:
     access_token, refresh_token = await auth_service.login(
         session,
         body.email,

@@ -1,3 +1,4 @@
+from src.app.models.audit_log import AuditAction, AuditLog, AuditResource
 from src.app.models.checklist import (
     ChecklistInstance,
     ChecklistInstanceItem,
@@ -18,6 +19,9 @@ from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_location import WorkLocation
 
 __all__ = [
+    "AuditAction",
+    "AuditLog",
+    "AuditResource",
     "ChecklistInstance",
     "ChecklistInstanceItem",
     "ChecklistInstanceStatus",

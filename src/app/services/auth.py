@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.config import get_settings
@@ -16,6 +16,7 @@ from src.app.core.security import (
     verify_password,
 )
 from src.app.models.user import RefreshToken, User, VerificationCode
+from src.app.services import lockout
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -83,11 +84,12 @@ async def verify_email(
     if user.is_verified:
         raise AuthError("ALREADY_VERIFIED", "Email уже подтверждён", 400)
 
+    # Берём последний активный (непросроченный) код пользователя независимо от
+    # введённого значения — чтобы считать попытки именно по этому коду.
     result = await session.execute(
         select(VerificationCode)
         .where(
             VerificationCode.user_id == user.id,
-            VerificationCode.code == code,
             VerificationCode.expires_at > datetime.now(UTC),
         )
         .order_by(VerificationCode.created_at.desc())
@@ -96,6 +98,25 @@ async def verify_email(
     verification = result.scalar_one_or_none()
 
     if verification is None:
+        raise AuthError("INVALID_CODE", "Неверный или просроченный код", 400)
+
+    # Код «сожжён» — лимит попыток исчерпан, нужен новый (resend-code).
+    if verification.attempts >= settings.max_code_attempts:
+        raise AuthError(
+            "TOO_MANY_CODE_ATTEMPTS",
+            "Исчерпан лимит попыток ввода кода — запросите новый",
+            429,
+        )
+
+    if verification.code != code:
+        # Атомарный инкремент (UPDATE на уровне БД, без потери при гонке) и
+        # commit — счётчик должен сохраниться даже при откате эндпоинта.
+        await session.execute(
+            update(VerificationCode)
+            .where(VerificationCode.id == verification.id)
+            .values(attempts=VerificationCode.attempts + 1)
+        )
+        await session.commit()
         raise AuthError("INVALID_CODE", "Неверный или просроченный код", 400)
 
     user.is_verified = True
@@ -156,13 +177,24 @@ async def login(
     password: str,
 ) -> tuple[str, str]:
     """Authenticate user. Returns (access_token, refresh_token)."""
+    # Блокировка проверяется до пароля и одинаково для существующего и
+    # несуществующего email — чтобы lockout не стал enumeration-оракулом.
+    if await lockout.is_locked(email):
+        raise AuthError(
+            "ACCOUNT_LOCKED",
+            "Аккаунт временно заблокирован после серии неудачных входов",
+            423,
+        )
+
     user = await get_user_by_email(session, email)
     if user is None or not verify_password(password, user.password_hash):
+        await lockout.register_failure(email)
         raise AuthError("INVALID_CREDENTIALS", "Неверный email или пароль", 401)
 
     if not user.is_verified:
         raise AuthError("NOT_VERIFIED", "Email не подтверждён", 403)
 
+    await lockout.reset(email)
     access_token = create_access_token(str(user.id))
     refresh_token = await _create_refresh_token_db(session, user.id)
     logger.info("user_logged_in", user_id=str(user.id), email=email)

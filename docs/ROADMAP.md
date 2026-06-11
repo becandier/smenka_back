@@ -6,6 +6,20 @@
 
 ---
 
+## Фича — Усиление безопасности (`security_hardening`) `[x]`
+ТЗ: `../docs/tasks/security_hardening/backend.md`
+- [x] Rate-limit (slowapi + Redis) на `register`/`verify`/`resend-code`/`login` — ключ = IP (`X-Forwarded-For` за Caddy), пороги из ENV, `429 RATE_LIMIT_EXCEEDED` + `Retry-After` в конверте `{data,error}` (`core/rate_limit.py`, `core/redis.py`, `utils/request.py`)
+- [x] Счётчик попыток кода: `verification_codes.attempts` (атомарный инкремент + commit), `429 TOO_MANY_CODE_ATTEMPTS` при `>= max_code_attempts`; `resend-code` выдаёт свежий код
+- [x] Блокировка аккаунта по неудачным логинам (`services/lockout.py`, Redis TTL по email): `423 ACCOUNT_LOCKED` после `max_login_failures`, сброс при успехе, без enumeration-оракула
+- [x] Sentry (`core/sentry.py`, включается при `SENTRY_DSN`, без PII/тел) + глобальный `@app.exception_handler(Exception)` → 500 в конверте `{data,error}` (code `ERROR`) + `capture_exception`
+- [x] Аудит-лог `audit_logs` (`services/audit.py`): запись в той же транзакции из всех чувствительных endpoint'ов + Celery (`actor_user_id = null`); `GET /organizations/{id}/audit-logs` (owner/admin, фильтры, пагинация)
+- [x] Мониторинг Celery: task-события, `acks_late`, сигнал `task_failure` → structlog; Sentry в воркере (CeleryIntegration)
+- [x] Миграции `a1c2e3f50001` (attempts) и `b2d3f4a60002` (audit_logs) — обратимы, `alembic check` без дрейфа
+- [x] 14 тестов (`tests/test_security_hardening.py`): rate-limit 429, сожжённый код, lockout 423 + сброс + no-enumeration, аудит (запись/чтение/фильтр/403/404 + системная запись Celery), глобальный 500
+- Инфра-часть (Docker non-root, CI-сканеры, ресурсные лимиты, Caddy-заголовки, Flower) — дорожка `devops`; провижининг `SENTRY_DSN` — `DEPLOY_NOTES.md`
+
+---
+
 ## Фича — Ставки и расчёт зарплаты (`payroll`) `[x]`
 ТЗ: `../docs/tasks/payroll/backend.md`
 - [x] Модель `OrganizationMemberRate` (история ставок: member_id FK CASCADE, rate_amount_minor > 0 в копейках, enum `ratetype` hourly/per_shift, currency RUB, effective_from, note)
@@ -138,7 +152,7 @@
 ---
 
 ## Фаза 6 — Продакшен `[~]`
-- [ ] Rate-limiting
+- [x] Rate-limiting — закрыто в `security_hardening` (slowapi + Redis, per-IP на auth-эндпоинтах)
 - [x] CORS-настройки (`CORSMiddleware` + `Settings.cors_origins`, env `CORS_ORIGINS`) — закрыто в admin_panel
 - [x] CI/CD: `.github/workflows/ci.yml` (ruff + mypy + pytest на PR/ветках) + `release.yml` (build → ghcr). Весь бэк: ruff+mypy zero-errors.
 - [ ] Финальная проверка OpenAPI-документации

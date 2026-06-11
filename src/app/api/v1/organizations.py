@@ -2,11 +2,13 @@ import uuid
 from datetime import datetime as dt_datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
 from src.app.api.v1.shifts import _shift_to_response
+from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.user import UserRole
+from src.app.schemas.audit import AuditLogEntry, AuditLogListResponse
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.organization import (
     InviteCodeResponse,
@@ -25,11 +27,14 @@ from src.app.schemas.organization_settings import (
 )
 from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse
+from src.app.services import audit as audit_service
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import shift as shift_service
+from src.app.utils.request import get_client_ip
 
 if TYPE_CHECKING:
+    from src.app.models.audit_log import AuditLog
     from src.app.models.organization import Organization, OrganizationMember
     from src.app.models.organization_settings import OrganizationSettings
 
@@ -181,8 +186,19 @@ async def update_organization(
     body: OrganizationUpdate,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     org = await org_service.update_organization(session, org_id, user.id, body.name)
+    await audit_service.record(
+        session,
+        action=AuditAction.org_update,
+        resource_type=AuditResource.organization,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=org_id,
+        summary={"name": body.name},
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success(_org_to_response(org, "owner", None))
 
@@ -197,8 +213,19 @@ async def delete_organization(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     await org_service.delete_organization(session, org_id, user.id)
+    await audit_service.record(
+        session,
+        action=AuditAction.org_delete,
+        resource_type=AuditResource.organization,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=org_id,
+        summary={"soft_delete": True},
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success({"message": "Организация удалена"})
 
@@ -215,8 +242,20 @@ async def rotate_invite_code(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     new_code = await org_service.rotate_invite_code(session, org_id, user.id)
+    # Сам инвайт-код не пишем в summary — это access-credential.
+    await audit_service.record(
+        session,
+        action=AuditAction.org_invite_rotate,
+        resource_type=AuditResource.organization,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=org_id,
+        summary={"rotated": True},
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success(InviteCodeResponse(invite_code=new_code).model_dump())
 
@@ -234,8 +273,19 @@ async def join_organization(
     invite_code: str,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     org, member = await org_service.join_by_invite(session, invite_code, user.id)
+    await audit_service.record(
+        session,
+        action=AuditAction.member_join,
+        resource_type=AuditResource.member,
+        organization_id=org.id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        summary={"role": member.role.value},
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     geo_check = org.settings.geo_check_enabled if org.settings else False
     return ApiResponse.success(
@@ -302,8 +352,22 @@ async def remove_member(
     member_user_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
-    await org_service.remove_member(session, org_id, member_user_id, user.id)
+    member_id = await org_service.remove_member(session, org_id, member_user_id, user.id)
+    await audit_service.record(
+        session,
+        action=AuditAction.member_remove,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member_id,
+        summary={
+            "removed_user_id": str(member_user_id),
+            "self_leave": member_user_id == user.id,
+        },
+        ip_address=get_client_ip(request),
+    )
     await session.commit()
     return ApiResponse.success({"message": "Участник удалён"})
 
@@ -321,6 +385,7 @@ async def update_member_role(
     body: MemberRoleUpdate,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     member = await org_service.update_member_role(
         session,
@@ -329,6 +394,16 @@ async def update_member_role(
         body.role,
         user.id,
         is_super_admin=user.role == UserRole.super_admin,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.member_role_update,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        summary={"new_role": body.role, "user_id": str(member_user_id)},
+        ip_address=get_client_ip(request),
     )
     await session.commit()
 
@@ -379,6 +454,7 @@ async def update_org_settings(
     body: OrganizationSettingsUpdate,
     user: CurrentUserDep,
     session: SessionDep,
+    request: Request,
 ) -> ApiResponse:
     fields = body.model_dump(exclude_unset=True)
     settings = await settings_service.update_settings(
@@ -386,6 +462,16 @@ async def update_org_settings(
         org_id,
         user.id,
         **fields,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.settings_update,
+        resource_type=AuditResource.settings,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=org_id,
+        summary=fields,
+        ip_address=get_client_ip(request),
     )
     await session.commit()
     return ApiResponse.success(_settings_to_response(settings))
@@ -521,3 +607,70 @@ async def org_stats(
         date_to=date_to,
     )
     return ApiResponse.success(OrgStatsResponse(**stats).model_dump(mode="json"))
+
+
+def _audit_to_entry(entry: "AuditLog", names: dict[uuid.UUID, str]) -> dict[str, Any]:
+    if entry.actor_user_id is None:
+        actor_name = "Система"
+    else:
+        actor_name = names.get(entry.actor_user_id, "Неизвестно")
+    return AuditLogEntry(
+        id=str(entry.id),
+        organization_id=str(entry.organization_id) if entry.organization_id else None,
+        actor_user_id=str(entry.actor_user_id) if entry.actor_user_id else None,
+        actor_name=actor_name,
+        action=entry.action,
+        resource_type=entry.resource_type,
+        resource_id=str(entry.resource_id) if entry.resource_id else None,
+        summary=entry.summary,
+        ip_address=entry.ip_address,
+        created_at=entry.created_at,
+    ).model_dump(mode="json")
+
+
+@router.get(
+    "/{org_id}/audit-logs",
+    summary="Лента аудита организации",
+    description=(
+        "Журнал чувствительных действий owner/admin и системных авто-действий "
+        "(Celery). Append-only, только чтение. Доступно владельцу (Owner) и "
+        "админам. Сортировка по created_at DESC. `date_to` включительно (UTC)."
+    ),
+)
+async def list_org_audit_logs(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    action: AuditAction | None = Query(None, description="Фильтр по коду действия"),
+    actor_user_id: uuid.UUID | None = Query(None, description="Фильтр по UUID инициатора"),
+    date_from: dt_datetime | None = Query(None, description="Нижняя граница по created_at (UTC)"),
+    date_to: dt_datetime | None = Query(
+        None, description="Верхняя граница по created_at, включительно (UTC)"
+    ),
+    limit: int = Query(50, ge=1, le=200, description="Размер страницы (1–200)"),
+    offset: int = Query(0, ge=0, description="Смещение для пагинации"),
+) -> ApiResponse:
+    from src.app.services.common import ensure_admin_or_owner
+
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, user.id, message="Нет прав на просмотр аудита")
+    shift_service.validate_date_range(date_from, date_to)
+
+    items, total, names = await audit_service.list_audit_logs(
+        session,
+        org_id,
+        limit=limit,
+        offset=offset,
+        action=action,
+        actor_user_id=actor_user_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return ApiResponse.success(
+        AuditLogListResponse(
+            items=[_audit_to_entry(it, names) for it in items],
+            total=total,
+            limit=limit,
+            offset=offset,
+        ).model_dump(mode="json")
+    )

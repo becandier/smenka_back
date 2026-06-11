@@ -2,10 +2,12 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import sentry_sdk
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
@@ -13,6 +15,8 @@ from starlette.responses import Response
 from src.app.api.v1.router import router as v1_router
 from src.app.core.config import get_settings
 from src.app.core.logging import get_logger, setup_logging
+from src.app.core.rate_limit import limiter
+from src.app.core.sentry import init_sentry
 from src.app.schemas.base import ApiResponse
 from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
@@ -30,6 +34,9 @@ setup_logging(
     log_level="DEBUG" if settings.debug else "INFO",
 )
 logger = get_logger(__name__)
+
+# Sentry инициализируется до создания приложения; при пустом DSN — no-op.
+init_sentry()
 
 
 @asynccontextmanager
@@ -164,6 +171,12 @@ app = FastAPI(
 )
 
 
+# Rate-limit (slowapi): объект limiter доступен приложению; декораторы
+# @limiter.limit(...) навешаны на auth-эндпоинты, обработчик RateLimitExceeded —
+# ниже (оборачивает в конверт {data,error}).
+app.state.limiter = limiter
+
+
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
     start = time.monotonic()
@@ -199,6 +212,31 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         content=ApiResponse.fail(
             code=exc.detail if isinstance(exc.detail, str) else "ERROR",
             message=str(exc.detail),
+        ).model_dump(),
+    )
+
+
+def _retry_after_seconds(exc: RateLimitExceeded) -> int:
+    """Сколько секунд до сброса окна лимита (длина окна сработавшего лимита)."""
+    limit = getattr(exc, "limit", None)
+    item = getattr(limit, "limit", None)
+    get_expiry = getattr(item, "get_expiry", None)
+    if callable(get_expiry):
+        try:
+            return int(get_expiry())
+        except (TypeError, ValueError):
+            return 60
+    return 60
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(_retry_after_seconds(exc))},
+        content=ApiResponse.fail(
+            "RATE_LIMIT_EXCEEDED",
+            "Слишком много запросов, попробуйте позже",
         ).model_dump(),
     )
 
@@ -286,6 +324,29 @@ async def payroll_error_handler(request: Request, exc: PayrollError) -> JSONResp
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Глобальный перехват необработанных исключений.
+
+    Доменные ошибки и RequestValidationError обрабатываются своими хендлерами
+    (ожидаемые 4xx) и сюда не попадают. Здесь — программные/инфраструктурные 500:
+    логируем через structlog (repr), полный стек шлём в Sentry (если включён),
+    клиенту отдаём неизменный конверт {data,error} со статусом 500.
+    """
+    logger.error(
+        "unhandled_exception",
+        method=request.method,
+        path=request.url.path,
+        error=repr(exc),
+    )
+    if settings.sentry_dsn:
+        sentry_sdk.capture_exception(exc)
+    return JSONResponse(
+        status_code=500,
+        content=ApiResponse.fail("ERROR", "Внутренняя ошибка сервера").model_dump(),
     )
 
 
