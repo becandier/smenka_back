@@ -17,7 +17,7 @@
 | `OrganizationMember` | `organization_members` | Участник (org_id, user_id, role, role_id → custom_role) |
 | `OrganizationMemberRate` | `organization_member_rates` | История ставок участника (rate_amount_minor в копейках, rate_type hourly/per_shift, effective_from; UNIQUE (member_id, effective_from)) |
 | `OrganizationRole` | `organization_roles` | Кастомная роль организации (org_id, name) |
-| `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius) |
+| `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius, address nullable VARCHAR512 — читаемый адрес, геокодинг в админке) |
 | `OrganizationSettings` | `organization_settings` | Настройки организации (geo, лимиты пауз, auto-finish) |
 | `ChecklistTemplate` | `checklist_templates` | Шаблон чек-листа (org_id, name, type, is_required, is_archived) |
 | `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position) |
