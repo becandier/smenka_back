@@ -93,6 +93,35 @@ async def generate_presigned_get(key: str, filename: str) -> str:
         raise StorageError(str(exc)) from exc
 
 
+async def generate_presigned_get_many(items: list[tuple[str, str]]) -> dict[str, str]:
+    """Подписать пачку (key, filename) одним клиентом → {key: url}.
+
+    Подпись считается локально (без сетевых вызовов), поэтому один открытый
+    клиент покрывает любое число ключей — это и убирает N+1 при отдаче галереи
+    фото. При недоступности storage поднимается `StorageError` (вызывающий код
+    решает, деградировать ли до `url=None`)."""
+    if not items:
+        return {}
+    try:
+        async with _session().client("s3", **_client_kwargs(public=True)) as client:
+            result: dict[str, str] = {}
+            for key, filename in items:
+                url = await client.generate_presigned_url(
+                    "get_object",
+                    Params={
+                        "Bucket": settings.s3_bucket,
+                        "Key": key,
+                        "ResponseContentDisposition": f'inline; filename="{filename}"',
+                    },
+                    ExpiresIn=settings.s3_presign_expire_seconds,
+                )
+                result[key] = str(url)
+        return result
+    except (BotoCoreError, ClientError) as exc:
+        logger.error("s3_presign_many_failed", error=repr(exc))
+        raise StorageError(str(exc)) from exc
+
+
 async def delete_object(key: str) -> None:
     try:
         async with _session().client("s3", **_client_kwargs(public=False)) as client:

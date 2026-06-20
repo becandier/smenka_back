@@ -7,11 +7,15 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Integer,
     String,
     Text,
     UniqueConstraint,
+)
+from sqlalchemy import (
+    text as sa_text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -19,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.app.core.database import Base
 
 if TYPE_CHECKING:
+    from src.app.models.file import File
     from src.app.models.shift import Shift
 
 
@@ -36,6 +41,21 @@ class ChecklistInstanceStatus(enum.StrEnum):
     pending = "pending"
     completed = "completed"
     incomplete = "incomplete"
+
+
+class PhotoRequirement(enum.StrEnum):
+    """Требование к фото-подтверждению на пункте чек-листа."""
+
+    none = "none"  # фото нельзя прикреплять (UI скрыт) — дефолт
+    optional = "optional"  # фото можно прикреплять
+    required = "required"  # нужно >=1 фото для «satisfied»
+
+
+class PhotoSource(enum.StrEnum):
+    """Подсказка мобильному UI об источнике фото (сервер не enforce-ит)."""
+
+    camera = "camera"  # только съёмка в приложении (антифрод) — дефолт
+    camera_or_gallery = "camera_or_gallery"  # можно выбрать из галереи или снять
 
 
 class ChecklistTemplate(Base):
@@ -89,6 +109,16 @@ class ChecklistTemplateItem(Base):
     text: Mapped[str] = mapped_column(String(500))
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    photo_requirement: Mapped[PhotoRequirement] = mapped_column(
+        Enum(PhotoRequirement, native_enum=False, length=32),
+        default=PhotoRequirement.none,
+        server_default=sa_text("'none'"),
+    )
+    photo_source: Mapped[PhotoSource] = mapped_column(
+        Enum(PhotoSource, native_enum=False, length=32),
+        default=PhotoSource.camera,
+        server_default=sa_text("'camera'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -231,6 +261,17 @@ class ChecklistInstanceItem(Base):
         nullable=True,
     )
     change_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Снимок настроек фото с шаблонного пункта на старте смены (см. backend.md).
+    photo_requirement: Mapped[PhotoRequirement] = mapped_column(
+        Enum(PhotoRequirement, native_enum=False, length=32),
+        default=PhotoRequirement.none,
+        server_default=sa_text("'none'"),
+    )
+    photo_source: Mapped[PhotoSource] = mapped_column(
+        Enum(PhotoSource, native_enum=False, length=32),
+        default=PhotoSource.camera,
+        server_default=sa_text("'camera'"),
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -238,3 +279,49 @@ class ChecklistInstanceItem(Base):
     )
 
     instance: Mapped["ChecklistInstance"] = relationship(back_populates="items")
+    photos: Mapped[list["ChecklistItemPhoto"]] = relationship(
+        back_populates="item",
+        cascade="all, delete-orphan",
+        order_by="ChecklistItemPhoto.position",
+    )
+
+
+class ChecklistItemPhoto(Base):
+    """Фото-подтверждение, привязанное к пункту-экземпляру чек-листа.
+
+    Геометки и `captured_at` — отдельные колонки (хранилище стрипает EXIF);
+    видимый штамп вжигает клиент в пиксели. Один файл = одна привязка
+    (UNIQUE на file_id). Удаление файла или пункта снимает привязку каскадом.
+    """
+
+    __tablename__ = "checklist_item_photos"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    instance_item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_instance_items.id", ondelete="CASCADE"),
+        index=True,
+    )
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="CASCADE"),
+        unique=True,
+    )
+    captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+    )
+
+    item: Mapped["ChecklistInstanceItem"] = relationship(back_populates="photos")
+    file: Mapped["File"] = relationship()

@@ -1,6 +1,9 @@
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field
+
+from src.app.models.checklist import PhotoRequirement, PhotoSource
 
 
 class TemplateCreate(BaseModel):
@@ -43,11 +46,15 @@ class TemplateListResponse(BaseModel):
 class TemplateItemCreate(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     is_required: bool = Field(default=False)
+    photo_requirement: PhotoRequirement = Field(default=PhotoRequirement.none)
+    photo_source: PhotoSource = Field(default=PhotoSource.camera)
 
 
 class TemplateItemUpdate(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=500)
     is_required: bool | None = Field(default=None)
+    photo_requirement: PhotoRequirement | None = Field(default=None)
+    photo_source: PhotoSource | None = Field(default=None)
 
 
 class TemplateItemResponse(BaseModel):
@@ -55,6 +62,8 @@ class TemplateItemResponse(BaseModel):
     text: str
     is_required: bool
     position: int
+    photo_requirement: str
+    photo_source: str
 
     model_config = {"from_attributes": True}
 
@@ -121,7 +130,13 @@ class EffectiveTemplatesResponse(BaseModel):
 
 class ItemsSummary(BaseModel):
     total: int
-    completed: int
+    completed: int = Field(description="Пунктов с is_completed=true (без учёта фото)")
+    satisfied_count: int = Field(
+        description="Пунктов, прошедших критерий satisfied (с учётом обязательных фото)",
+    )
+    photos_required_missing: int = Field(
+        description="Пунктов с photo_requirement=required и без фото (бейдж «нужно фото»)",
+    )
 
 
 class ChecklistInstanceResponse(BaseModel):
@@ -139,6 +154,20 @@ class ChecklistInstanceListResponse(BaseModel):
     items: list[ChecklistInstanceResponse]
 
 
+class PhotoResponse(BaseModel):
+    id: str
+    file_id: str
+    url: str | None = Field(
+        default=None,
+        description="Свежий presigned GET URL; null при недоступности storage",
+    )
+    url_expires_at: datetime | None = None
+    captured_at: datetime | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    position: int
+
+
 class InstanceItemResponse(BaseModel):
     id: str
     text: str
@@ -148,6 +177,10 @@ class InstanceItemResponse(BaseModel):
     comment: str | None
     completed_at: datetime | None
     change_count: int
+    photo_requirement: str
+    photo_source: str
+    photos_count: int = 0
+    photos: list[PhotoResponse] = Field(default_factory=list)
 
 
 class ChecklistInstanceDetailResponse(BaseModel):
@@ -158,9 +191,22 @@ class ChecklistInstanceDetailResponse(BaseModel):
     status: str
     completed_at: datetime | None
     created_at: datetime
+    max_photos_per_item: int = Field(
+        description="Лимит фото на пункт (= CHECKLIST_MAX_PHOTOS_PER_ITEM)",
+    )
     items: list[InstanceItemResponse]
 
 
 class InstanceItemUpdate(BaseModel):
     is_completed: bool = Field(description="Отмечено/снято")
     comment: str | None = Field(default=None, max_length=2000)
+
+
+class PhotoBindRequest(BaseModel):
+    file_id: uuid.UUID = Field(description="UUID ранее загруженного файла checklist_photo")
+    captured_at: datetime | None = Field(
+        default=None,
+        description="Момент съёмки на клиенте, UTC (суффикс Z)",
+    )
+    latitude: float | None = Field(default=None)
+    longitude: float | None = Field(default=None)
