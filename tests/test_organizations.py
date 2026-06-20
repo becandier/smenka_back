@@ -6,6 +6,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
+from src.app.models.organization import MemberRole, OrganizationMember
 from src.app.models.user import User, UserRole
 
 
@@ -29,6 +30,22 @@ async def _create_second_user(db_session: AsyncSession) -> User:
     db_session.add(user)
     await db_session.commit()
     return user
+
+
+async def _add_member(
+    db_session: AsyncSession,
+    org_id: str,
+    user_id: uuid.UUID,
+    role: MemberRole,
+) -> None:
+    db_session.add(
+        OrganizationMember(
+            organization_id=uuid.UUID(org_id),
+            user_id=user_id,
+            role=role,
+        )
+    )
+    await db_session.commit()
 
 
 async def _login_as(client: AsyncClient, email: str) -> dict[str, str]:
@@ -150,6 +167,53 @@ class TestInviteCode:
         new_code = response.json()["data"]["invite_code"]
         assert new_code != old_code
         assert len(new_code) == 8
+
+    async def test_rotate_invite_code_by_admin(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+        old_code = create_resp.json()["data"]["invite_code"]
+
+        admin = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, admin.id, MemberRole.admin)
+        admin_headers = await _login_as(client, "second@example.com")
+
+        response = await client.post(
+            f"/api/v1/organizations/{org_id}/rotate-invite", headers=admin_headers
+        )
+        assert response.status_code == 200
+        new_code = response.json()["data"]["invite_code"]
+        assert new_code != old_code
+        assert len(new_code) == 8
+
+        # Старый код после ротации админом невалиден.
+        join_resp = await client.post(
+            f"/api/v1/organizations/join/{old_code}", headers=admin_headers
+        )
+        assert join_resp.status_code == 404
+
+    async def test_rotate_invite_code_by_employee_forbidden(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        employee = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, employee.id, MemberRole.employee)
+        employee_headers = await _login_as(client, "second@example.com")
+
+        response = await client.post(
+            f"/api/v1/organizations/{org_id}/rotate-invite", headers=employee_headers
+        )
+        assert response.status_code == 403
+        body = response.json()
+        assert body["data"] is None
+        assert body["error"]["code"] == "FORBIDDEN"
 
     async def test_join_by_invite_code(
         self, client: AsyncClient, auth_headers, db_session: AsyncSession

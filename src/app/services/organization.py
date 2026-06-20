@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
-from src.app.services.common import ensure_member, ensure_owner
+from src.app.services.common import ensure_admin_or_owner, ensure_member, ensure_owner
 
 logger = get_logger(__name__)
 
@@ -163,10 +163,11 @@ async def delete_organization(
 async def rotate_invite_code(
     session: AsyncSession,
     org_id: uuid.UUID,
-    owner_id: uuid.UUID,
+    actor_id: uuid.UUID,
 ) -> str:
     org = await get_organization(session, org_id)
-    await ensure_owner(session, org, owner_id)
+    # Онбординг сотрудников — функция админа: ротировать код может owner и admin.
+    await ensure_admin_or_owner(session, org, actor_id)
     org.invite_code = _generate_invite_code()
     await session.flush()
     return org.invite_code
