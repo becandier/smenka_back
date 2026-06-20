@@ -27,6 +27,40 @@ services:
       timeout: 3s
       retries: 5
 
+  # S3-совместимое хранилище для локальной разработки. В проде заменяется
+  # на managed S3 (см. ../docs/tasks/file_storage/devops.md) — кода это не касается,
+  # меняются только S3_* в env.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # web-консоль (http://localhost:9001, minioadmin/minioadmin)
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # У некоторых тегов minio нет curl — тогда заменить на проверку через mc-сайдкар.
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # one-shot: создаёт бакет и делает его приватным (доступ только через presigned URL бэка).
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/smenka-files &&
+      mc anonymous set none local/smenka-files
+      "
+
   api:
     build:
       context: .
@@ -44,6 +78,17 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       PYTHONPATH: /app
+      # S3 / file_storage (dev = MinIO). PUBLIC_ENDPOINT — хост в presigned URL,
+      # должен быть доступен с устройства клиента (на телефоне — LAN-IP, не localhost).
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: smenka-files
+      S3_USE_SSL: "false"
+      S3_FORCE_PATH_STYLE: "true"
+      S3_PRESIGN_EXPIRE_SECONDS: "3600"
     volumes:
       - ./src:/app/src
     depends_on:
@@ -51,6 +96,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
 
   celery-worker:
     build:
@@ -67,6 +114,15 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       PYTHONPATH: /app
+      # S3 / file_storage — worker'у нужно для задачи очистки сирот (cleanup_orphan_files).
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: smenka-files
+      S3_USE_SSL: "false"
+      S3_FORCE_PATH_STYLE: "true"
     volumes:
       - ./src:/app/src
     depends_on:
@@ -74,7 +130,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
