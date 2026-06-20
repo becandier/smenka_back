@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     debug: bool = False
     secret_key: str = "change-me-in-production"  # noqa: S105 — dev-дефолт, в проде из env
 
-    # CORS (источники для браузерной админки; CSV в env CORS_ORIGINS, пусто = [])
+    # CORS (origins браузерных клиентов — админка и веб-мобилка; CSV в CORS_ORIGINS, пусто = [])
     # NoDecode отключает JSON-предпарсинг pydantic-settings, чтобы CSV-строка
     # дошла до валидатора ниже как есть.
     cors_origins: Annotated[list[str], NoDecode] = []

@@ -48,6 +48,22 @@
 	reverse_proxy admin:80
 }
 
+# Веб-версия мобилки (flutter build web) — статика, раздаётся напрямую (web_cors).
+# CORS не настраивается здесь: запросы web-клиента к API_DOMAIN режет CORSMiddleware
+# бэка — WEB_DOMAIN обязан быть в CORS_ORIGINS (.env). Сборку монтируем как volume
+# в docker-compose.prod.yml (например ./web-build:/srv/web:ro), путь — /srv/web.
+# try_files обеспечивает SPA-фолбэк на index.html для клиентского роутинга.
+{$WEB_DOMAIN} {
+	import security_headers
+	tls {
+		protocols tls1.2 tls1.3
+	}
+	encode zstd gzip
+	root * /srv/web
+	try_files {path} /index.html
+	file_server
+}
+
 # Мониторинг Celery. Доступ закрыт basic-auth самого Flower (FLOWER_BASIC_AUTH).
 {$FLOWER_DOMAIN} {
 	import security_headers

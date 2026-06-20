@@ -194,12 +194,17 @@ async def logging_middleware(request: Request, call_next: RequestResponseEndpoin
 
 # CORS: добавляется после logging-middleware, чтобы оказаться внешним слоем
 # (Starlette применяет middleware в обратном порядке добавления) и корректно
-# обрабатывать preflight-запросы браузерной админки.
+# обрабатывать preflight-запросы браузерных клиентов — веб-админки и веб-версии
+# мобилки (flutter build web).
+# allow_credentials=False: клиенты шлют JWT в заголовке Authorization, не в cookie.
+# Включать True только при переходе на httpOnly-cookie + CSRF (отдельная задача).
+# При credentials=False wildcard allow_headers/allow_methods=["*"] валиден и
+# покрывает Authorization/Content-Type и методы GET/POST/PATCH/PUT/DELETE/OPTIONS.
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
