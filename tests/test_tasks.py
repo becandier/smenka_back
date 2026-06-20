@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.app.core.config import get_settings
 from src.app.core.security import hash_password
+from src.app.models.file import File, FileCategory
 from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Pause, Shift, ShiftStatus
 from src.app.models.user import RefreshToken, User, VerificationCode
-from src.app.tasks.cleanup import cleanup_expired_tokens
+from src.app.tasks.cleanup import cleanup_expired_tokens, cleanup_orphan_files
 from src.app.tasks.shifts import auto_finish_stale_pauses, auto_finish_stale_shifts
 
 settings = get_settings()
@@ -485,3 +486,61 @@ class TestCleanupExpiredTokens:
 
         result = await db_session.execute(select(RefreshToken).where(RefreshToken.id == token_id))
         assert result.scalar_one_or_none() is not None
+
+
+def _make_file(
+    owner_id: uuid.UUID,
+    *,
+    is_attached: bool,
+    age_hours: int,
+) -> File:
+    return File(
+        id=uuid.uuid4(),
+        storage_key=f"other/{uuid.uuid4().hex}.bin",
+        bucket="smenka-files",
+        category=FileCategory.other,
+        original_filename="x.bin",
+        content_type="application/octet-stream",
+        size_bytes=10,
+        is_attached=is_attached,
+        owner_user_id=owner_id,
+        created_at=datetime.now(UTC) - timedelta(hours=age_hours),
+    )
+
+
+class TestCleanupOrphanFiles:
+    async def test_old_unattached_deleted_others_kept(self, db_session: AsyncSession):
+        """Сирота (unattached, >24h) удаляется; свежий и привязанный — остаются."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        orphan = _make_file(user.id, is_attached=False, age_hours=25)
+        fresh = _make_file(user.id, is_attached=False, age_hours=1)
+        attached_old = _make_file(user.id, is_attached=True, age_hours=25)
+        db_session.add_all([orphan, fresh, attached_old])
+        await db_session.commit()
+
+        # Фиксируем значения до expire_all — иначе доступ к ORM-атрибутам триггерит
+        # ленивую async-загрузку в синхронном контексте.
+        orphan_id, orphan_key = orphan.id, orphan.storage_key
+        fresh_id, attached_id = fresh.id, attached_old.id
+
+        deleted_keys: list[str] = []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch(
+                "src.app.tasks.cleanup._delete_orphan_objects",
+                lambda keys: deleted_keys.extend(keys),
+            ),
+        ):
+            cleanup_orphan_files()
+
+        db_session.expire_all()
+        assert deleted_keys == [orphan_key]
+
+        remaining = (await db_session.execute(select(File.id))).scalars().all()
+        assert orphan_id not in remaining
+        assert fresh_id in remaining
+        assert attached_id in remaining

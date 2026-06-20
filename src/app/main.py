@@ -22,6 +22,7 @@ from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
 from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
+from src.app.services.file_storage import FileError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.payroll import PayrollError
@@ -151,6 +152,13 @@ app = FastAPI(
             "name": "work-locations",
             "description": (
                 "Рабочие точки организации. Используются для геопроверки при начале смены."
+            ),
+        },
+        {
+            "name": "files",
+            "description": (
+                "Файловое хранилище: загрузка через бэкенд в приватный S3, выдача "
+                "presigned GET URL и удаление. Реестр блобов под фичи-потребители."
             ),
         },
         {
@@ -326,6 +334,14 @@ async def admin_error_handler(request: Request, exc: AdminError) -> JSONResponse
 
 @app.exception_handler(PayrollError)
 async def payroll_error_handler(request: Request, exc: PayrollError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(FileError)
+async def file_error_handler(request: Request, exc: FileError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

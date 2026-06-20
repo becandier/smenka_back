@@ -61,6 +61,26 @@ class Settings(BaseSettings):
     max_login_failures: int = 10
     account_lockout_minutes: int = 15
 
+    # S3 / file storage (dev = MinIO, prod = managed S3; см. docs/tasks/file_storage).
+    # Один контракт, разные бэкенды — переезд = смена env, без правок кода.
+    # endpoint для SDK (внутренний адрес); пусто = AWS default endpoint.
+    s3_endpoint_url: str = ""
+    # хост в presigned URL (открывается с устройства клиента); пусто = s3_endpoint_url.
+    s3_public_endpoint_url: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket: str = "smenka-files"
+    s3_use_ssl: bool = False
+    # path-style адресация (нужно MinIO; для AWS — virtual-hosted).
+    s3_force_path_style: bool = True
+    # TTL presigned GET URL (короткий — клиент обновляет через GET /files/{id}).
+    s3_presign_expire_seconds: int = 3600
+    # Глобальный потолок размера загрузки (≥ максимума per-category политики).
+    max_upload_size_mb: int = 50
+    # Возраст удаления непривязанных файлов-сирот (Celery cleanup_orphan_files).
+    orphan_file_ttl_hours: int = 24
+
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
@@ -73,6 +93,12 @@ class Settings(BaseSettings):
     sentry_environment: str = ""  # пусто → app_env
     sentry_release: str = ""  # версия образа/коммит, передаётся ENV при сборке
     sentry_traces_sample_rate: float = 0.0
+
+    @property
+    def s3_public_endpoint(self) -> str:
+        """Хост для генерации presigned URL. Падает на внутренний endpoint,
+        если публичный не задан (в managed-S3 оба совпадают)."""
+        return self.s3_public_endpoint_url or self.s3_endpoint_url
 
     @property
     def database_url(self) -> str:

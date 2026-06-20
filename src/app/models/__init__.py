@@ -10,6 +10,7 @@ from src.app.models.checklist import (
     ChecklistType,
     OverrideType,
 )
+from src.app.models.file import File, FileCategory
 from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
@@ -30,6 +31,8 @@ __all__ = [
     "ChecklistTemplate",
     "ChecklistTemplateItem",
     "ChecklistType",
+    "File",
+    "FileCategory",
     "MemberRole",
     "Organization",
     "OrganizationMember",

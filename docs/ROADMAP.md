@@ -6,6 +6,19 @@
 
 ---
 
+## Фича — Файловое хранилище (`file_storage`) `[x]`
+ТЗ: `../docs/tasks/file_storage/backend.md`
+- [x] Модель `File` (`files`): реестр блобов (storage_key UNIQUE, bucket, category, original_filename, content_type, size_bytes, checksum_sha256, is_attached, organization_id NULL→CASCADE, owner_user_id→CASCADE), enum `FileCategory`; индексы `category`/`organization_id`/`owner_user_id`/`(is_attached, created_at)`
+- [x] S3-слой `core/storage.py` (aioboto3): `upload_object`/`generate_presigned_get`/`delete_object`/`ensure_bucket`, внутренний vs публичный endpoint для presigned, `StorageError`; конфиг `S3_*`/`MAX_UPLOAD_SIZE_MB`/`ORPHAN_FILE_TTL_HOURS` в `config.py`
+- [x] `services/file_storage.py`: политики категорий (`CATEGORY_POLICIES` — лимит + MIME), валидация размера (стрим) и реального MIME (`filetype`), генерация ключа `{prefix}{scope}/{yyyy}/{mm}/{uuid}{ext}`, права по category, `FileError`
+- [x] `POST/GET/DELETE /api/v1/files` (multipart upload, presigned-выдача, удаление; `FILE_IN_USE` для привязанного, идемпотентный `FILE_NOT_FOUND`); обработчик `FileError` в `main.py`, коды в `../docs/ERROR_FORMAT.md`
+- [x] Celery `cleanup_orphan_files` (ежечасно): удаление сирот `is_attached=false` старше `ORPHAN_FILE_TTL_HOURS` (объект + строка)
+- [x] Миграция `d4f5a6b80004` (create `files`) — обратима, `alembic check` без дрейфа
+- [x] 20 тестов: success-upload (avatar/checklist_photo/knowledge_base/other), 413/415/400/422, RBAC (чужая org, employee→KB), presigned-выдача, удаление привязанного/идемпотентность, RBAC чтения/удаления, очистка сирот (`test_files.py`, `test_tasks.py`)
+- DevOps-часть (MinIO в dev-compose, S3-env, прод managed-S3) — дорожка `devops`
+
+---
+
 ## Фича — Усиление безопасности (`security_hardening`) `[x]`
 ТЗ: `../docs/tasks/security_hardening/backend.md`
 - [x] Rate-limit (slowapi + Redis) на `register`/`verify`/`resend-code`/`login` — ключ = IP (`X-Forwarded-For` за Caddy), пороги из ENV, `429 RATE_LIMIT_EXCEEDED` + `Retry-After` в конверте `{data,error}` (`core/rate_limit.py`, `core/redis.py`, `utils/request.py`)

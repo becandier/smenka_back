@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-06-11 (security_hardening — rate-limit, lockout, attempts, Sentry, аудит)
+Последнее обновление: 2026-06-20 (file_storage — реестр `files`, S3-слой, upload/get/delete, очистка сирот)
 
 ---
 
@@ -26,6 +26,7 @@
 | `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
 | `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count) |
 | `AuditLog` | `audit_logs` | Append-only журнал чувствительных действий (organization_id NULL→CASCADE, actor_user_id NULL→SET NULL, action, resource_type, resource_id, summary jsonb, ip_address, created_at). Системные авто-действия Celery — `actor_user_id = null`. Индексы `(organization_id, created_at DESC)`, `(actor_user_id)`, `(action)` |
+| `File` | `files` | Чистый реестр блобов в S3 (storage_key UNIQUE, bucket, category enum-строка VARCHAR32, original_filename, content_type по реальному MIME, size_bytes, checksum_sha256 nullable, is_attached, organization_id NULL→CASCADE, owner_user_id→CASCADE, created/updated_at). Привязка — FK со стороны фичи-потребителя (НЕ полиморфизм). Индексы `category`, `organization_id`, `owner_user_id`, `(is_attached, created_at)` (очистка сирот). Enum `FileCategory`: checklist_photo/knowledge_base/avatar/other |
 
 ---
 
@@ -104,6 +105,11 @@
 | GET | `/api/v1/admin/organizations` | Обзор всех организаций (owner_email, member_count, фильтры) | Bearer (super_admin) |
 | GET | `/api/v1/admin/stats` | Сводная статистика платформы (дашборд) | Bearer (super_admin) |
 | GET | `/api/v1/organizations/{id}/audit-logs` | Лента аудита организации (фильтры action/actor/даты, пагинация, created_at DESC) | Bearer (owner/admin) |
+| POST | `/api/v1/files` | Загрузка файла (multipart: file/category/organization_id); валидация размера и реального MIME, presigned GET в ответе | Bearer (право по category) |
+| GET | `/api/v1/files/{file_id}` | Метаданные + свежий presigned GET URL (обновление протухшей ссылки) | Bearer (uploader/admin-owner/member по category) |
+| DELETE | `/api/v1/files/{file_id}` | Удаление объекта + строки; привязанный → `FILE_IN_USE` (409), повтор → `FILE_NOT_FOUND` (404) | Bearer (uploader/admin-owner/super_admin) |
+
+> **Файловое хранилище (file_storage).** Единый слой хранения поверх S3-совместимого storage (локально MinIO, в проде managed S3 — переезд = смена `S3_*` env, без правок кода). Загрузка идёт **через бэкенд** (multipart → API → storage), доступ к объектам **приватный** — клиент качает по **presigned GET URL** с коротким TTL (`S3_PRESIGN_EXPIRE_SECONDS`), который генерирует бэк. `files` — чистый реестр блобов (`File`); привязка к бизнес-сущности делается со стороны фичи-потребителя FK на `files.id` (НЕ полиморфизм) — целостность и `ON DELETE` каскады. Категория (`FileCategory`) задаёт префикс ключа, политику (лимит размера + разрешённые MIME, таблица `CATEGORY_POLICIES` в `services/file_storage.py`) и права: `checklist_photo` — любой member org; `knowledge_base` — admin/owner org; `avatar`/`other` — персональные. Реальный MIME определяется по сигнатуре содержимого (`filetype`), а не по заголовку multipart; имя в ключе — всегда UUID (anti path-traversal/коллизии), исходное имя хранится для `Content-Disposition`. **presigned + MinIO:** бэк ходит в storage по внутреннему `S3_ENDPOINT_URL`, но presigned-ссылка генерируется клиентом на публичном `S3_PUBLIC_ENDPOINT_URL` (подпись сразу от публичного хоста; в managed-S3 оба совпадают). Прямой стрим байтов через бэк не делаем. Жизненный цикл: строка создаётся с `is_attached=false`, потребитель ставит `true` при привязке; сироты (`is_attached=false`, старше `ORPHAN_FILE_TTL_HOURS`) подбирает Celery `cleanup_orphan_files`. Ошибки — `FileError` (`FILE_NOT_FOUND`/`FILE_TOO_LARGE`/`UNSUPPORTED_FILE_TYPE`/`INVALID_FILE_CATEGORY`/`FILE_IN_USE`/`STORAGE_UNAVAILABLE`).
 
 > **Сквозной доступ super_admin.** Все org-эндпоинты (`members`, `settings`, `locations`, `roles`, `checklist-*`, `shifts`, `stats`) пускают `super_admin`, даже если он не состоит в организации. Проверки прав вынесены в `services/common.py` (`ensure_owner` / `ensure_member` / `ensure_admin_or_owner`), и в каждой добавлена ветка super_admin. `GET /shifts` и `GET /organizations/{id}/shifts` дополнительно принимают `sort` (`started_at`/`finished_at`) и `order` (`asc`/`desc`).
 
@@ -140,6 +146,8 @@
 | `services/admin.py` | Платформенные операции super_admin: список/детали пользователей, смена роли, обзор организаций, статистика (`AdminError`) |
 | `services/audit.py` | Запись аудита (`record` async / `record_sync` для Celery, в той же транзакции) и чтение ленты организации с именами инициаторов |
 | `services/lockout.py` | Блокировка аккаунта по неудачным логинам (Redis-счётчик с TTL, по email) |
+| `services/file_storage.py` | Файловое хранилище: политики категорий (`CATEGORY_POLICIES`), валидация размера/реального MIME, генерация ключа, реестр `files`, presigned URL, удаление, права по category (`FileError`) |
+| `core/storage.py` | S3-обёртка над `aioboto3` (`upload_object`/`generate_presigned_get`/`delete_object`/`ensure_bucket`); внутренний vs публичный endpoint для presigned; ошибки S3 → `StorageError` |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule, task-события для мониторинга, `acks_late`, сигнал `task_failure` → structlog; Sentry в воркере) |
 | `core/rate_limit.py` | slowapi-`Limiter` (ключ = IP, Redis-хранилище, пороги из ENV) |
 | `core/redis.py` | Общий асинхронный Redis-клиент приложения (lockout); ленивый, подменяется fakeredis в тестах |
@@ -186,6 +194,7 @@
 | `tasks/shifts.py` | `auto_finish_stale_shifts` — завершение зависших смен (+ аудит `shift.auto_finish`, actor=null) | Каждые 5 мин |
 | `tasks/shifts.py` | `auto_finish_stale_pauses` — завершение просроченных пауз (+ аудит `pause.auto_finish`, actor=null) | Каждые 5 мин |
 | `tasks/cleanup.py` | `cleanup_expired_tokens` — очистка протухших токенов/кодов | Ежедневно 03:00 UTC |
+| `tasks/cleanup.py` | `cleanup_orphan_files` — удаление файлов-сирот (`is_attached=false`, старше `ORPHAN_FILE_TTL_HOURS`): объект в S3 + строка | Ежечасно |
 
 **Инфраструктура:**
 - Redis 7 — брокер Celery + хранилище rate-limit (slowapi) и счётчиков lockout

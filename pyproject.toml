@@ -21,6 +21,8 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "slowapi>=0.1.9",
     "sentry-sdk[fastapi]>=2.0.0",
+    "aioboto3>=13.0.0",
+    "filetype>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -115,7 +117,14 @@ exclude = ["src/migrations/"]
 
 # Сторонние библиотеки без type-stubs.
 [[tool.mypy.overrides]]
-module = ["jose.*", "passlib.*", "slowapi.*"]
+module = [
+    "jose.*",
+    "passlib.*",
+    "slowapi.*",
+    "aioboto3.*",
+    "botocore.*",
+    "filetype.*",
+]
 ignore_missing_imports = true
 
 # Декораторы Celery (@app.task) нетипизированы — ослабляем только это правило

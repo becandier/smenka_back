@@ -49,6 +49,10 @@ celery_app.conf.update(
             "task": "cleanup_expired_tokens",
             "schedule": crontab(hour=3, minute=0),
         },
+        "cleanup-orphan-files": {
+            "task": "cleanup_orphan_files",
+            "schedule": crontab(minute=0),  # ежечасно
+        },
     },
 )
 
