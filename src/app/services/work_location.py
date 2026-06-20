@@ -22,6 +22,7 @@ async def create_work_location(
     latitude: float,
     longitude: float,
     radius_meters: int = 100,
+    address: str | None = None,
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -32,6 +33,7 @@ async def create_work_location(
         latitude=latitude,
         longitude=longitude,
         radius_meters=radius_meters,
+        address=address,
     )
     session.add(location)
     await session.flush()

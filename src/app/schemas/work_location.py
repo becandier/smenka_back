@@ -13,6 +13,11 @@ class WorkLocationCreate(BaseModel):
         le=10000,
         description="Радиус зоны в метрах (10–10000, по умолчанию 100)",
     )
+    address: str | None = Field(
+        default=None,
+        max_length=512,
+        description="Читаемый адрес точки (геокодинг на стороне админки). Необязателен.",
+    )
 
 
 class WorkLocationUpdate(BaseModel):
@@ -24,6 +29,15 @@ class WorkLocationUpdate(BaseModel):
     radius_meters: int | None = Field(
         default=None, ge=10, le=10000, description="Новый радиус в метрах"
     )
+    address: str | None = Field(
+        default=None,
+        max_length=512,
+        description=(
+            "Новый адрес точки. Меняется только если поле прислано непустым "
+            "(конвенция Update-схем проекта: null/отсутствие → поле не трогаем, "
+            "очистка адреса через PATCH не поддерживается)."
+        ),
+    )
 
 
 class WorkLocationResponse(BaseModel):
@@ -33,6 +47,7 @@ class WorkLocationResponse(BaseModel):
     latitude: float = Field(description="Широта")
     longitude: float = Field(description="Долгота")
     radius_meters: int = Field(description="Радиус зоны в метрах")
+    address: str | None = Field(default=None, description="Читаемый адрес точки (или null)")
     created_at: datetime = Field(description="Дата создания")
 
     model_config = {"from_attributes": True}

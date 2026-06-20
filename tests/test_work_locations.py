@@ -78,6 +78,50 @@ class TestCreateWorkLocation:
         assert response.status_code == 201
         assert response.json()["data"]["radius_meters"] == 100
 
+    async def test_create_location_with_address(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+
+        response = await client.post(
+            f"/api/v1/organizations/{org['id']}/locations",
+            headers=auth_headers,
+            json={
+                "name": "Офис",
+                "latitude": 55.7558,
+                "longitude": 37.6173,
+                "address": "Москва, Красная площадь, 1",
+            },
+        )
+        assert response.status_code == 201
+        assert response.json()["data"]["address"] == "Москва, Красная площадь, 1"
+
+    async def test_create_location_without_address_is_null(
+        self, client: AsyncClient, auth_headers
+    ):
+        org = await _create_org(client, auth_headers)
+
+        response = await client.post(
+            f"/api/v1/organizations/{org['id']}/locations",
+            headers=auth_headers,
+            json={"name": "Склад", "latitude": 55.0, "longitude": 37.0},
+        )
+        assert response.status_code == 201
+        assert response.json()["data"]["address"] is None
+
+    async def test_create_location_address_too_long(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+
+        response = await client.post(
+            f"/api/v1/organizations/{org['id']}/locations",
+            headers=auth_headers,
+            json={
+                "name": "Офис",
+                "latitude": 55.0,
+                "longitude": 37.0,
+                "address": "x" * 513,
+            },
+        )
+        assert response.status_code == 422
+
     async def test_create_location_by_employee_forbidden(
         self, client: AsyncClient, auth_headers, db_session: AsyncSession
     ):
@@ -173,6 +217,27 @@ class TestUpdateWorkLocation:
         assert data["name"] == "Главный офис"
         assert data["radius_meters"] == 300
         assert data["latitude"] == 55.0  # unchanged
+
+    async def test_update_location_address(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+
+        create_resp = await client.post(
+            f"/api/v1/organizations/{org['id']}/locations",
+            headers=auth_headers,
+            json={"name": "Офис", "latitude": 55.0, "longitude": 37.0},
+        )
+        loc_id = create_resp.json()["data"]["id"]
+        assert create_resp.json()["data"]["address"] is None
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org['id']}/locations/{loc_id}",
+            headers=auth_headers,
+            json={"address": "Москва, Тверская, 7"},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["address"] == "Москва, Тверская, 7"
+        assert data["name"] == "Офис"  # unchanged
 
 
 class TestDeleteWorkLocation:

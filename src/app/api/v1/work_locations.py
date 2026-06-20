@@ -33,6 +33,7 @@ def _location_to_response(loc: "WorkLocation") -> dict[str, Any]:
         latitude=loc.latitude,
         longitude=loc.longitude,
         radius_meters=loc.radius_meters,
+        address=loc.address,
         created_at=loc.created_at,
     ).model_dump(mode="json")
 
@@ -62,6 +63,7 @@ async def create_location(
         latitude=body.latitude,
         longitude=body.longitude,
         radius_meters=body.radius_meters,
+        address=body.address,
     )
     await audit_service.record(
         session,
@@ -75,6 +77,7 @@ async def create_location(
             "latitude": body.latitude,
             "longitude": body.longitude,
             "radius_meters": body.radius_meters,
+            "address": body.address,
         },
         ip_address=get_client_ip(request),
     )
