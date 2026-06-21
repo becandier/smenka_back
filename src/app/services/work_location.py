@@ -86,7 +86,8 @@ async def delete_work_location(
     await session.delete(location)
     await session.flush()
 
-    # Auto-disable geo_check if no locations left
+    # Auto-disable geo_check / require_work_location if no locations left:
+    # обе настройки требуют хотя бы одной точки, иначе старт смены стал бы невозможен.
     remaining = await session.execute(
         select(func.count())
         .select_from(WorkLocation)
@@ -101,10 +102,18 @@ async def delete_work_location(
             )
         )
         org_settings = settings_result.scalar_one_or_none()
-        if org_settings and org_settings.geo_check_enabled:
-            org_settings.geo_check_enabled = False
-            await session.flush()
-            logger.info("geo_check_auto_disabled", org_id=str(org_id))
+        if org_settings is not None:
+            changed = False
+            if org_settings.geo_check_enabled:
+                org_settings.geo_check_enabled = False
+                changed = True
+                logger.info("geo_check_auto_disabled", org_id=str(org_id))
+            if org_settings.require_work_location:
+                org_settings.require_work_location = False
+                changed = True
+                logger.info("require_work_location_auto_disabled", org_id=str(org_id))
+            if changed:
+                await session.flush()
 
     logger.info("work_location_deleted", org_id=str(org_id), location_id=str(location_id))
 

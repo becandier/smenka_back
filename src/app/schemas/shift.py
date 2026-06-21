@@ -14,6 +14,16 @@ class PauseResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ShiftWorkLocation(BaseModel):
+    """Денормализованная точка смены для отображения (текущее значение точки)."""
+
+    id: str = Field(description="UUID рабочей точки")
+    name: str = Field(description="Название точки")
+    address: str | None = Field(default=None, description="Читаемый адрес точки")
+
+    model_config = {"from_attributes": True}
+
+
 class ShiftResponse(BaseModel):
     id: str = Field(description="UUID смены")
     user_id: str = Field(description="UUID пользователя")
@@ -25,6 +35,15 @@ class ShiftResponse(BaseModel):
         default=None, description="Конец смены (null если активна)"
     )
     status: str = Field(description="Статус: active, paused, finished")
+    work_location_id: str | None = Field(
+        default=None,
+        description="UUID точки, на которой открыта смена (null — не определена / "
+        "персональная смена)",
+    )
+    work_location: ShiftWorkLocation | None = Field(
+        default=None,
+        description="Денормализованная точка смены {id, name, address} (null — нет точки)",
+    )
     pauses: list[PauseResponse] = Field(description="Список пауз в смене")
     worked_seconds: int = Field(description="Отработанное время в секундах (за вычетом пауз)")
     has_incomplete_required_checklists: bool = Field(
@@ -97,4 +116,10 @@ class ShiftStartRequest(BaseModel):
         ge=-180,
         le=180,
         description="Долгота (обязательно при геопроверке организации)",
+    )
+    work_location_id: str | None = Field(
+        default=None,
+        description="UUID точки смены. При гео-проверке игнорируется (точку определяет "
+        "сервер). При выключенной гео обязателен, если у организации включён "
+        "`require_work_location`; иначе опционален",
     )

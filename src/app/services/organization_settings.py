@@ -75,6 +75,17 @@ async def update_settings(
                 400,
             )
 
+    if (
+        fields.get("require_work_location") is True
+        and not settings.require_work_location
+        and await _count_locations(session, org_id) == 0
+    ):
+        raise OrgError(
+            "WORK_LOCATION_REQUIRED_NO_LOCATIONS",
+            "Нельзя требовать точку: у организации нет ни одной рабочей точки",
+            409,
+        )
+
     for key, value in fields.items():
         setattr(settings, key, value)
     await session.flush()

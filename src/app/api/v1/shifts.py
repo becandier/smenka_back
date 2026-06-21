@@ -33,6 +33,7 @@ def _shift_to_response(
     `null`. В орг-контексте `identity` наполняет `user_name` / `user_email` /
     `role` / `custom_role_name`.
     """
+    work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
         id=str(shift.id),
         user_id=str(shift.user_id),
@@ -40,6 +41,16 @@ def _shift_to_response(
         started_at=shift.started_at,
         finished_at=shift.finished_at,
         status=shift.status.value,
+        work_location_id=str(shift.work_location_id) if shift.work_location_id else None,
+        work_location=(
+            {
+                "id": str(work_location.id),
+                "name": work_location.name,
+                "address": work_location.address,
+            }
+            if work_location is not None
+            else None
+        ),
         pauses=[
             {
                 "id": str(p.id),
@@ -168,10 +179,12 @@ async def start_shift(
     org_id = None
     lat = None
     lng = None
+    work_location_id = None
     if body is not None:
         org_id = uuid.UUID(body.organization_id) if body.organization_id else None
         lat = body.latitude
         lng = body.longitude
+        work_location_id = body.work_location_id
 
     shift = await shift_service.start_shift(
         session,
@@ -179,6 +192,7 @@ async def start_shift(
         organization_id=org_id,
         latitude=lat,
         longitude=lng,
+        work_location_id=work_location_id,
     )
     await session.commit()
     return ApiResponse.success(_shift_to_response(shift))

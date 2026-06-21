@@ -419,6 +419,7 @@ def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
     return OrganizationSettingsResponse(
         organization_id=str(s.organization_id),
         geo_check_enabled=s.geo_check_enabled,
+        require_work_location=s.require_work_location,
         auto_finish_hours=s.auto_finish_hours,
         max_pause_minutes=s.max_pause_minutes,
         max_pauses_per_shift=s.max_pauses_per_shift,
