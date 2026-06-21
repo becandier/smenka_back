@@ -1,9 +1,11 @@
-.PHONY: help up down restart build rebuild setup logs logs-api logs-worker logs-db ps \
+.PHONY: help up down restart build rebuild setup sync hooks logs logs-api logs-worker logs-db ps \
        shell dbshell redis-cli migrate rollback migration migration-check db-current \
        test test-cov lint lint-fix typecheck check clean
 
 COMPOSE = docker compose
 API     = $(COMPOSE) exec api
+# alembic.ini лежит в /app/src — запускаем alembic именно оттуда, иначе "No script_location".
+ALEMBIC = $(COMPOSE) exec -w /app/src api alembic
 DB_USER = smenka
 DB_NAME = smenka
 
@@ -29,6 +31,16 @@ rebuild:  ## Пересобрать без кэша
 	$(COMPOSE) build --no-cache
 
 setup: up migrate  ## Первый запуск: поднять + миграции
+
+sync:  ## После git pull бэка (новые зависимости/миграции): пересобрать образы, пересоздать контейнеры, накатить миграции
+	$(COMPOSE) build
+	$(COMPOSE) up -d
+	$(MAKE) migrate
+
+hooks:  ## Установить git-хуки (авто-sync dev-окружения после pull/checkout) — выполнить один раз
+	@chmod +x scripts/git-hooks/* 2>/dev/null || true
+	git config core.hooksPath scripts/git-hooks
+	@echo "✅ git-хуки включены: core.hooksPath=scripts/git-hooks (post-merge/post-checkout → авто make sync)"
 
 # ─── Логи ────────────────────────────────────────────────────
 logs:  ## Все логи (follow)
@@ -59,22 +71,22 @@ redis-cli:  ## Redis CLI
 
 # ─── Миграции ────────────────────────────────────────────────
 migrate:  ## Применить все миграции
-	$(API) alembic upgrade head
+	$(ALEMBIC) upgrade head
 
 rollback:  ## Откатить последнюю миграцию
-	$(API) alembic downgrade -1
+	$(ALEMBIC) downgrade -1
 
 migration:  ## Создать миграцию: make migration msg="add_users_table"
 ifndef msg
 	$(error Укажи сообщение: make migration msg="add_users_table")
 endif
-	$(API) alembic revision --autogenerate -m "$(msg)"
+	$(ALEMBIC) revision --autogenerate -m "$(msg)"
 
 migration-check:  ## Проверить, что нет незафиксированных изменений в моделях
-	$(API) alembic check
+	$(ALEMBIC) check
 
 db-current:  ## Показать текущую ревизию БД
-	$(API) alembic current
+	$(ALEMBIC) current
 
 # ─── Тесты ───────────────────────────────────────────────────
 test:  ## Запустить тесты

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# git pull / merge → синхронизировать dev-окружение (миграции/зависимости).
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+exec "$dir/_sync.sh" ORIG_HEAD HEAD

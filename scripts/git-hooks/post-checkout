@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Переключение веток (git checkout/switch) → синхронизировать dev-окружение.
+# Args: $1=prev_HEAD $2=new_HEAD $3=branch_flag (1 = смена ветки).
+set -euo pipefail
+[ "${3:-0}" = "1" ] || exit 0
+dir="$(cd "$(dirname "$0")" && pwd)"
+exec "$dir/_sync.sh" "$1" "$2"
