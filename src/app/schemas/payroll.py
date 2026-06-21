@@ -1,8 +1,24 @@
+import enum
 from datetime import datetime
 
 from pydantic import BaseModel, Field
 
 from src.app.models.member_rate import RateType
+
+
+class Granularity(enum.StrEnum):
+    """Уровень суточной разбивки детального отчёта по зарплате."""
+
+    none = "none"
+    day = "day"
+    week = "week"
+    month = "month"
+
+
+class ExportFormat(enum.StrEnum):
+    """Поддерживаемые форматы экспорта (на старте — только xlsx)."""
+
+    xlsx = "xlsx"
 
 
 class RateCreate(BaseModel):
@@ -113,6 +129,47 @@ class PayrollResponse(BaseModel):
     currency: str = Field(description="Валюта отчёта (RUB)")
     items: list[PayrollItemResponse] = Field(
         description="По одному элементу на сотрудника с завершёнными сменами в периоде",
+    )
+    totals: PayrollTotalsResponse = Field(description="Суммы по всем сотрудникам")
+
+
+class PayrollBreakdownBucket(BaseModel):
+    """Корзина суточной разбивки (day/week/month) — агрегат смен корзины.
+
+    Атомарная единица округления денег — день: `gross_amount_minor` корзин
+    week/month и итог сотрудника складываются из уже округлённых дневных сумм.
+    """
+
+    bucket_start: str = Field(
+        description="ISO-дата начала корзины в tz отчёта (день/понедельник недели/1-е месяца)",
+    )
+    worked_seconds: int = Field(description="Отработанное время смен корзины (вкл. неоплаченные)")
+    shifts_count: int = Field(description="Число завершённых смен в корзине")
+    gross_amount_minor: int = Field(
+        description="Начисление за корзину в копейках (сумма округлённых дневных значений)",
+    )
+    unpaid_seconds: int = Field(description="Время смен корзины без действующей ставки")
+    has_missing_rate: bool = Field(description="true, если в корзине были смены без ставки")
+
+
+class PayrollDetailedItem(PayrollItemResponse):
+    """Строка сотрудника с суточной разбивкой (granularity != none)."""
+
+    gross_amount_minor: int = Field(
+        description="Начисление в копейках (сумма округлённых по дням значений, см. ADR-002)",
+    )
+    breakdown: list[PayrollBreakdownBucket] = Field(
+        description="Корзины с ненулевым числом смен, сортировка по bucket_start ASC",
+    )
+
+
+class PayrollDetailedResponse(BaseModel):
+    period: PayrollPeriod = Field(description="Применённый период")
+    granularity: str = Field(description="Применённый уровень разбивки (day/week/month)")
+    tz: str = Field(description="Применённая таймзона нарезки корзин (IANA)")
+    currency: str = Field(description="Валюта отчёта (RUB)")
+    items: list[PayrollDetailedItem] = Field(
+        description="По одному элементу на сотрудника с разбивкой по корзинам",
     )
     totals: PayrollTotalsResponse = Field(description="Суммы по всем сотрудникам")
 

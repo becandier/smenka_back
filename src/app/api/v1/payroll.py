@@ -3,14 +3,17 @@ import uuid
 from datetime import datetime as dt_datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.member_rate import OrganizationMemberRate
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.payroll import (
     CurrentRateResponse,
+    ExportFormat,
+    Granularity,
     MyEarningsResponse,
+    PayrollDetailedResponse,
     PayrollResponse,
     RateCreate,
     RateDeleteResponse,
@@ -19,6 +22,21 @@ from src.app.schemas.payroll import (
     RateUpdate,
 )
 from src.app.services import payroll as payroll_service
+
+_USER_IDS_QUERY = Query(
+    None, description="Оставить только указанных сотрудников (повтор параметра или CSV uuid)"
+)
+_LOCATION_IDS_QUERY = Query(
+    None,
+    description=(
+        "Учитывать только смены указанных точек (повтор/CSV uuid); спец-значение "
+        "none — смены без точки"
+    ),
+)
+_TZ_QUERY = Query("UTC", description="IANA-таймзона нарезки корзин (напр. Europe/Moscow)")
+_ONLY_MISSING_RATE_QUERY = Query(
+    False, description="Оставить только сотрудников со сменами без действующей ставки"
+)
 
 router = APIRouter(prefix="/organizations", tags=["payroll"])
 
@@ -168,8 +186,11 @@ async def delete_member_rate(
         "сменами в периоде — отработанное время, число смен и начисление в "
         "копейках по ставке, действовавшей на момент каждой смены. Смены без "
         "действующей ставки попадают в `unpaid_*` и не входят в `gross`. "
-        "`date_to` включительно (как в date_filters). Доступно владельцу "
-        "(Owner) и админам."
+        "`date_to` включительно (как в date_filters). При `granularity != none` "
+        "к каждому сотруднику добавляется `breakdown` — разбивка по корзинам "
+        "(день/неделя/месяц) в таймзоне `tz` с посуточным округлением денег. "
+        "Фильтры `user_ids`, `location_ids` (вкл. none — «без точки»), "
+        "`only_missing_rate`. Доступно владельцу (Owner) и админам."
     ),
 )
 async def org_payroll(
@@ -182,6 +203,13 @@ async def org_payroll(
     date_to: dt_datetime | None = Query(
         None, description="Верхняя граница периода по started_at, включительно (UTC)"
     ),
+    granularity: Granularity = Query(
+        Granularity.none, description="Уровень разбивки: none (агрегат) | day | week | month"
+    ),
+    user_ids: list[str] | None = _USER_IDS_QUERY,
+    location_ids: list[str] | None = _LOCATION_IDS_QUERY,
+    tz: str = _TZ_QUERY,
+    only_missing_rate: bool = _ONLY_MISSING_RATE_QUERY,
 ) -> ApiResponse:
     report = await payroll_service.get_org_payroll(
         session,
@@ -189,8 +217,66 @@ async def org_payroll(
         user.id,
         date_from=date_from,
         date_to=date_to,
+        granularity=granularity.value,
+        user_ids=user_ids,
+        location_ids=location_ids,
+        tz=tz,
+        only_missing_rate=only_missing_rate,
     )
-    return ApiResponse.success(PayrollResponse(**report).model_dump(mode="json"))
+    model = PayrollDetailedResponse if "granularity" in report else PayrollResponse
+    return ApiResponse.success(model(**report).model_dump(mode="json"))
+
+
+@router.get(
+    "/{org_id}/payroll/export",
+    summary="Экспорт отчёта по зарплате в Excel",
+    description=(
+        "Бинарная выгрузка `.xlsx` с листами «Сводка» (агрегат по сотрудникам) и "
+        "«Детализация» (сотрудник × корзина). Те же фильтры, что у `payroll`; "
+        "если `granularity` не передан — берётся `day` (детализация — смысл "
+        "выгрузки). Часы и деньги — числами, чтобы Excel суммировал. Доступно "
+        "владельцу (Owner) и админам."
+    ),
+    response_class=Response,
+)
+async def export_payroll(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    date_from: dt_datetime | None = Query(
+        None, description="Нижняя граница периода по started_at, включительно (UTC)"
+    ),
+    date_to: dt_datetime | None = Query(
+        None, description="Верхняя граница периода по started_at, включительно (UTC)"
+    ),
+    granularity: Granularity | None = Query(
+        None, description="Уровень разбивки; по умолчанию day (детализация)"
+    ),
+    user_ids: list[str] | None = _USER_IDS_QUERY,
+    location_ids: list[str] | None = _LOCATION_IDS_QUERY,
+    tz: str = _TZ_QUERY,
+    only_missing_rate: bool = _ONLY_MISSING_RATE_QUERY,
+    export_format: ExportFormat = Query(
+        ExportFormat.xlsx, alias="format", description="Формат выгрузки (на старте только xlsx)"
+    ),
+) -> Response:
+    content, filename = await payroll_service.export_org_payroll(
+        session,
+        org_id,
+        user.id,
+        date_from=date_from,
+        date_to=date_to,
+        granularity=granularity.value if granularity is not None else None,
+        user_ids=user_ids,
+        location_ids=location_ids,
+        tz=tz,
+        only_missing_rate=only_missing_rate,
+    )
+    return Response(
+        content=content,
+        media_type=payroll_service.XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get(

@@ -3,10 +3,12 @@
 
 import uuid
 from datetime import UTC, datetime
+from io import BytesIO
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from openpyxl import load_workbook
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
@@ -14,6 +16,7 @@ from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.shift import Pause, Shift, ShiftStatus
 from src.app.models.user import User
+from src.app.models.work_location import WorkLocation
 
 RATE_EFF_JAN = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
 
@@ -25,6 +28,7 @@ async def _make_finished_shift(
     started_at: datetime,
     finished_at: datetime,
     status: ShiftStatus = ShiftStatus.finished,
+    work_location_id: uuid.UUID | None = None,
 ) -> Shift:
     shift = Shift(
         user_id=user_id,
@@ -32,10 +36,28 @@ async def _make_finished_shift(
         started_at=started_at,
         finished_at=finished_at if status == ShiftStatus.finished else None,
         status=status,
+        work_location_id=work_location_id,
     )
     db_session.add(shift)
     await db_session.commit()
     return shift
+
+
+async def _make_work_location(
+    db_session: AsyncSession,
+    org_id: uuid.UUID,
+    name: str = "Точка",
+) -> WorkLocation:
+    loc = WorkLocation(
+        organization_id=org_id,
+        name=name,
+        latitude=55.75,
+        longitude=37.62,
+        radius_meters=100,
+    )
+    db_session.add(loc)
+    await db_session.commit()
+    return loc
 
 
 async def _make_rate(
@@ -1154,3 +1176,505 @@ class TestMyEarnings:
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "INVALID_DATE_RANGE"
+
+
+def _payroll_url(org_id: Any) -> str:
+    return f"/api/v1/organizations/{org_id}/payroll"
+
+
+def _export_url(org_id: Any) -> str:
+    return f"/api/v1/organizations/{org_id}/payroll/export"
+
+
+async def _make_employee(
+    db_session: AsyncSession,
+    org: Organization,
+    email: str,
+    name: str,
+) -> tuple[User, OrganizationMember]:
+    user = User(
+        id=uuid.uuid4(),
+        email=email,
+        password_hash=hash_password("Test1234"),
+        name=name,
+        is_verified=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    member = OrganizationMember(
+        organization_id=org.id,
+        user_id=user.id,
+        role=MemberRole.employee,
+    )
+    db_session.add(member)
+    await db_session.commit()
+    return user, member
+
+
+class TestPayrollDetailed:
+    async def test_granularity_none_keeps_legacy_shape(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        """granularity=none: ни breakdown, ни granularity/tz в ответе."""
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        )
+        resp = await client.get(_payroll_url(org.id), headers=owner_headers)
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert "granularity" not in data
+        assert "tz" not in data
+        assert "breakdown" not in data["items"][0]
+
+    async def test_day_breakdown_buckets_and_echo(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        )
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 3, 11, 0, tzinfo=UTC),
+        )
+        resp = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "day"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["granularity"] == "day"
+        assert data["tz"] == "UTC"
+        item = data["items"][0]
+        breakdown = item["breakdown"]
+        assert [b["bucket_start"] for b in breakdown] == ["2026-06-01", "2026-06-03"]
+        assert breakdown[0]["worked_seconds"] == 7200
+        assert breakdown[0]["gross_amount_minor"] == 36000
+        assert breakdown[0]["shifts_count"] == 1
+        assert breakdown[1]["gross_amount_minor"] == 18000
+        # суммы корзин сходятся в итог сотрудника и totals
+        assert item["gross_amount_minor"] == 54000
+        assert item["worked_seconds"] == 10800
+        assert sum(b["gross_amount_minor"] for b in breakdown) == item["gross_amount_minor"]
+        assert data["totals"]["gross_amount_minor"] == 54000
+
+    async def test_day_rounding_is_atomic_per_day(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        """Посуточное округление: 2×0.5коп. → 5001+5001=10002 (none даёт 10001)."""
+        await _make_rate(db_session, employee_member.id, 10001)
+        for day in (1, 3):
+            await _make_finished_shift(
+                db_session,
+                verified_user.id,
+                org.id,
+                datetime(2026, 6, day, 10, 0, tzinfo=UTC),
+                datetime(2026, 6, day, 10, 30, tzinfo=UTC),
+            )
+        detailed = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "day"}
+        )
+        item = detailed.json()["data"]["items"][0]
+        assert [b["gross_amount_minor"] for b in item["breakdown"]] == [5001, 5001]
+        assert item["gross_amount_minor"] == 10002
+        assert detailed.json()["data"]["totals"]["gross_amount_minor"] == 10002
+        # режим none сохраняет единичное округление (обратная совместимость)
+        legacy = await client.get(_payroll_url(org.id), headers=owner_headers)
+        assert legacy.json()["data"]["items"][0]["gross_amount_minor"] == 10001
+
+    async def test_week_granularity_groups_iso_week(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        for day in (1, 3, 8):  # 01 и 03 — одна неделя (пн 01), 08 — следующая
+            await _make_finished_shift(
+                db_session,
+                verified_user.id,
+                org.id,
+                datetime(2026, 6, day, 10, 0, tzinfo=UTC),
+                datetime(2026, 6, day, 11, 0, tzinfo=UTC),
+            )
+        resp = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "week"}
+        )
+        breakdown = resp.json()["data"]["items"][0]["breakdown"]
+        assert [b["bucket_start"] for b in breakdown] == ["2026-06-01", "2026-06-08"]
+        assert breakdown[0]["shifts_count"] == 2
+        assert breakdown[0]["gross_amount_minor"] == 36000
+        assert breakdown[1]["shifts_count"] == 1
+
+    async def test_month_granularity_buckets(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 10, 11, 0, tzinfo=UTC),
+        )
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 7, 5, 10, 0, tzinfo=UTC),
+            datetime(2026, 7, 5, 11, 0, tzinfo=UTC),
+        )
+        resp = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "month"}
+        )
+        breakdown = resp.json()["data"]["items"][0]["breakdown"]
+        assert [b["bucket_start"] for b in breakdown] == ["2026-06-01", "2026-07-01"]
+
+    async def test_tz_shifts_bucket_to_local_day(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        """Смена 21:30 UTC (00:30 МСК) попадает в день по локальной таймзоне."""
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 21, 30, tzinfo=UTC),
+            datetime(2026, 6, 1, 22, 30, tzinfo=UTC),
+        )
+        utc = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "day"}
+        )
+        assert utc.json()["data"]["items"][0]["breakdown"][0]["bucket_start"] == "2026-06-01"
+
+        msk = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"granularity": "day", "tz": "Europe/Moscow"},
+        )
+        data = msk.json()["data"]
+        assert data["tz"] == "Europe/Moscow"
+        assert data["items"][0]["breakdown"][0]["bucket_start"] == "2026-06-02"
+
+    async def test_invalid_tz_422(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        org: Organization,
+    ) -> None:
+        resp = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"granularity": "day", "tz": "Mars/Phobos"},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_invalid_granularity_422(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        org: Organization,
+    ) -> None:
+        resp = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"granularity": "year"}
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_user_ids_filter(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        emp2_user, emp2_member = await _make_employee(
+            db_session, org, "emp2@example.com", "Employee Two"
+        )
+        await _make_rate(db_session, emp2_member.id, 18000)
+        for user in (verified_user, emp2_user):
+            await _make_finished_shift(
+                db_session,
+                user.id,
+                org.id,
+                datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+                datetime(2026, 6, 1, 11, 0, tzinfo=UTC),
+            )
+        only_first = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"user_ids": str(verified_user.id)},
+        )
+        items = only_first.json()["data"]["items"]
+        assert [i["user_id"] for i in items] == [str(verified_user.id)]
+
+        csv_both = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"user_ids": f"{verified_user.id},{emp2_user.id}"},
+        )
+        assert len(csv_both.json()["data"]["items"]) == 2
+
+    async def test_user_ids_bad_uuid_422(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        org: Organization,
+    ) -> None:
+        resp = await client.get(
+            _payroll_url(org.id), headers=owner_headers, params={"user_ids": "not-a-uuid"}
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_location_ids_filter_including_no_location(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        loc1 = await _make_work_location(db_session, org.id, "Точка 1")
+        loc2 = await _make_work_location(db_session, org.id, "Точка 2")
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+            work_location_id=loc1.id,
+        )
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 2, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 2, 11, 0, tzinfo=UTC),
+            work_location_id=loc2.id,
+        )
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 3, 10, 30, tzinfo=UTC),
+        )
+
+        async def _worked(params: dict[str, Any]) -> int:
+            resp = await client.get(_payroll_url(org.id), headers=owner_headers, params=params)
+            items = resp.json()["data"]["items"]
+            return items[0]["worked_seconds"] if items else 0
+
+        assert await _worked({"location_ids": str(loc1.id)}) == 7200
+        assert await _worked({"location_ids": "none"}) == 1800
+        assert await _worked({"location_ids": f"{loc1.id},none"}) == 9000
+
+    async def test_location_foreign_org_422(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        owner: User,
+    ) -> None:
+        other_org = Organization(name="Other Org", owner_id=owner.id)
+        db_session.add(other_org)
+        await db_session.flush()
+        foreign = await _make_work_location(db_session, other_org.id, "Чужая точка")
+        resp = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"location_ids": str(foreign.id)},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_only_missing_rate_filter(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)  # оплачиваемый
+        emp2_user, _ = await _make_employee(db_session, org, "emp2@example.com", "No Rate")
+        for user in (verified_user, emp2_user):
+            await _make_finished_shift(
+                db_session,
+                user.id,
+                org.id,
+                datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+                datetime(2026, 6, 1, 11, 0, tzinfo=UTC),
+            )
+        resp = await client.get(
+            _payroll_url(org.id),
+            headers=owner_headers,
+            params={"only_missing_rate": "true"},
+        )
+        items = resp.json()["data"]["items"]
+        assert [i["user_id"] for i in items] == [str(emp2_user.id)]
+        assert items[0]["has_missing_rate"] is True
+
+
+class TestPayrollExport:
+    async def test_export_valid_xlsx_with_sheets(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        )
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 3, 11, 0, tzinfo=UTC),
+        )
+        resp = await client.get(_export_url(org.id), headers=owner_headers)
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "attachment; filename=" in resp.headers["content-disposition"]
+
+        wb = load_workbook(BytesIO(resp.content))
+        assert wb.sheetnames == ["Сводка", "Детализация"]
+
+        summary = wb["Сводка"]
+        rows = list(summary.iter_rows(values_only=True))
+        total_row = next(r for r in rows if r[0] == "ИТОГО")
+        assert total_row[1] == 3.0  # часы (2ч + 1ч)
+        assert total_row[2] == 2  # смены
+        assert total_row[3] == 540.0  # рубли (18000 коп/ч × 3ч)
+
+        detail = wb["Детализация"]
+        detail_rows = list(detail.iter_rows(min_row=2, values_only=True))
+        assert [r[1] for r in detail_rows] == ["2026-06-01", "2026-06-03"]
+        # деньги детализации суммируются в сводку (число в рублях)
+        assert sum(r[4] for r in detail_rows) == total_row[3]
+
+    async def test_export_unsupported_format_422(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        org: Organization,
+    ) -> None:
+        resp = await client.get(
+            _export_url(org.id), headers=owner_headers, params={"format": "csv"}
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_export_employee_forbidden(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, Any],
+        org: Organization,
+        employee_member: OrganizationMember,
+    ) -> None:
+        resp = await client.get(_export_url(org.id), headers=auth_headers)
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+    async def test_export_org_not_found(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+    ) -> None:
+        resp = await client.get(_export_url(uuid.uuid4()), headers=owner_headers)
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "ORG_NOT_FOUND"
+
+    async def test_export_filename_contains_period_dates(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 12, 0, tzinfo=UTC),
+        )
+        resp = await client.get(
+            _export_url(org.id),
+            headers=owner_headers,
+            params={
+                "date_from": "2026-06-01T00:00:00Z",
+                "date_to": "2026-06-30T23:59:59Z",
+            },
+        )
+        assert resp.status_code == 200
+        disposition = resp.headers["content-disposition"]
+        assert "2026-06-01" in disposition
+        assert "2026-06-30" in disposition
