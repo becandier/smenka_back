@@ -21,6 +21,11 @@ class OrganizationResponse(BaseModel):
     invite_code: str = Field(description="Инвайт-код для присоединения")
     is_deleted: bool = Field(description="Помечена как удалённая")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
+    require_work_location: bool = Field(
+        default=False,
+        description="Требовать привязку точки к смене (для активации обязательного "
+        "выбора точки на клиенте при выключенной гео)",
+    )
     created_at: datetime = Field(description="Дата создания")
     my_role: str | None = Field(
         default=None,
@@ -69,6 +74,9 @@ class JoinResponse(BaseModel):
     organization_name: str = Field(description="Название организации")
     role: str = Field(description="Назначенная роль (employee)")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
+    require_work_location: bool = Field(
+        default=False, description="Требовать привязку точки к смене"
+    )
 
 
 class InviteCodeResponse(BaseModel):
