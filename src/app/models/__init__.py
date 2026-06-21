@@ -3,12 +3,15 @@ from src.app.models.checklist import (
     ChecklistInstance,
     ChecklistInstanceItem,
     ChecklistInstanceStatus,
+    ChecklistItemPhoto,
     ChecklistMemberOverride,
     ChecklistRoleAssignment,
     ChecklistTemplate,
     ChecklistTemplateItem,
     ChecklistType,
     OverrideType,
+    PhotoRequirement,
+    PhotoSource,
 )
 from src.app.models.file import File, FileCategory
 from src.app.models.member_rate import OrganizationMemberRate, RateType
@@ -26,6 +29,7 @@ __all__ = [
     "ChecklistInstance",
     "ChecklistInstanceItem",
     "ChecklistInstanceStatus",
+    "ChecklistItemPhoto",
     "ChecklistMemberOverride",
     "ChecklistRoleAssignment",
     "ChecklistTemplate",
@@ -41,6 +45,8 @@ __all__ = [
     "OrganizationSettings",
     "OverrideType",
     "Pause",
+    "PhotoRequirement",
+    "PhotoSource",
     "RateType",
     "RefreshToken",
     "Shift",

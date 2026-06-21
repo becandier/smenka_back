@@ -44,6 +44,8 @@ def _item_to_response(item: ChecklistTemplateItem) -> dict[str, Any]:
         text=item.text,
         is_required=item.is_required,
         position=item.position,
+        photo_requirement=item.photo_requirement.value,
+        photo_source=item.photo_source.value,
     ).model_dump(mode="json")
 
 
@@ -197,6 +199,8 @@ async def add_item(
         body.text,
         body.is_required,
         user.id,
+        photo_requirement=body.photo_requirement,
+        photo_source=body.photo_source,
     )
     await session.commit()
     return ApiResponse.success(_item_to_response(item))
@@ -222,6 +226,8 @@ async def update_item(
         user.id,
         text=body.text,
         is_required=body.is_required,
+        photo_requirement=body.photo_requirement,
+        photo_source=body.photo_source,
     )
     await session.commit()
     return ApiResponse.success(_item_to_response(item))

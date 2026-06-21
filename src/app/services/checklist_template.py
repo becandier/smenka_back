@@ -9,6 +9,8 @@ from src.app.models.checklist import (
     ChecklistTemplate,
     ChecklistTemplateItem,
     ChecklistType,
+    PhotoRequirement,
+    PhotoSource,
 )
 from src.app.models.organization import Organization
 from src.app.services.common import ensure_admin_or_owner
@@ -206,6 +208,9 @@ async def add_item(
     text: str,
     is_required: bool,
     requester_id: uuid.UUID,
+    *,
+    photo_requirement: PhotoRequirement = PhotoRequirement.none,
+    photo_source: PhotoSource = PhotoSource.camera,
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -218,11 +223,17 @@ async def add_item(
     )
     next_position = max_pos.scalar_one() + 1
 
+    # photo_source имеет смысл только при photo_requirement != none.
+    if photo_requirement == PhotoRequirement.none:
+        photo_source = PhotoSource.camera
+
     item = ChecklistTemplateItem(
         template_id=template_id,
         text=text,
         is_required=is_required,
         position=next_position,
+        photo_requirement=photo_requirement,
+        photo_source=photo_source,
     )
     session.add(item)
     await session.flush()
@@ -260,6 +271,8 @@ async def update_item(
     *,
     text: str | None = None,
     is_required: bool | None = None,
+    photo_requirement: PhotoRequirement | None = None,
+    photo_source: PhotoSource | None = None,
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -270,6 +283,13 @@ async def update_item(
         item.text = text
     if is_required is not None:
         item.is_required = is_required
+    if photo_requirement is not None:
+        item.photo_requirement = photo_requirement
+    if photo_source is not None:
+        item.photo_source = photo_source
+    # photo_source имеет смысл только при photo_requirement != none — нормализуем.
+    if item.photo_requirement == PhotoRequirement.none:
+        item.photo_source = PhotoSource.camera
 
     await session.flush()
     return item

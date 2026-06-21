@@ -1,23 +1,30 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.app.core.config import get_settings
 from src.app.core.logging import get_logger
 from src.app.models.checklist import (
     ChecklistInstance,
     ChecklistInstanceItem,
     ChecklistInstanceStatus,
+    ChecklistItemPhoto,
     ChecklistTemplateItem,
+    PhotoRequirement,
 )
+from src.app.models.file import File, FileCategory
 from src.app.models.organization import OrganizationMember
-from src.app.models.shift import Shift
+from src.app.models.shift import Shift, ShiftStatus
+from src.app.models.user import User
 from src.app.services.checklist_assignment import _compute_effective
 from src.app.services.checklist_template import ChecklistError
 
 logger = get_logger(__name__)
+settings = get_settings()
 
 
 async def create_instances_for_shift(
@@ -69,6 +76,9 @@ async def create_instances_for_shift(
                     text=tpl_item.text,
                     is_required=tpl_item.is_required,
                     position=tpl_item.position,
+                    # Снимок настроек фото — последующая правка шаблона не влияет.
+                    photo_requirement=tpl_item.photo_requirement,
+                    photo_source=tpl_item.photo_source,
                 )
             )
 
@@ -129,11 +139,65 @@ async def _get_shift(session: AsyncSession, shift_id: uuid.UUID) -> Shift:
     return shift
 
 
+async def _recompute_instance_status(
+    session: AsyncSession,
+    instance: ChecklistInstance,
+) -> None:
+    """Единый пересчёт статуса экземпляра по критерию «satisfied».
+
+    satisfied = is_completed AND (photo_requirement != required OR photos_count >= 1).
+    Экземпляр completed, когда нет не-satisfied ОБЯЗАТЕЛЬНЫХ пунктов; иначе pending.
+    Применяется из PATCH пункта, привязки/отвязки фото. completed_at трогаем только
+    при реальной смене статуса (без лишнего churn updated_at/онлайна)."""
+    # Блокируем строку экземпляра до конца транзакции: конкурентные пересчёты одного
+    # instance по РАЗНЫМ пунктам (PATCH vs привязка фото) иначе читают устаревший снимок
+    # друг друга и статус может «застрять» в pending. Лок именно на строке instance;
+    # авто-финиш тоже сперва трогает строки экземпляров, цикла блокировок с ним нет.
+    await session.execute(
+        select(ChecklistInstance.id)
+        .where(ChecklistInstance.id == instance.id)
+        .with_for_update()
+    )
+    photos_count_subq = (
+        select(func.count(ChecklistItemPhoto.id))
+        .where(ChecklistItemPhoto.instance_item_id == ChecklistInstanceItem.id)
+        .correlate(ChecklistInstanceItem)
+        .scalar_subquery()
+    )
+    blocking_result = await session.execute(
+        select(func.count()).where(
+            ChecklistInstanceItem.instance_id == instance.id,
+            ChecklistInstanceItem.is_required.is_(True),
+            or_(
+                ChecklistInstanceItem.is_completed.is_(False),
+                and_(
+                    ChecklistInstanceItem.photo_requirement == PhotoRequirement.required,
+                    photos_count_subq == 0,
+                ),
+            ),
+        )
+    )
+    blocking = blocking_result.scalar_one()
+
+    now = datetime.now(UTC)
+    if blocking == 0:
+        if instance.status != ChecklistInstanceStatus.completed:
+            instance.status = ChecklistInstanceStatus.completed
+            instance.completed_at = now
+    else:
+        if instance.status != ChecklistInstanceStatus.pending:
+            instance.status = ChecklistInstanceStatus.pending
+            instance.completed_at = None
+
+    await session.flush()
+
+
 async def get_shift_checklists(
     session: AsyncSession,
     shift_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> list[tuple[ChecklistInstance, int, int]]:
+) -> list[tuple[ChecklistInstance, int, int, int, int]]:
+    """Возвращает (instance, total, completed, satisfied_count, photos_required_missing)."""
     shift = await _get_shift(session, shift_id)
     await _check_shift_access(session, shift, requester_id)
 
@@ -146,20 +210,75 @@ async def get_shift_checklists(
     if not instances:
         return []
 
-    items_result = await session.execute(
+    instance_ids = [i.id for i in instances]
+    # Per-item photo counts (LEFT JOIN), затем агрегаты per-instance — один запрос.
+    per_item = (
         select(
-            ChecklistInstanceItem.instance_id,
-            ChecklistInstanceItem.is_completed,
-        ).where(ChecklistInstanceItem.instance_id.in_([i.id for i in instances]))
+            ChecklistInstanceItem.instance_id.label("instance_id"),
+            ChecklistInstanceItem.is_completed.label("is_completed"),
+            ChecklistInstanceItem.photo_requirement.label("photo_requirement"),
+            func.count(ChecklistItemPhoto.id).label("photos_count"),
+        )
+        .select_from(ChecklistInstanceItem)
+        .outerjoin(
+            ChecklistItemPhoto,
+            ChecklistItemPhoto.instance_item_id == ChecklistInstanceItem.id,
+        )
+        .where(ChecklistInstanceItem.instance_id.in_(instance_ids))
+        .group_by(ChecklistInstanceItem.id)
+        .subquery()
     )
-    totals: dict[uuid.UUID, int] = {i.id: 0 for i in instances}
-    completed: dict[uuid.UUID, int] = {i.id: 0 for i in instances}
-    for inst_id, is_done in items_result.all():
-        totals[inst_id] += 1
-        if is_done:
-            completed[inst_id] += 1
+    completed_case = case((per_item.c.is_completed.is_(True), 1), else_=0)
+    satisfied_case = case(
+        (
+            and_(
+                per_item.c.is_completed.is_(True),
+                or_(
+                    per_item.c.photo_requirement != PhotoRequirement.required,
+                    per_item.c.photos_count >= 1,
+                ),
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    missing_case = case(
+        (
+            and_(
+                per_item.c.photo_requirement == PhotoRequirement.required,
+                per_item.c.photos_count == 0,
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    summary_result = await session.execute(
+        select(
+            per_item.c.instance_id,
+            func.count().label("total"),
+            func.coalesce(func.sum(completed_case), 0).label("completed"),
+            func.coalesce(func.sum(satisfied_case), 0).label("satisfied_count"),
+            func.coalesce(func.sum(missing_case), 0).label("photos_required_missing"),
+        ).group_by(per_item.c.instance_id)
+    )
+    by_instance = {row.instance_id: row for row in summary_result.all()}
 
-    return [(inst, totals[inst.id], completed[inst.id]) for inst in instances]
+    out: list[tuple[ChecklistInstance, int, int, int, int]] = []
+    for inst in instances:
+        row = by_instance.get(inst.id)
+        if row is None:
+            out.append((inst, 0, 0, 0, 0))
+        else:
+            out.append(
+                (
+                    inst,
+                    int(row.total),
+                    int(row.completed),
+                    int(row.satisfied_count),
+                    int(row.photos_required_missing),
+                )
+            )
+    return out
 
 
 async def get_instance_detail(
@@ -173,7 +292,11 @@ async def get_instance_detail(
 
     result = await session.execute(
         select(ChecklistInstance)
-        .options(selectinload(ChecklistInstance.items))
+        .options(
+            selectinload(ChecklistInstance.items)
+            .selectinload(ChecklistInstanceItem.photos)
+            .selectinload(ChecklistItemPhoto.file)
+        )
         .where(
             ChecklistInstance.id == instance_id,
             ChecklistInstance.shift_id == shift_id,
@@ -220,7 +343,11 @@ async def update_instance_item(
         raise ChecklistError("INSTANCE_NOT_FOUND", "Экземпляр не найден", 404)
 
     item_result = await session.execute(
-        select(ChecklistInstanceItem).where(
+        select(ChecklistInstanceItem)
+        .options(
+            selectinload(ChecklistInstanceItem.photos).selectinload(ChecklistItemPhoto.file)
+        )
+        .where(
             ChecklistInstanceItem.id == item_id,
             ChecklistInstanceItem.instance_id == instance_id,
         )
@@ -237,27 +364,281 @@ async def update_instance_item(
     item.change_count = (item.change_count or 0) + 1
 
     await session.flush()
-
-    required_pending_result = await session.execute(
-        select(func.count()).where(
-            ChecklistInstanceItem.instance_id == instance_id,
-            ChecklistInstanceItem.is_required.is_(True),
-            ChecklistInstanceItem.is_completed.is_(False),
-        )
-    )
-    pending_required = required_pending_result.scalar_one()
-
-    if pending_required == 0:
-        if instance.status != ChecklistInstanceStatus.completed:
-            instance.status = ChecklistInstanceStatus.completed
-            instance.completed_at = now
-    else:
-        if instance.status != ChecklistInstanceStatus.pending:
-            instance.status = ChecklistInstanceStatus.pending
-            instance.completed_at = None
-
-    await session.flush()
+    await _recompute_instance_status(session, instance)
     return item
+
+
+async def _load_instance_for_shift(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    instance_id: uuid.UUID,
+) -> ChecklistInstance:
+    instance = (
+        await session.execute(
+            select(ChecklistInstance).where(
+                ChecklistInstance.id == instance_id,
+                ChecklistInstance.shift_id == shift_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if instance is None:
+        raise ChecklistError("INSTANCE_NOT_FOUND", "Экземпляр не найден", 404)
+    return instance
+
+
+async def _ensure_owner_active_shift(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    forbidden_message: str,
+) -> Shift:
+    shift = await _get_shift(session, shift_id)
+    if shift.user_id != user_id:
+        raise ChecklistError("FORBIDDEN", forbidden_message, 403)
+    _assert_shift_active(shift)
+    return shift
+
+
+def _assert_shift_active(shift: Shift) -> None:
+    if shift.status == ShiftStatus.finished:
+        raise ChecklistError(
+            "SHIFT_FINISHED",
+            "Нельзя редактировать чек-листы завершённой смены",
+            400,
+        )
+
+
+async def _reassert_shift_active(session: AsyncSession, shift: Shift) -> None:
+    """Повторная проверка статуса смены непосредственно перед мутацией.
+
+    Защита от гонки с авто-завершением (ТЗ): между первой проверкой и коммитом
+    смену мог завершить Celery/инлайн auto-finish. Делаем свежее чтение (без
+    FOR UPDATE — лок строки shifts создал бы цикл с auto-finish, который сперва
+    лочит строки экземпляров, затем строку смены) и под READ COMMITTED видим уже
+    закоммиченный finished → SHIFT_FINISHED. Остаточное окно (финиш между этим
+    чтением и нашим коммитом) допустимо: файл останется сиротой и его уберёт
+    cleanup_orphan_files (см. backend.md «Транзакции и гонки»)."""
+    await session.refresh(shift, attribute_names=["status"])
+    _assert_shift_active(shift)
+
+
+async def attach_photo(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    item_id: uuid.UUID,
+    user: User,
+    *,
+    file_id: uuid.UUID,
+    captured_at: datetime | None,
+    latitude: float | None,
+    longitude: float | None,
+) -> tuple[ChecklistItemPhoto, File]:
+    """Привязать уже загруженный файл к пункту-экземпляру (одна транзакция)."""
+    shift = await _ensure_owner_active_shift(
+        session,
+        shift_id,
+        user.id,
+        forbidden_message="Добавлять фото может только владелец смены",
+    )
+    await _load_instance_for_shift(session, shift_id, instance_id)
+
+    # Блокируем строку пункта (FOR UPDATE) — защита от гонки по лимиту фото.
+    item = (
+        await session.execute(
+            select(ChecklistInstanceItem)
+            .where(
+                ChecklistInstanceItem.id == item_id,
+                ChecklistInstanceItem.instance_id == instance_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise ChecklistError("ITEM_NOT_FOUND", "Пункт не найден", 404)
+
+    if item.photo_requirement == PhotoRequirement.none:
+        raise ChecklistError("PHOTO_NOT_ALLOWED", "К этому пункту нельзя прикреплять фото", 400)
+
+    # Любая проблема с файлом-кандидатом → единый PHOTO_FILE_INVALID (мобилка перезаливает).
+    file = (
+        await session.execute(select(File).where(File.id == file_id))
+    ).scalar_one_or_none()
+    if (
+        file is None
+        or file.category != FileCategory.checklist_photo
+        or file.owner_user_id != user.id
+        or file.organization_id != shift.organization_id
+    ):
+        raise ChecklistError("PHOTO_FILE_INVALID", "Файл недоступен для привязки", 400)
+
+    already = (
+        await session.execute(
+            select(ChecklistItemPhoto.id).where(ChecklistItemPhoto.file_id == file_id)
+        )
+    ).scalar_one_or_none()
+    if already is not None:
+        raise ChecklistError("PHOTO_FILE_INVALID", "Файл недоступен для привязки", 400)
+
+    current_count = (
+        await session.execute(
+            select(func.count()).where(ChecklistItemPhoto.instance_item_id == item_id)
+        )
+    ).scalar_one()
+    if current_count >= settings.checklist_max_photos_per_item:
+        raise ChecklistError("PHOTO_LIMIT_EXCEEDED", "Достигнут лимит фото на пункт", 409)
+
+    next_position = (
+        await session.execute(
+            select(func.coalesce(func.max(ChecklistItemPhoto.position), -1)).where(
+                ChecklistItemPhoto.instance_item_id == item_id
+            )
+        )
+    ).scalar_one() + 1
+
+    # Повторная проверка статуса смены прямо перед мутацией (гонка с авто-финишем).
+    await _reassert_shift_active(session, shift)
+
+    file.is_attached = True
+    photo = ChecklistItemPhoto(
+        instance_item_id=item_id,
+        file_id=file_id,
+        captured_at=captured_at,
+        latitude=latitude,
+        longitude=longitude,
+        position=next_position,
+    )
+    session.add(photo)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # Параллельный второй POST того же файла упал на UNIQUE(file_id).
+        await session.rollback()
+        raise ChecklistError("PHOTO_FILE_INVALID", "Файл недоступен для привязки", 400) from exc
+
+    instance = await _load_instance_for_shift(session, shift_id, instance_id)
+    await _recompute_instance_status(session, instance)
+    logger.info(
+        "checklist_photo_attached",
+        shift_id=str(shift_id),
+        item_id=str(item_id),
+        file_id=str(file_id),
+    )
+    return photo, file
+
+
+async def detach_photo(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    instance_id: uuid.UUID,
+    item_id: uuid.UUID,
+    photo_id: uuid.UUID,
+    user: User,
+) -> None:
+    """Отвязать и физически удалить фото (объект S3 + строки files и связи)."""
+    shift = await _ensure_owner_active_shift(
+        session,
+        shift_id,
+        user.id,
+        forbidden_message="Удалять фото может только владелец смены",
+    )
+    instance = await _load_instance_for_shift(session, shift_id, instance_id)
+
+    item = (
+        await session.execute(
+            select(ChecklistInstanceItem).where(
+                ChecklistInstanceItem.id == item_id,
+                ChecklistInstanceItem.instance_id == instance_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise ChecklistError("ITEM_NOT_FOUND", "Пункт не найден", 404)
+
+    photo = (
+        await session.execute(
+            select(ChecklistItemPhoto).where(
+                ChecklistItemPhoto.id == photo_id,
+                ChecklistItemPhoto.instance_item_id == item_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if photo is None:
+        raise ChecklistError("PHOTO_NOT_FOUND", "Фото не найдено", 404)
+
+    from src.app.services.file_storage import delete_file
+
+    # Повторная проверка статуса смены прямо перед мутацией (гонка с авто-финишем).
+    await _reassert_shift_active(session, shift)
+
+    file_id = photo.file_id
+    # Снять привязку до delete_file (тот бросает FILE_IN_USE для is_attached=true).
+    await session.delete(photo)
+    file = (
+        await session.execute(select(File).where(File.id == file_id))
+    ).scalar_one_or_none()
+    if file is not None:
+        file.is_attached = False
+        await session.flush()
+        await delete_file(session, file_id, user)
+    else:
+        await session.flush()
+
+    await _recompute_instance_status(session, instance)
+    logger.info(
+        "checklist_photo_detached",
+        shift_id=str(shift_id),
+        item_id=str(item_id),
+        photo_id=str(photo_id),
+    )
+
+
+async def cleanup_shift_photo_files(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user: User,
+) -> int:
+    """Удалить файлы всех привязанных фото смены (объект S3 + строку files) ДО
+    каскадного удаления строк связи. Возвращает число удалённых файлов.
+
+    Privacy-хук для будущего пути удаления смены: каскад ON DELETE снёс бы лишь
+    строки checklist_item_photos, оставив files (is_attached=true) и объекты S3
+    сиротами, которых cleanup_orphan_files НЕ подбирает. В текущей архитектуре
+    смены не hard-удаляются (орг — soft-delete), прямого триггера нет —
+    подключается из пути удаления смены, когда он появится."""
+    from src.app.services.file_storage import delete_file
+
+    file_ids = list(
+        (
+            await session.execute(
+                select(ChecklistItemPhoto.file_id)
+                .join(
+                    ChecklistInstanceItem,
+                    ChecklistItemPhoto.instance_item_id == ChecklistInstanceItem.id,
+                )
+                .join(
+                    ChecklistInstance,
+                    ChecklistInstanceItem.instance_id == ChecklistInstance.id,
+                )
+                .where(ChecklistInstance.shift_id == shift_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    deleted = 0
+    for file_id in file_ids:
+        file = (
+            await session.execute(select(File).where(File.id == file_id))
+        ).scalar_one_or_none()
+        if file is None:
+            continue
+        file.is_attached = False
+        await session.flush()
+        await delete_file(session, file_id, user)
+        deleted += 1
+    return deleted
 
 
 async def finalize_shift_checklists(
@@ -266,8 +647,11 @@ async def finalize_shift_checklists(
 ) -> bool:
     """Mark pending required instances as incomplete.
 
-    Returns True if the shift has any incomplete required checklists.
-    Caller is responsible for setting shift.has_incomplete_required_checklists.
+    Статус каждого экземпляра поддерживается свежим через _recompute_instance_status
+    на каждом PATCH/привязке/отвязке фото, поэтому «pending обязательный» здесь уже
+    означает «остались не-satisfied обязательные пункты» (включая отсутствие
+    обязательного фото). Returns True если у смены есть incomplete-обязательные
+    экземпляры. Caller выставляет shift.has_incomplete_required_checklists.
     """
     await session.execute(
         update(ChecklistInstance)

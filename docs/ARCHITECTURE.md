@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-06-20 (file_storage — реестр `files`, S3-слой, upload/get/delete, очистка сирот)
+Последнее обновление: 2026-06-20 (checklist_photos — фото-подтверждения пунктов чек-листов: `photo_requirement`/`photo_source`, таблица `checklist_item_photos`, привязка/отвязка через файловое хранилище, единый пересчёт «satisfied»)
 
 ---
 
@@ -20,11 +20,12 @@
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius, address nullable VARCHAR512 — читаемый адрес, геокодинг в админке) |
 | `OrganizationSettings` | `organization_settings` | Настройки организации (geo, лимиты пауз, auto-finish) |
 | `ChecklistTemplate` | `checklist_templates` | Шаблон чек-листа (org_id, name, type, is_required, is_archived) |
-| `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position) |
+| `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position, **photo_requirement** none/optional/required, **photo_source** camera/camera_or_gallery — VARCHAR32, дефолты none/camera) |
 | `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
 | `ChecklistMemberOverride` | `checklist_member_overrides` | Личное переопределение (add/remove) |
 | `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
-| `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count) |
+| `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count, **photo_requirement**/**photo_source** — снимок настроек фото на старте смены) |
+| `ChecklistItemPhoto` | `checklist_item_photos` | Фото-подтверждение пункта-экземпляра (instance_item_id→CASCADE индекс, file_id→`files.id` CASCADE **UNIQUE**, captured_at, latitude/longitude double precision nullable — антифрод-метка, position, created_at). Один файл = одна привязка |
 | `AuditLog` | `audit_logs` | Append-only журнал чувствительных действий (organization_id NULL→CASCADE, actor_user_id NULL→SET NULL, action, resource_type, resource_id, summary jsonb, ip_address, created_at). Системные авто-действия Celery — `actor_user_id = null`. Индексы `(organization_id, created_at DESC)`, `(actor_user_id)`, `(action)` |
 | `File` | `files` | Чистый реестр блобов в S3 (storage_key UNIQUE, bucket, category enum-строка VARCHAR32, original_filename, content_type по реальному MIME, size_bytes, checksum_sha256 nullable, is_attached, organization_id NULL→CASCADE, owner_user_id→CASCADE, created/updated_at). Привязка — FK со стороны фичи-потребителя (НЕ полиморфизм). Индексы `category`, `organization_id`, `owner_user_id`, `(is_attached, created_at)` (очистка сирот). Enum `FileCategory`: checklist_photo/knowledge_base/avatar/other |
 
@@ -90,9 +91,11 @@
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Upsert override (шаблон, сотрудник) | Bearer (owner/admin) |
 | DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Снять override (идемпотентно) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/members/{user_id}/checklists` | Эффективные чек-листы | Bearer (owner/admin/self) |
-| GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены | Bearer (владелец смены / owner / admin) |
-| GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра | Bearer |
+| GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены (items_summary: total, completed, satisfied_count, photos_required_missing — один GROUP BY) | Bearer (владелец смены / owner / admin) |
+| GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра (+max_photos_per_item, по каждому пункту photos[] со свежими presigned URL; сбой storage → url=null без 502) | Bearer |
 | PATCH | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}` | Отметить пункт | Bearer (владелец смены) |
+| POST | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}/photos` | Привязать загруженный файл checklist_photo к пункту (FOR UPDATE на пункт; PHOTO_NOT_ALLOWED/PHOTO_LIMIT_EXCEEDED/PHOTO_FILE_INVALID) | Bearer (владелец активной смены) |
+| DELETE | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}/photos/{photo_id}` | Отвязать и удалить фото (объект S3 + строка files); ответ `{data:null,error:null}` | Bearer (владелец активной смены) |
 | POST | `/api/v1/organizations/{id}/members/{member_id}/rates` | Назначить ставку (новая запись истории) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/members/{member_id}/rates` | История ставок участника (effective_from DESC) | Bearer (owner/admin) |
 | PATCH | `/api/v1/organizations/{id}/members/{member_id}/rates/{rate_id}` | Исправить запись истории | Bearer (owner/admin) |
@@ -110,6 +113,8 @@
 | DELETE | `/api/v1/files/{file_id}` | Удаление объекта + строки; привязанный → `FILE_IN_USE` (409), повтор → `FILE_NOT_FOUND` (404) | Bearer (uploader/admin-owner/super_admin) |
 
 > **Файловое хранилище (file_storage).** Единый слой хранения поверх S3-совместимого storage (локально MinIO, в проде managed S3 — переезд = смена `S3_*` env, без правок кода). Загрузка идёт **через бэкенд** (multipart → API → storage), доступ к объектам **приватный** — клиент качает по **presigned GET URL** с коротким TTL (`S3_PRESIGN_EXPIRE_SECONDS`), который генерирует бэк. `files` — чистый реестр блобов (`File`); привязка к бизнес-сущности делается со стороны фичи-потребителя FK на `files.id` (НЕ полиморфизм) — целостность и `ON DELETE` каскады. Категория (`FileCategory`) задаёт префикс ключа, политику (лимит размера + разрешённые MIME, таблица `CATEGORY_POLICIES` в `services/file_storage.py`) и права: `checklist_photo` — любой member org; `knowledge_base` — admin/owner org; `avatar`/`other` — персональные. Реальный MIME определяется по сигнатуре содержимого (`filetype`), а не по заголовку multipart; имя в ключе — всегда UUID (anti path-traversal/коллизии), исходное имя хранится для `Content-Disposition`. **presigned + MinIO:** бэк ходит в storage по внутреннему `S3_ENDPOINT_URL`, но presigned-ссылка генерируется клиентом на публичном `S3_PUBLIC_ENDPOINT_URL` (подпись сразу от публичного хоста; в managed-S3 оба совпадают). Прямой стрим байтов через бэк не делаем. Жизненный цикл: строка создаётся с `is_attached=false`, потребитель ставит `true` при привязке; сироты (`is_attached=false`, старше `ORPHAN_FILE_TTL_HOURS`) подбирает Celery `cleanup_orphan_files`. Ошибки — `FileError` (`FILE_NOT_FOUND`/`FILE_TOO_LARGE`/`UNSUPPORTED_FILE_TYPE`/`INVALID_FILE_CATEGORY`/`FILE_IN_USE`/`STORAGE_UNAVAILABLE`).
+
+> **Фото-подтверждения чек-листов (checklist_photos).** Пункт шаблона несёт `photo_requirement` (none/optional/required) и `photo_source` (camera/camera_or_gallery — подсказка UI, сервер источник **не** enforce-ит); при `requirement=none` source нормализуется к camera. На старте org-смены настройки копируются снимком в `checklist_instance_items` (правка шаблона на уже созданные экземпляры не влияет). Загрузка файла — через существующий `POST /api/v1/files` (категория `checklist_photo`); фича только **привязывает** загруженный `file_id` к пункту-экземпляру (`checklist_item_photos`, UNIQUE на `file_id`). Привязка/отвязка — только владелец активной смены, под `SELECT ... FOR UPDATE` на пункт (защита лимита `CHECKLIST_MAX_PHOTOS_PER_ITEM`); проблема с файлом-кандидатом (нет/чужой/другая org/не `checklist_photo`/уже привязан) → единый `PHOTO_FILE_INVALID`. Привязка ставит `files.is_attached=true`; отвязка снимает флаг и зовёт `delete_file` (объект S3 + строка `files`, связь уходит каскадом). Статус экземпляра считает **единая** функция `_recompute_instance_status` по критерию **satisfied** = `is_completed AND (photo_requirement != required OR photos_count >= 1)`; вызывается из PATCH пункта и привязки/отвязки фото, поэтому `finalize_shift_checklists` (и его sync-двойник) по-прежнему доверяют хранимому статусу. Режим **мягкий**: отметить пункт без фото и завершить смену можно — отсутствие обязательного фото лишь даёт `pending`→`incomplete` и `has_incomplete_required_checklists`. Деталь экземпляра отдаёт по каждому фото свежий presigned GET (батч-подпись одним клиентом, без N+1); при недоступности storage — `url=null` без 502 (клиент дотянет через `GET /files/{id}`). `items_summary` списка получил `satisfied_count` (честный прогресс) и `photos_required_missing` (бейдж «нужно фото») — одним GROUP BY. **Privacy-долг:** `cleanup_shift_photo_files` (в `services/checklist_instance.py`) удаляет файлы привязанных фото смены ДО каскадного сноса связей, НО прямого триггера нет — смены не hard-удаляются, org — soft-delete; `cleanup_orphan_files` не подбирает `is_attached=true`, поэтому при будущем hard-delete смены/org гео-привязанные фото останутся объектами S3 (массовая чистка бакета — отдельная DevOps-задача).
 
 > **Сквозной доступ super_admin.** Все org-эндпоинты (`members`, `settings`, `locations`, `roles`, `checklist-*`, `shifts`, `stats`) пускают `super_admin`, даже если он не состоит в организации. Проверки прав вынесены в `services/common.py` (`ensure_owner` / `ensure_member` / `ensure_admin_or_owner`), и в каждой добавлена ветка super_admin. `GET /shifts` и `GET /organizations/{id}/shifts` дополнительно принимают `sort` (`started_at`/`finished_at`) и `order` (`asc`/`desc`).
 
@@ -137,10 +142,10 @@
 | `services/work_location.py` | CRUD рабочих точек |
 | `services/organization_settings.py` | CRUD настроек организации |
 | `services/organization_role.py` | Кастомные роли организации и их назначение members (`RoleError`) |
-| `services/checklist_template.py` | Шаблоны чек-листов, пункты, reorder, архивация (`ChecklistError`) |
+| `services/checklist_template.py` | Шаблоны чек-листов, пункты (+`photo_requirement`/`photo_source`), reorder, архивация (`ChecklistError`) |
 | `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides (bulk PUT), вычисление эффективных шаблонов |
 | `services/checklist_override.py` | Гранулярный upsert/delete/list личных overrides (ON CONFLICT DO UPDATE) |
-| `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, finalize |
+| `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, привязка/отвязка фото, единый пересчёт «satisfied» (`_recompute_instance_status`), finalize, `cleanup_shift_photo_files` |
 | `services/common.py` | Общие guard-функции org-доступа (`ensure_owner/ensure_member/ensure_admin_or_owner`) со сквозной веткой super_admin (`AccessError`) |
 | `services/payroll.py` | История ставок участников (CRUD, `PayrollError`), действующие ставки batch-запросом (DISTINCT ON), расчёт payroll/my-earnings «на лету» |
 | `services/admin.py` | Платформенные операции super_admin: список/детали пользователей, смена роли, обзор организаций, статистика (`AdminError`) |

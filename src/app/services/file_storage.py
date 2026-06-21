@@ -245,6 +245,29 @@ async def presigned_url_for(file: File) -> tuple[str, datetime]:
     return url, expires_at
 
 
+async def presigned_urls_for(
+    files: list[File],
+) -> dict[uuid.UUID, tuple[str | None, datetime | None]]:
+    """Свежие presigned URL для пачки файлов: {file_id: (url, url_expires_at)}.
+
+    Без N+1 (один S3-клиент на всю пачку). При сбое storage деградирует до
+    `(None, None)` для всех — вызывающий отдаёт фото с `url=null`, не 502."""
+    if not files:
+        return {}
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.s3_presign_expire_seconds)
+    try:
+        url_by_key = await storage.generate_presigned_get_many(
+            [(f.storage_key, f.original_filename) for f in files]
+        )
+    except StorageError:
+        return {f.id: (None, None) for f in files}
+    result: dict[uuid.UUID, tuple[str | None, datetime | None]] = {}
+    for f in files:
+        url = url_by_key.get(f.storage_key)
+        result[f.id] = (url, expires_at if url else None)
+    return result
+
+
 async def _get_file(session: AsyncSession, file_id: uuid.UUID) -> File:
     result = await session.execute(select(File).where(File.id == file_id))
     file = result.scalar_one_or_none()

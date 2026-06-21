@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # Shifts
     default_auto_finish_hours: int = 16
 
+    # Checklists
+    # Верхняя граница числа фото на один пункт чек-листа (отдаётся клиенту как
+    # max_photos_per_item, чтобы он прятал кнопку при достижении лимита).
+    checklist_max_photos_per_item: int = 10
+
     # Rate limiting (slowapi, per-IP). Строки в формате limits: "5/minute;30/hour".
     # Хранилище счётчиков — Redis в проде (см. rate_limit_storage_uri), общий с Celery.
     rate_limit_enabled: bool = True
