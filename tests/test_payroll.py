@@ -679,6 +679,9 @@ class TestPayrollReport:
             "worked_seconds": 10800,
             "shifts_count": 2,
             "gross_amount_minor": 54000,
+            "penalty_amount_minor": 0,
+            "penalties_count": 0,
+            "net_amount_minor": 54000,
         }
 
     async def test_rate_change_applies_by_shift_start(

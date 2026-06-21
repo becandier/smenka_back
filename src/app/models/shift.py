@@ -64,6 +64,11 @@ class Shift(Base):
         default=False,
         server_default="false",
     )
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
 
     user: Mapped["User"] = relationship(back_populates="shifts")
     organization: Mapped["Organization | None"] = relationship()

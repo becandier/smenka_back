@@ -37,6 +37,9 @@ _TZ_QUERY = Query("UTC", description="IANA-таймзона нарезки ко�
 _ONLY_MISSING_RATE_QUERY = Query(
     False, description="Оставить только сотрудников со сменами без действующей ставки"
 )
+_INCLUDE_PENALTIES_QUERY = Query(
+    True, description="Учитывать штрафы (penalty/net-поля); false — штрафы не вычитаются"
+)
 
 router = APIRouter(prefix="/organizations", tags=["payroll"])
 
@@ -210,6 +213,7 @@ async def org_payroll(
     location_ids: list[str] | None = _LOCATION_IDS_QUERY,
     tz: str = _TZ_QUERY,
     only_missing_rate: bool = _ONLY_MISSING_RATE_QUERY,
+    include_penalties: bool = _INCLUDE_PENALTIES_QUERY,
 ) -> ApiResponse:
     report = await payroll_service.get_org_payroll(
         session,
@@ -222,6 +226,7 @@ async def org_payroll(
         location_ids=location_ids,
         tz=tz,
         only_missing_rate=only_missing_rate,
+        include_penalties=include_penalties,
     )
     model = PayrollDetailedResponse if "granularity" in report else PayrollResponse
     return ApiResponse.success(model(**report).model_dump(mode="json"))
@@ -256,6 +261,7 @@ async def export_payroll(
     location_ids: list[str] | None = _LOCATION_IDS_QUERY,
     tz: str = _TZ_QUERY,
     only_missing_rate: bool = _ONLY_MISSING_RATE_QUERY,
+    include_penalties: bool = _INCLUDE_PENALTIES_QUERY,
     export_format: ExportFormat = Query(
         ExportFormat.xlsx, alias="format", description="Формат выгрузки (на старте только xlsx)"
     ),
@@ -271,6 +277,7 @@ async def export_payroll(
         location_ids=location_ids,
         tz=tz,
         only_missing_rate=only_missing_rate,
+        include_penalties=include_penalties,
     )
     return Response(
         content=content,

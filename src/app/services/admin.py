@@ -115,7 +115,9 @@ async def get_user_detail(
     ).scalar_one()
     shifts = (
         await session.execute(
-            select(func.count()).select_from(Shift).where(Shift.user_id == user_id)
+            select(func.count())
+            .select_from(Shift)
+            .where(Shift.user_id == user_id, Shift.is_deleted.is_(False))
         )
     ).scalar_one()
     return user, owned, member, shifts
@@ -214,14 +216,27 @@ async def get_stats(session: AsyncSession) -> dict[str, int]:
 
     shifts_active = (
         await session.execute(
-            select(func.count(Shift.id)).where(Shift.status == ShiftStatus.active)
+            select(func.count(Shift.id)).where(
+                Shift.status == ShiftStatus.active,
+                Shift.is_deleted.is_(False),
+            )
         )
     ).scalar_one()
     shifts_today = (
-        await session.execute(select(func.count(Shift.id)).where(Shift.started_at >= today_start))
+        await session.execute(
+            select(func.count(Shift.id)).where(
+                Shift.started_at >= today_start,
+                Shift.is_deleted.is_(False),
+            )
+        )
     ).scalar_one()
     shifts_week = (
-        await session.execute(select(func.count(Shift.id)).where(Shift.started_at >= week_start))
+        await session.execute(
+            select(func.count(Shift.id)).where(
+                Shift.started_at >= week_start,
+                Shift.is_deleted.is_(False),
+            )
+        )
     ).scalar_one()
 
     return {

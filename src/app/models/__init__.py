@@ -18,6 +18,7 @@ from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
+from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
 from src.app.models.shift import Pause, Shift
 from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_location import WorkLocation
@@ -41,10 +42,12 @@ __all__ = [
     "Organization",
     "OrganizationMember",
     "OrganizationMemberRate",
+    "OrganizationPenaltyTemplate",
     "OrganizationRole",
     "OrganizationSettings",
     "OverrideType",
     "Pause",
+    "Penalty",
     "PhotoRequirement",
     "PhotoSource",
     "RateType",
