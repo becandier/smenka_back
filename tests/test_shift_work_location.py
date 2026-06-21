@@ -456,6 +456,99 @@ class TestSettingsRequireWorkLocation:
         assert settings_resp.json()["data"]["require_work_location"] is False
 
 
+class TestOrganizationResponseExposesRequireWorkLocation:
+    """Контракт-гап (addendum): employee должен видеть require_work_location в
+    контексте org, т.к. к /settings (owner/admin) у него доступа нет."""
+
+    async def test_employee_sees_require_in_org_list(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        owner: User,
+        employee_user: User,
+        db_session: AsyncSession,
+    ) -> None:
+        org, _ = await _make_org(
+            db_session,
+            owner,
+            employee_user,
+            geo=False,
+            require=True,
+            locations=[
+                {"name": "A", "latitude": 55.7558, "longitude": 37.6173, "radius_meters": 200},
+            ],
+        )
+        resp = await client.get("/api/v1/organizations", headers=employee_headers)
+        assert resp.status_code == 200
+        items = resp.json()["data"]["items"]
+        target = next(i for i in items if i["id"] == str(org.id))
+        assert target["require_work_location"] is True
+
+    async def test_default_false_in_org_response(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        owner: User,
+        employee_user: User,
+        db_session: AsyncSession,
+    ) -> None:
+        org, _ = await _make_org(
+            db_session, owner, employee_user, geo=False, require=False, locations=[]
+        )
+        resp = await client.get("/api/v1/organizations", headers=employee_headers)
+        items = resp.json()["data"]["items"]
+        target = next(i for i in items if i["id"] == str(org.id))
+        assert target["require_work_location"] is False
+
+    async def test_join_response_contains_require(
+        self,
+        client: AsyncClient,
+        owner: User,
+        db_session: AsyncSession,
+    ) -> None:
+        org = Organization(name="Joinable", owner_id=owner.id)
+        db_session.add(org)
+        await db_session.flush()
+        db_session.add(
+            OrganizationSettings(
+                organization_id=org.id,
+                geo_check_enabled=False,
+                require_work_location=True,
+                auto_finish_hours=16,
+            )
+        )
+        db_session.add(
+            WorkLocation(
+                organization_id=org.id,
+                name="A",
+                latitude=55.7558,
+                longitude=37.6173,
+                radius_meters=200,
+            )
+        )
+        joiner = User(
+            id=uuid.uuid4(),
+            email="joiner@example.com",
+            password_hash=hash_password("Test1234"),
+            name="Joiner",
+            is_verified=True,
+        )
+        db_session.add(joiner)
+        await db_session.commit()
+
+        login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "joiner@example.com", "password": "Test1234"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+
+        resp = await client.post(
+            f"/api/v1/organizations/join/{org.invite_code}", headers=headers
+        )
+        assert resp.status_code in (200, 201)
+        assert resp.json()["data"]["require_work_location"] is True
+
+
 class TestOrgShiftsExposeWorkLocation:
     async def test_org_shift_list_and_detail_contain_work_location(
         self,

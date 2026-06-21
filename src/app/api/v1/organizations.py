@@ -47,6 +47,7 @@ def _org_to_response(
     my_custom_role: Any = None,
 ) -> dict[str, Any]:
     geo_check = org.settings.geo_check_enabled if org.settings else False
+    require_work_location = org.settings.require_work_location if org.settings else False
     custom_role_payload = None
     if my_custom_role is not None:
         custom_role_payload = {
@@ -61,6 +62,7 @@ def _org_to_response(
         invite_code=org.invite_code,
         is_deleted=org.is_deleted,
         geo_check_enabled=geo_check,
+        require_work_location=require_work_location,
         created_at=org.created_at,
         my_role=my_role,
         my_custom_role=custom_role_payload,
@@ -289,12 +291,14 @@ async def join_organization(
     )
     await session.commit()
     geo_check = org.settings.geo_check_enabled if org.settings else False
+    require_work_location = org.settings.require_work_location if org.settings else False
     return ApiResponse.success(
         JoinResponse(
             organization_id=str(org.id),
             organization_name=org.name,
             role=member.role.value,
             geo_check_enabled=geo_check,
+            require_work_location=require_work_location,
         ).model_dump()
     )
 
