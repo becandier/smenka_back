@@ -26,6 +26,7 @@ from src.app.services.file_storage import FileError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.payroll import PayrollError
+from src.app.services.penalty import PenaltyError
 from src.app.services.shift import ShiftError
 
 settings = get_settings()
@@ -342,6 +343,14 @@ async def payroll_error_handler(request: Request, exc: PayrollError) -> JSONResp
 
 @app.exception_handler(FileError)
 async def file_error_handler(request: Request, exc: FileError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(PenaltyError)
+async def penalty_error_handler(request: Request, exc: PenaltyError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

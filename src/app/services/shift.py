@@ -45,7 +45,11 @@ async def _get_shift_with_pauses(
     result = await session.execute(
         select(Shift)
         .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
-        .where(Shift.id == shift_id, Shift.user_id == user_id)
+        .where(
+            Shift.id == shift_id,
+            Shift.user_id == user_id,
+            Shift.is_deleted.is_(False),
+        )
     )
     shift = result.scalar_one_or_none()
     if shift is None:
@@ -189,6 +193,7 @@ async def _auto_finish_stale_for_user(
         .where(
             Shift.user_id == user_id,
             Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+            Shift.is_deleted.is_(False),
         )
     )
     active_shifts = list(result.scalars().all())
@@ -255,6 +260,7 @@ async def start_shift(
     conditions = [
         Shift.user_id == user_id,
         Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
+        Shift.is_deleted.is_(False),
     ]
     if organization_id is not None:
         conditions.append(Shift.organization_id == organization_id)
@@ -510,7 +516,7 @@ async def get_shifts(
     order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
-    conditions = [Shift.user_id == user_id]
+    conditions = [Shift.user_id == user_id, Shift.is_deleted.is_(False)]
 
     if status is not None:
         conditions.append(Shift.status == status)
@@ -547,7 +553,7 @@ async def get_shift_stats(
     """Статистика смен за пресет (day/week/month) либо кастомный диапазон."""
     window = resolve_stats_window(period, date_from, date_to)
 
-    conditions = [Shift.user_id == user_id]
+    conditions = [Shift.user_id == user_id, Shift.is_deleted.is_(False)]
     if window.filter_from is not None:
         conditions.append(Shift.started_at >= window.filter_from)
     if window.filter_to is not None:
@@ -612,7 +618,7 @@ async def get_org_stats(
     """Орг-статистика за пресет (day/week/month) либо кастомный диапазон."""
     window = resolve_stats_window(period, date_from, date_to)
 
-    conditions = [Shift.organization_id == organization_id]
+    conditions = [Shift.organization_id == organization_id, Shift.is_deleted.is_(False)]
     if window.filter_from is not None:
         conditions.append(Shift.started_at >= window.filter_from)
     if window.filter_to is not None:
@@ -681,7 +687,7 @@ async def get_org_shifts(
     order: str = "desc",
 ) -> tuple[list[Shift], int]:
     """Get shifts for an organization (admin view)."""
-    conditions = [Shift.organization_id == organization_id]
+    conditions = [Shift.organization_id == organization_id, Shift.is_deleted.is_(False)]
 
     if user_id is not None:
         conditions.append(Shift.user_id == user_id)
@@ -727,6 +733,7 @@ async def get_org_shift_detail(
         .where(
             Shift.id == shift_id,
             Shift.organization_id == organization_id,
+            Shift.is_deleted.is_(False),
         )
     )
     shift = result.scalar_one_or_none()

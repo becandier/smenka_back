@@ -59,6 +59,7 @@ def auto_finish_stale_shifts() -> None:
                 Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
                 Shift.organization_id.is_(None),
                 Shift.started_at < global_cutoff,
+                Shift.is_deleted.is_(False),
             )
         )
         stale: list[tuple[Shift, int]] = [(s, global_hours) for s in result.scalars().all()]
@@ -73,6 +74,7 @@ def auto_finish_stale_shifts() -> None:
             .where(
                 Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
                 Shift.organization_id.isnot(None),
+                Shift.is_deleted.is_(False),
             )
         )
 
@@ -125,6 +127,7 @@ def auto_finish_stale_pauses() -> None:
             .where(
                 Shift.status == ShiftStatus.paused,
                 Shift.organization_id.isnot(None),
+                Shift.is_deleted.is_(False),
             )
         )
         paused_shifts = list(result.scalars().all())

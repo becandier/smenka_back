@@ -345,6 +345,7 @@ async def _get_finished_shifts(
     conditions = [
         Shift.organization_id == org_id,
         Shift.status == ShiftStatus.finished,
+        Shift.is_deleted.is_(False),
     ]
     if user_id is not None:
         conditions.append(Shift.user_id == user_id)
@@ -541,6 +542,7 @@ async def get_org_payroll(
     location_ids: list[str] | None = None,
     tz: str = "UTC",
     only_missing_rate: bool = False,
+    include_penalties: bool = True,
 ) -> dict[str, Any]:
     """Отчёт «сколько кому заплатить» за период (owner/admin).
 
@@ -584,20 +586,36 @@ async def get_org_payroll(
     for shift in shifts:
         shifts_by_user[shift.user_id].append(shift)
 
-    shift_user_ids = list(shifts_by_user)
+    shift_user_ids = set(shifts_by_user)
+
+    # Штрафы периода: атрибутируются сотруднику (member → user), вычитаются из net.
+    # Сотрудник только со штрафами (без завершённых смен) тоже попадает в items —
+    # иначе штраф «потеряется» (см. backend.md).
+    penalties_by_user: dict[uuid.UUID, tuple[int, int]] = {}
+    if include_penalties:
+        from src.app.services import penalty as penalty_service
+
+        penalties_by_user = await penalty_service.aggregate_penalties_by_user(
+            session, org_id, date_from=norm_from, date_to=norm_to
+        )
+        if parsed_user_ids:
+            allowed = set(parsed_user_ids)
+            penalties_by_user = {u: v for u, v in penalties_by_user.items() if u in allowed}
+
+    all_user_ids = list(shift_user_ids | set(penalties_by_user))
     users_map: dict[uuid.UUID, str] = {}
     member_id_by_user: dict[uuid.UUID, uuid.UUID] = {}
     rates_by_member: dict[uuid.UUID, list[OrganizationMemberRate]] = {}
-    if shift_user_ids:
+    if all_user_ids:
         users_result = await session.execute(
-            select(User.id, User.name).where(User.id.in_(shift_user_ids))
+            select(User.id, User.name).where(User.id.in_(all_user_ids))
         )
         users_map = dict(users_result.tuples().all())
 
         members_result = await session.execute(
             select(OrganizationMember).where(
                 OrganizationMember.organization_id == org_id,
-                OrganizationMember.user_id.in_(shift_user_ids),
+                OrganizationMember.user_id.in_(all_user_ids),
             )
         )
         members = list(members_result.scalars().all())
@@ -606,24 +624,39 @@ async def get_org_payroll(
 
     detailed = granularity != Granularity.none
     items: list[dict[str, Any]] = []
-    for uid, user_shifts in shifts_by_user.items():
+    for uid in all_user_ids:
+        user_shifts = shifts_by_user.get(uid, [])
         member_id = member_id_by_user.get(uid)
         rates_asc = rates_by_member.get(member_id, []) if member_id else []
         base = {"user_id": str(uid), "user_name": users_map.get(uid, "Unknown")}
         if detailed:
             breakdown, aggregate = _build_breakdown(user_shifts, rates_asc, zone, granularity)
-            items.append({**base, **aggregate, "breakdown": breakdown})
+            entry = {**base, **aggregate, "breakdown": breakdown}
         else:
-            items.append({**base, **_calc_earnings(user_shifts, rates_asc)})
+            entry = {**base, **_calc_earnings(user_shifts, rates_asc)}
+        penalty_amount, penalties_count = penalties_by_user.get(uid, (0, 0))
+        entry["penalty_amount_minor"] = penalty_amount
+        entry["penalties_count"] = penalties_count
+        entry["net_amount_minor"] = entry["gross_amount_minor"] - penalty_amount
+        items.append(entry)
 
     if only_missing_rate:
-        items = [item for item in items if item["has_missing_rate"]]
+        # Сотрудник только со штрафами (penalties_count>0) остаётся в выборке,
+        # иначе его штраф «потеряется» из items и totals (см. backend.md).
+        items = [
+            item
+            for item in items
+            if item["has_missing_rate"] or item["penalties_count"] > 0
+        ]
     items.sort(key=lambda item: (item["user_name"], item["user_id"]))
 
     totals = {
         "worked_seconds": sum(i["worked_seconds"] for i in items),
         "shifts_count": sum(i["shifts_count"] for i in items),
         "gross_amount_minor": sum(i["gross_amount_minor"] for i in items),
+        "penalty_amount_minor": sum(i["penalty_amount_minor"] for i in items),
+        "penalties_count": sum(i["penalties_count"] for i in items),
+        "net_amount_minor": sum(i["net_amount_minor"] for i in items),
     }
     report: dict[str, Any] = {
         "period": {"date_from": norm_from, "date_to": norm_to},
@@ -683,12 +716,22 @@ async def get_my_earnings(
     earnings = _calc_earnings(shifts, rates_asc)
     current_rate = _rate_for_moment(rates_asc, datetime.now(UTC))
 
+    # Для self штрафы учитываются всегда (флага include_penalties здесь нет).
+    from src.app.services import penalty as penalty_service
+
+    penalty_amount, penalties_count = await penalty_service.aggregate_member_penalties(
+        session, member.id, date_from=norm_from, date_to=norm_to
+    )
+
     return {
         "period": {"date_from": norm_from, "date_to": norm_to},
         "currency": PAYROLL_CURRENCY,
         "worked_seconds": earnings["worked_seconds"],
         "shifts_count": earnings["shifts_count"],
         "gross_amount_minor": earnings["gross_amount_minor"],
+        "penalty_amount_minor": penalty_amount,
+        "penalties_count": penalties_count,
+        "net_amount_minor": earnings["gross_amount_minor"] - penalty_amount,
         "has_missing_rate": earnings["has_missing_rate"],
         "current_rate": current_rate,
     }
@@ -732,7 +775,16 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
     summary.append([f"Валюта: {report['currency']}"])
     summary.append([])
     summary.append(
-        ["Сотрудник", "Часы", "Смены", "Начислено, ₽", "Без ставки (смен)", "Без ставки (часов)"]
+        [
+            "Сотрудник",
+            "Часы",
+            "Смены",
+            "Начислено, ₽",
+            "Штраф, ₽",
+            "К выплате, ₽",
+            "Без ставки (смен)",
+            "Без ставки (часов)",
+        ]
     )
     for item in report["items"]:
         summary.append(
@@ -741,6 +793,8 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
                 _hours(item["worked_seconds"]),
                 item["shifts_count"],
                 _money(item["gross_amount_minor"]),
+                _money(item["penalty_amount_minor"]),
+                _money(item["net_amount_minor"]),
                 item["unpaid_shifts_count"],
                 _hours(item["unpaid_seconds"]),
             ]
@@ -752,13 +806,28 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             _hours(totals["worked_seconds"]),
             totals["shifts_count"],
             _money(totals["gross_amount_minor"]),
+            _money(totals["penalty_amount_minor"]),
+            _money(totals["net_amount_minor"]),
             "",
             "",
         ]
     )
 
+    # В «Детализации» штрафы не разбиваются по дням (период-уровень) — суммарный
+    # штраф/«к выплате» сотрудника смотрите в «Сводке»; здесь Штраф=0, К выплате=Начислено.
     detail = wb.create_sheet("Детализация")
-    detail.append(["Сотрудник", "Дата", "Часы", "Смены", "Начислено, ₽", "Без ставки (часов)"])
+    detail.append(
+        [
+            "Сотрудник",
+            "Дата",
+            "Часы",
+            "Смены",
+            "Начислено, ₽",
+            "Штраф, ₽",
+            "К выплате, ₽",
+            "Без ставки (часов)",
+        ]
+    )
     for item in report["items"]:
         for bucket in item.get("breakdown", []):
             detail.append(
@@ -767,6 +836,8 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
                     bucket["bucket_start"],
                     _hours(bucket["worked_seconds"]),
                     bucket["shifts_count"],
+                    _money(bucket["gross_amount_minor"]),
+                    _money(0),
                     _money(bucket["gross_amount_minor"]),
                     _hours(bucket["unpaid_seconds"]),
                 ]
@@ -789,6 +860,7 @@ async def export_org_payroll(
     location_ids: list[str] | None = None,
     tz: str = "UTC",
     only_missing_rate: bool = False,
+    include_penalties: bool = True,
 ) -> tuple[bytes, str]:
     """Сформировать .xlsx отчёта payroll и имя файла.
 
@@ -810,6 +882,7 @@ async def export_org_payroll(
         location_ids=location_ids,
         tz=tz,
         only_missing_rate=only_missing_rate,
+        include_penalties=include_penalties,
     )
 
     org = await org_service.get_organization(session, org_id)

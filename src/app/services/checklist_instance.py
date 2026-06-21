@@ -132,7 +132,9 @@ async def _check_shift_access(
 
 
 async def _get_shift(session: AsyncSession, shift_id: uuid.UUID) -> Shift:
-    result = await session.execute(select(Shift).where(Shift.id == shift_id))
+    result = await session.execute(
+        select(Shift).where(Shift.id == shift_id, Shift.is_deleted.is_(False))
+    )
     shift = result.scalar_one_or_none()
     if shift is None:
         raise ChecklistError("SHIFT_NOT_FOUND", "Смена не найдена", 404)

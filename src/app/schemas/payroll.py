@@ -114,6 +114,14 @@ class PayrollItemResponse(BaseModel):
     has_missing_rate: bool = Field(
         description="true, если у сотрудника были смены без ставки",
     )
+    penalty_amount_minor: int = Field(
+        default=0,
+        description="Сумма активных штрафов сотрудника за период, в копейках",
+    )
+    penalties_count: int = Field(default=0, description="Число активных штрафов за период")
+    net_amount_minor: int = Field(
+        description="К выплате: gross_amount_minor − penalty_amount_minor (может быть < 0)",
+    )
 
 
 class PayrollTotalsResponse(BaseModel):
@@ -121,6 +129,14 @@ class PayrollTotalsResponse(BaseModel):
     shifts_count: int = Field(description="Суммарное число смен")
     gross_amount_minor: int = Field(
         description="Сумма округлённых итогов сотрудников, в копейках",
+    )
+    penalty_amount_minor: int = Field(
+        default=0,
+        description="Сумма штрафов по всем сотрудникам, в копейках",
+    )
+    penalties_count: int = Field(default=0, description="Суммарное число активных штрафов")
+    net_amount_minor: int = Field(
+        description="Сумма «к выплате» по всем сотрудникам (может быть < 0)",
     )
 
 
@@ -180,6 +196,14 @@ class MyEarningsResponse(BaseModel):
     worked_seconds: int = Field(description="Отработанное время за период")
     shifts_count: int = Field(description="Число завершённых смен за период")
     gross_amount_minor: int = Field(description="Заработок в копейках (half-up один раз)")
+    penalty_amount_minor: int = Field(
+        default=0,
+        description="Сумма своих активных штрафов за период, в копейках",
+    )
+    penalties_count: int = Field(default=0, description="Число своих активных штрафов за период")
+    net_amount_minor: int = Field(
+        description="К выплате: gross_amount_minor − penalty_amount_minor (может быть < 0)",
+    )
     current_rate: CurrentRateResponse | None = Field(
         default=None,
         description="Действующая на сейчас ставка или null",
