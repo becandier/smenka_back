@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field
 class OrganizationSettingsResponse(BaseModel):
     organization_id: str = Field(description="UUID организации")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
+    require_work_location: bool = Field(
+        description="Требовать привязку точки к смене (влияет на старт при выключенной гео)"
+    )
     auto_finish_hours: int | None = Field(
         description="Часы до автозавершения смены (null — отключено, по умолчанию 16)"
     )
@@ -22,6 +25,10 @@ class OrganizationSettingsResponse(BaseModel):
 class OrganizationSettingsUpdate(BaseModel):
     geo_check_enabled: bool | None = Field(
         default=None, description="Включить/выключить геопроверку"
+    )
+    require_work_location: bool | None = Field(
+        default=None,
+        description="Требовать привязку точки к смене. Нельзя включить без рабочих точек",
     )
     auto_finish_hours: int | None = Field(
         default=None, ge=1, le=48, description="Часы до автозавершения (1–48, null — отключить)"

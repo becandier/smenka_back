@@ -26,6 +26,11 @@ class OrganizationSettings(Base):
         index=True,
     )
     geo_check_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    require_work_location: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
     auto_finish_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_pause_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_pauses_per_shift: Mapped[int | None] = mapped_column(Integer, nullable=True)

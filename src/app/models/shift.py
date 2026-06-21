@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from src.app.models.checklist import ChecklistInstance
     from src.app.models.organization import Organization
     from src.app.models.user import User
+    from src.app.models.work_location import WorkLocation
 
 
 class ShiftStatus(enum.StrEnum):
@@ -40,6 +41,12 @@ class Shift(Base):
         nullable=True,
         index=True,
     )
+    work_location_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_locations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -60,6 +67,7 @@ class Shift(Base):
 
     user: Mapped["User"] = relationship(back_populates="shifts")
     organization: Mapped["Organization | None"] = relationship()
+    work_location: Mapped["WorkLocation | None"] = relationship()
     pauses: Mapped[list["Pause"]] = relationship(
         back_populates="shift",
         cascade="all, delete-orphan",

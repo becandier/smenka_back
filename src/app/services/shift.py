@@ -44,7 +44,7 @@ async def _get_shift_with_pauses(
     """Load shift with pauses, verify ownership."""
     result = await session.execute(
         select(Shift)
-        .options(selectinload(Shift.pauses))
+        .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
         .where(Shift.id == shift_id, Shift.user_id == user_id)
     )
     shift = result.scalar_one_or_none()
@@ -53,14 +53,48 @@ async def _get_shift_with_pauses(
     return shift
 
 
-async def _validate_org_shift_start(
+def _parse_work_location_id(raw: str) -> uuid.UUID:
+    """Распарсить присланный клиентом id точки; невалидный формат → 404 (точки нет)."""
+    try:
+        return uuid.UUID(raw)
+    except (ValueError, AttributeError, TypeError):
+        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404) from None
+
+
+async def _require_org_location(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    work_location_id: uuid.UUID,
+) -> uuid.UUID:
+    """Проверить, что точка существует и принадлежит организации; иначе 404."""
+    from src.app.models.work_location import WorkLocation
+
+    result = await session.execute(
+        select(WorkLocation.id).where(
+            WorkLocation.id == work_location_id,
+            WorkLocation.organization_id == organization_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404)
+    return work_location_id
+
+
+async def _resolve_org_shift_start(
     session: AsyncSession,
     user_id: uuid.UUID,
     organization_id: uuid.UUID,
     latitude: float | None,
     longitude: float | None,
-) -> None:
-    """Validate org membership and geo check for org shift."""
+    work_location_id: str | None,
+) -> uuid.UUID | None:
+    """Проверить членство/гео и определить точку смены по матрице гео×обязательность.
+
+    Возвращает `work_location_id` для сохранения в смене (или `None`).
+    - гео вкл: точку определяет сервер (ближайшая из совпавших зон), присланное игнорируется;
+    - гео выкл + require: точка обязательна (422 если не передана), валидируется на org;
+    - гео выкл + не require: точка опциональна, при наличии — валидируется на org.
+    """
     from src.app.models.organization import Organization, OrganizationMember
     from src.app.models.work_location import WorkLocation
     from src.app.services.organization_settings import get_settings_for_org
@@ -86,9 +120,12 @@ async def _validate_org_shift_start(
     if member_result.scalar_one_or_none() is None:
         raise ShiftError("FORBIDDEN", "Вы не являетесь участником организации", 403)
 
-    # Check geo if enabled
     org_settings = await get_settings_for_org(session, organization_id)
-    if org_settings is not None and org_settings.geo_check_enabled:
+    geo_enabled = org_settings is not None and org_settings.geo_check_enabled
+    require_location = org_settings is not None and org_settings.require_work_location
+
+    # Гео вкл: точка определяется сервером, присланный work_location_id игнорируется.
+    if geo_enabled:
         if latitude is None or longitude is None:
             raise ShiftError(
                 "COORDS_REQUIRED",
@@ -103,18 +140,35 @@ async def _validate_org_shift_start(
         )
         locations = list(locations_result.scalars().all())
 
-        from src.app.utils.geo import is_within_radius
+        from src.app.utils.geo import haversine_distance
 
-        within_any = any(
-            is_within_radius(latitude, longitude, loc.latitude, loc.longitude, loc.radius_meters)
+        matched = [
+            (loc, haversine_distance(latitude, longitude, loc.latitude, loc.longitude))
             for loc in locations
-        )
-        if not within_any:
+            if haversine_distance(latitude, longitude, loc.latitude, loc.longitude)
+            <= loc.radius_meters
+        ]
+        if not matched:
             raise ShiftError(
                 "GEO_CHECK_FAILED",
                 "Вы находитесь вне зоны рабочих точек",
                 403,
             )
+        nearest = min(matched, key=lambda pair: pair[1])[0]
+        return nearest.id
+
+    # Гео выкл: точка берётся из выбора сотрудника.
+    if work_location_id is not None:
+        return await _require_org_location(
+            session, organization_id, _parse_work_location_id(work_location_id)
+        )
+    if require_location:
+        raise ShiftError(
+            "WORK_LOCATION_REQUIRED",
+            "Необходимо выбрать рабочую точку",
+            422,
+        )
+    return None
 
 
 async def _auto_finish_stale_for_user(
@@ -184,13 +238,16 @@ async def start_shift(
     organization_id: uuid.UUID | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
+    work_location_id: str | None = None,
 ) -> Shift:
     """Start a new shift.
 
     Rules:
     - One active personal shift + one active org shift per org allowed simultaneously.
     - If org has geo_check_enabled, latitude/longitude must be provided and within
-      at least one WorkLocation radius.
+      at least one WorkLocation radius; точка определяется сервером (ближайшая зона).
+    - Если гео выкл, точка берётся из `work_location_id` (обязательна при включённом
+      `require_work_location`). Персональная смена точку не привязывает.
     """
     await _auto_finish_stale_for_user(session, user_id)
 
@@ -212,17 +269,23 @@ async def start_shift(
             409,
         )
 
-    # Organization-specific checks
+    # Organization-specific checks + точка смены
+    resolved_work_location_id: uuid.UUID | None = None
     if organization_id is not None:
-        await _validate_org_shift_start(
+        resolved_work_location_id = await _resolve_org_shift_start(
             session,
             user_id,
             organization_id,
             latitude,
             longitude,
+            work_location_id,
         )
 
-    shift = Shift(user_id=user_id, organization_id=organization_id)
+    shift = Shift(
+        user_id=user_id,
+        organization_id=organization_id,
+        work_location_id=resolved_work_location_id,
+    )
     session.add(shift)
     await session.flush()
 
@@ -461,7 +524,7 @@ async def get_shifts(
 
     query = (
         select(Shift)
-        .options(selectinload(Shift.pauses))
+        .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
         .where(*conditions)
         .order_by(_shift_order_by(sort, order))
         .limit(limit)
@@ -634,7 +697,7 @@ async def get_org_shifts(
 
     query = (
         select(Shift)
-        .options(selectinload(Shift.pauses))
+        .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
         .where(*conditions)
         .order_by(_shift_order_by(sort, order))
         .limit(limit)
@@ -660,7 +723,7 @@ async def get_org_shift_detail(
     """
     result = await session.execute(
         select(Shift)
-        .options(selectinload(Shift.pauses))
+        .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
         .where(
             Shift.id == shift_id,
             Shift.organization_id == organization_id,
