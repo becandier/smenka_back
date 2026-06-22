@@ -14,6 +14,14 @@ from src.app.models.checklist import (
     PhotoSource,
 )
 from src.app.models.file import File, FileCategory
+from src.app.models.knowledge import (
+    KnowledgeAccessEffect,
+    KnowledgeNode,
+    KnowledgeNodeAccess,
+    KnowledgeNodeFile,
+    KnowledgeNodeKind,
+    KnowledgeSubjectType,
+)
 from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
@@ -38,6 +46,12 @@ __all__ = [
     "ChecklistType",
     "File",
     "FileCategory",
+    "KnowledgeAccessEffect",
+    "KnowledgeNode",
+    "KnowledgeNodeAccess",
+    "KnowledgeNodeFile",
+    "KnowledgeNodeKind",
+    "KnowledgeSubjectType",
     "MemberRole",
     "Organization",
     "OrganizationMember",

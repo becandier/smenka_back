@@ -23,6 +23,7 @@ from src.app.services.auth import AuthError
 from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
 from src.app.services.file_storage import FileError
+from src.app.services.knowledge import KnowledgeError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.payroll import PayrollError
@@ -351,6 +352,14 @@ async def file_error_handler(request: Request, exc: FileError) -> JSONResponse:
 
 @app.exception_handler(PenaltyError)
 async def penalty_error_handler(request: Request, exc: PenaltyError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(KnowledgeError)
+async def knowledge_error_handler(request: Request, exc: KnowledgeError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
