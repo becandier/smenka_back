@@ -7,6 +7,7 @@ from src.app.api.v1.checklist_instances import router as checklist_instances_rou
 from src.app.api.v1.checklist_overrides import router as checklist_overrides_router
 from src.app.api.v1.checklist_templates import router as checklist_templates_router
 from src.app.api.v1.files import router as files_router
+from src.app.api.v1.knowledge import router as knowledge_router
 from src.app.api.v1.organization_roles import router as organization_roles_router
 from src.app.api.v1.organizations import router as organizations_router
 from src.app.api.v1.payroll import router as payroll_router
@@ -29,4 +30,5 @@ router.include_router(checklist_overrides_router)
 router.include_router(checklist_instances_router)
 router.include_router(work_locations_router)
 router.include_router(files_router)
+router.include_router(knowledge_router)
 router.include_router(admin_router)
