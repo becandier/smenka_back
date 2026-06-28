@@ -23,6 +23,8 @@ services:
     environment:
       API_DOMAIN: ${API_DOMAIN}
       ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      # Домен веб-версии мобилки (flutter build web). Должен быть задан в .env.prod.
+      WEB_DOMAIN: ${WEB_DOMAIN}
       # Поддомен мониторинга Celery (Flower). Должен быть задан в .env.prod.
       FLOWER_DOMAIN: ${FLOWER_DOMAIN}
     volumes:
@@ -32,6 +34,7 @@ services:
     depends_on:
       - api
       - admin
+      - web
       - flower
     deploy:
       resources:
@@ -149,6 +152,22 @@ services:
 
   admin:
     image: ghcr.io/becandier/smenka_admin:${ADMIN_TAG:-latest}
+    restart: unless-stopped
+    expose:
+      - "80"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # Веб-версия мобилки (flutter build web) — статика за nginx, образ из ghcr
+  # (репо smenka_mobile, workflow release-web.yml). Раздаётся Caddy на WEB_DOMAIN
+  # через reverse_proxy web:80 (см. infra/caddy/Caddyfile). SPA-fallback — в nginx.conf образа.
+  web:
+    image: ghcr.io/becandier/smenka_web:${WEB_TAG:-latest}
     restart: unless-stopped
     expose:
       - "80"
