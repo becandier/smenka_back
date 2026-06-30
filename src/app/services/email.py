@@ -72,14 +72,31 @@ def _build_code_message(to_email: str, code: str) -> EmailMessage:
         f"Код действует {ttl_minutes} минут.\n\n"
         f"Если вы не запрашивали код — просто проигнорируйте это письмо."
     )
+    # Inline-стили по бренд-контракту v1.0 (почтовые клиенты не грузят внешний CSS).
+    # Токены: paper #FFFFFF, line #E7EBF0, ink #1D2530, muted #6B7785, wash #EAF2FB,
+    # blue #4A90D9. Радиусы: card 16, control 12.
+    sans = "'Helvetica Neue', Helvetica, Arial, system-ui, sans-serif"
+    mono = "ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
     message.add_alternative(
-        f"<html><body>"
-        f"<p>Ваш код подтверждения <b>Smenka</b>:</p>"
-        f'<p style="font-size:28px;font-weight:bold;letter-spacing:4px">{code}</p>'
-        f"<p>Введите его в приложении, чтобы подтвердить email. "
+        f"<html>"
+        f'<body style="margin:0;padding:24px;background-color:#FFFFFF;'
+        f'font-family:{sans};color:#1D2530;">'
+        f'<div style="max-width:480px;margin:0 auto;padding:32px;'
+        f"background-color:#FFFFFF;border:1px solid #E7EBF0;border-radius:16px;"
+        f'font-family:{sans};">'
+        f'<h1 style="margin:0 0 16px;font-size:26px;font-weight:600;'
+        f'letter-spacing:-0.02em;color:#1D2530;">Smenka</h1>'
+        f'<p style="margin:0 0 16px;font-size:17px;color:#6B7785;">'
+        f"Ваш код подтверждения:</p>"
+        f'<p style="margin:0 0 16px;padding:16px 24px;background-color:#EAF2FB;'
+        f"border-radius:12px;text-align:center;font-family:{mono};"
+        f'font-size:32px;font-weight:600;letter-spacing:8px;color:#4A90D9;">{code}</p>'
+        f'<p style="margin:0 0 16px;font-size:17px;color:#6B7785;">'
+        f"Введите его в приложении, чтобы подтвердить email. "
         f"Код действует {ttl_minutes} минут.</p>"
-        f'<p style="color:#888">Если вы не запрашивали код — '
-        f"просто проигнорируйте это письмо.</p>"
+        f'<p style="margin:0;font-size:13px;color:#6B7785;">'
+        f"Если вы не запрашивали код — просто проигнорируйте это письмо.</p>"
+        f"</div>"
         f"</body></html>",
         subtype="html",
     )
