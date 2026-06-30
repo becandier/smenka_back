@@ -17,6 +17,7 @@ from src.app.schemas.auth import (
 )
 from src.app.schemas.base import ApiResponse
 from src.app.services import auth as auth_service
+from src.app.services import email as email_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -39,12 +40,15 @@ async def register(request: Request, body: RegisterRequest, session: SessionDep)
         body.password,
         body.name,
     )
+    # Commit до отправки письма: при сбое SMTP пользователь уже создан и сможет
+    # запросить код повторно (deliver вернёт EMAIL_SEND_FAILED).
     await session.commit()
+    response_code = await email_service.deliver_verification_code(body.email, code)
     return ApiResponse.success(
         RegisterResponse(
             user_id=str(user.id),
             message="Код подтверждения отправлен на email",
-            verification_code=code,
+            verification_code=response_code,
         ).model_dump()
     )
 
@@ -84,10 +88,11 @@ async def resend_code(
 ) -> ApiResponse:
     code = await auth_service.resend_code(session, body.email)
     await session.commit()
+    response_code = await email_service.deliver_verification_code(body.email, code)
     return ApiResponse.success(
         ResendCodeResponse(
             message="Код отправлен повторно",
-            verification_code=code,
+            verification_code=response_code,
         ).model_dump()
     )
 
