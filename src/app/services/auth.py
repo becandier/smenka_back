@@ -66,7 +66,7 @@ async def register(
     session.add(verification)
     await session.flush()
 
-    logger.info("verification_code_generated", email=email, code=code)
+    _log_code("verification_code_generated", email, code)
     logger.info("user_registered", user_id=str(user.id), email=email)
     return user, code
 
@@ -167,7 +167,7 @@ async def resend_code(session: AsyncSession, email: str) -> str:
     session.add(verification)
     await session.flush()
 
-    logger.info("verification_code_resent", email=email, code=code)
+    _log_code("verification_code_resent", email, code)
     return code
 
 
@@ -274,3 +274,12 @@ def _generate_code() -> str:
     length = settings.verification_code_length
     upper = 10**length
     return str(secrets.randbelow(upper)).zfill(length)
+
+
+def _log_code(event: str, email: str, code: str) -> None:
+    """Залогировать выдачу кода. В проде (SMTP включён) код в логи не пишем —
+    он уходит письмом; в dev/CI (SMTP выключен) код логируем для отладки."""
+    if settings.smtp_enabled:
+        logger.info(event, email=email)
+    else:
+        logger.info(event, email=email, code=code)

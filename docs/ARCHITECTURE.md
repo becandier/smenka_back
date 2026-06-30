@@ -162,6 +162,8 @@
 
 > **Аудит действий (audit_logs).** Запись создаётся из endpoint-слоя ПОСЛЕ успешного сервисного вызова и ДО `session.commit()` — один commit, аудит не расходится с фактом. Покрытие: `org.update/delete/invite_rotate`, `member.join/remove/role_update`, `settings.update`, `location.create/update/delete`, `shift.finish` (actor = инициатор, IP из запроса), а также системные `shift.auto_finish`/`pause.auto_finish` из Celery (`record_sync`, `actor_user_id = null`). `summary` — ключевые поля без секретов (инвайт-код и токены не пишутся). Чтение — только `GET /organizations/{id}/audit-logs` (owner/admin, `created_at DESC`, фильтры `action`/`actor_user_id`/`date_from`/`date_to` с `date_to` включительно, пагинация limit≤200); `actor_name` подмешивается batch-запросом по `users` (или «Система» при null-акторе). Записи неизменяемы и не удаляются через API.
 
+> **Отправка кодов подтверждения по email (smtp_email).** Код верификации доставляется письмом через SMTP (`services/email.py`, транспорт `aiosmtplib` — async, не блокирует event loop). Флаг включения — непустой `SMTP_HOST`: **выключен** (dev/CI/тесты) — письмо не шлётся, код как раньше возвращается в ответе `register`/`resend-code` и пишется в лог (`verification_code_generated`/`_resent`); **включён** (прод) — код уходит ТОЛЬКО письмом, в ответе `verification_code=null`, в логи код не пишется (`auth._log_code` опускает поле `code` при `smtp_enabled`). Поле `verification_code` в схемах остаётся **nullable** (обратная совместимость со старыми мобильными билдами — не удаляется). Порт 465 → implicit SSL (`use_tls`), 587 → STARTTLS (`start_tls`), выбор по `SMTP_USE_SSL`; `From == SMTP_USERNAME` (требование Яндекса). Доставка вызывается из endpoint-слоя **после `session.commit()`**: пользователь/код уже сохранены, поэтому сбой SMTP не теряет регистрацию — `email.deliver_verification_code` ловит `SMTPException`/`OSError`, логирует (без кода) и поднимает `AuthError("EMAIL_SEND_FAILED", 502)`; пользователь повторяет через `resend-code`. Env: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USE_SSL`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_FROM_NAME` (+ `SMTP_TIMEOUT_SECONDS`).
+
 ---
 
 ## Сервисы
@@ -185,6 +187,7 @@
 | `services/admin.py` | Платформенные операции super_admin: список/детали пользователей, смена роли, обзор организаций, статистика (`AdminError`) |
 | `services/audit.py` | Запись аудита (`record` async / `record_sync` для Celery, в той же транзакции) и чтение ленты организации с именами инициаторов |
 | `services/lockout.py` | Блокировка аккаунта по неудачным логинам (Redis-счётчик с TTL, по email) |
+| `services/email.py` | Отправка кодов подтверждения по SMTP (`aiosmtplib`): флаг по `SMTP_HOST`, выбор SSL/STARTTLS, ошибка → `AuthError("EMAIL_SEND_FAILED")` (`smtp_email`) |
 | `services/file_storage.py` | Файловое хранилище: политики категорий (`CATEGORY_POLICIES`), валидация размера/реального MIME, генерация ключа, реестр `files`, presigned URL, удаление, права по category (`FileError`) |
 | `core/storage.py` | S3-обёртка над `aioboto3` (`upload_object`/`generate_presigned_get`/`delete_object`/`ensure_bucket`); внутренний vs публичный endpoint для presigned; ошибки S3 → `StorageError` |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule, task-события для мониторинга, `acks_late`, сигнал `task_failure` → structlog; Sentry в воркере) |
@@ -258,6 +261,7 @@
 
 - **Redis** — брокер Celery, хранилище rate-limit (slowapi) и счётчиков блокировки аккаунтов
 - **Sentry** — error-tracking бэка (включается при `SENTRY_DSN`; провижининг — `DEPLOY_NOTES.md`)
+- **SMTP (Яндекс)** — отправка кодов подтверждения по email (включается при `SMTP_HOST`; `services/email.py`, `aiosmtplib`)
 
 ---
 
