@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from src.app.api.deps import SessionDep, SuperAdminDep
+from src.app.models.oauth import OAuthProviderSetting
 from src.app.models.user import User
 from src.app.schemas.admin import (
     AdminOrganizationListResponse,
@@ -15,7 +16,13 @@ from src.app.schemas.admin import (
     UpdateUserRoleRequest,
 )
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.oauth import (
+    OAuthProviderSettingListResponse,
+    OAuthProviderSettingResponse,
+    UpsertOAuthProviderRequest,
+)
 from src.app.services import admin as admin_service
+from src.app.services import oauth_provider_settings as oauth_provider_settings_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -30,6 +37,19 @@ def _user_to_response(user: User) -> dict[str, Any]:
         role=user.role.value,
         created_at=user.created_at,
     ).model_dump(mode="json")
+
+
+def _oauth_setting_to_response(setting: OAuthProviderSetting | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(setting, OAuthProviderSetting):
+        return OAuthProviderSettingResponse(
+            provider=setting.provider,
+            client_type=setting.client_type,
+            client_id=setting.client_id,
+            enabled=setting.enabled,
+            updated_by=str(setting.updated_by) if setting.updated_by else None,
+            updated_at=setting.updated_at,
+        ).model_dump(mode="json")
+    return OAuthProviderSettingResponse(**setting).model_dump(mode="json")
 
 
 @router.get(
@@ -173,3 +193,46 @@ async def stats(
 ) -> ApiResponse:
     data = await admin_service.get_stats(session)
     return ApiResponse.success(AdminStatsResponse(**data).model_dump())
+
+
+@router.get(
+    "/oauth-providers",
+    summary="Настройки OAuth-провайдеров (super_admin)",
+    description="Все 5 допустимых комбинаций provider/client_type. Ненастроенные "
+    "отдаются заглушкой (client_id=null, enabled=false).",
+)
+async def list_oauth_providers(
+    user: SuperAdminDep,
+    session: SessionDep,
+) -> ApiResponse:
+    settings = await oauth_provider_settings_service.list_provider_settings(session)
+    return ApiResponse.success(
+        OAuthProviderSettingListResponse(
+            items=[_oauth_setting_to_response(s) for s in settings]
+        ).model_dump(mode="json")
+    )
+
+
+@router.put(
+    "/oauth-providers/{provider}/{client_type}",
+    summary="Upsert настройки OAuth-провайдера (super_admin)",
+    description="Создаёт/обновляет client_id и enabled для комбинации provider/"
+    "client_type. Недопустимая комбинация → 422 VALIDATION_ERROR.",
+)
+async def upsert_oauth_provider(
+    provider: str,
+    client_type: str,
+    body: UpsertOAuthProviderRequest,
+    user: SuperAdminDep,
+    session: SessionDep,
+) -> ApiResponse:
+    setting = await oauth_provider_settings_service.upsert_provider_setting(
+        session,
+        provider=provider,
+        client_type=client_type,
+        client_id=body.client_id,
+        enabled=body.enabled,
+        updated_by_id=user.id,
+    )
+    await session.commit()
+    return ApiResponse.success(_oauth_setting_to_response(setting))

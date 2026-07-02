@@ -23,6 +23,12 @@ from src.app.models.knowledge import (
     KnowledgeSubjectType,
 )
 from src.app.models.member_rate import OrganizationMemberRate, RateType
+from src.app.models.oauth import (
+    OAuthClientType,
+    OAuthIdentity,
+    OAuthProvider,
+    OAuthProviderSetting,
+)
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
@@ -53,6 +59,10 @@ __all__ = [
     "KnowledgeNodeKind",
     "KnowledgeSubjectType",
     "MemberRole",
+    "OAuthClientType",
+    "OAuthIdentity",
+    "OAuthProvider",
+    "OAuthProviderSetting",
     "Organization",
     "OrganizationMember",
     "OrganizationMemberRate",

@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     verify_rate_limit: str = "10/minute;50/hour"
     resend_rate_limit: str = "3/minute;10/hour"
     register_rate_limit: str = "5/minute;20/hour"
+    oauth_login_rate_limit: str = "5/minute;30/hour"
 
     # Account lockout (Redis, ключ по email). После N неудачных логинов —
     # блокировка на account_lockout_minutes (TTL ключа).

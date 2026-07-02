@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Request
+from typing import Literal
+
+from fastapi import APIRouter, Query, Request
 
 from src.app.api.deps import SessionDep
 from src.app.core.config import get_settings
@@ -16,8 +18,14 @@ from src.app.schemas.auth import (
     VerifyRequest,
 )
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.oauth import (
+    OAuthAppleRequest,
+    OAuthConfigResponse,
+    OAuthGoogleRequest,
+)
 from src.app.services import auth as auth_service
 from src.app.services import email as email_service
+from src.app.services import oauth as oauth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -154,3 +162,77 @@ async def logout(body: LogoutRequest, session: SessionDep) -> ApiResponse:
     await auth_service.logout(session, body.refresh_token)
     await session.commit()
     return ApiResponse.success(MessageResponse(message="Вы вышли из системы").model_dump())
+
+
+@router.post(
+    "/oauth/google",
+    summary="Вход через Google",
+    description=(
+        "Проверяет Google id_token, автолинкует к существующему пользователю по email "
+        "(регистронезависимо) или регистрирует нового. Возвращает пару access/refresh-токенов."
+    ),
+)
+@limiter.limit(settings.oauth_login_rate_limit)
+async def oauth_google(
+    request: Request, body: OAuthGoogleRequest, session: SessionDep
+) -> ApiResponse:
+    access_token, refresh_token = await oauth_service.authenticate_google(
+        session,
+        body.id_token,
+        body.client_type,
+    )
+    await session.commit()
+    return ApiResponse.success(
+        TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+        ).model_dump()
+    )
+
+
+@router.post(
+    "/oauth/apple",
+    summary="Вход через Apple",
+    description=(
+        "Проверяет Apple identity_token, автолинкует к существующему пользователю по email "
+        "(регистронезависимо) или регистрирует нового. email/name присылаются клиентом только "
+        "при первой авторизации. Возвращает пару access/refresh-токенов."
+    ),
+)
+@limiter.limit(settings.oauth_login_rate_limit)
+async def oauth_apple(
+    request: Request, body: OAuthAppleRequest, session: SessionDep
+) -> ApiResponse:
+    access_token, refresh_token = await oauth_service.authenticate_apple(
+        session,
+        body.identity_token,
+        body.client_type,
+        body.email,
+        body.name,
+    )
+    await session.commit()
+    return ApiResponse.success(
+        TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+        ).model_dump()
+    )
+
+
+@router.get(
+    "/oauth/config",
+    summary="Публичный конфиг OAuth-провайдеров",
+    description=(
+        "Отдаёт client_id/enabled для Google и Apple для запрошенного client_type — фронты "
+        "используют, чтобы решить, показывать ли кнопку входа и с каким Client ID "
+        "инициализировать SDK. null для невключённого провайдера."
+    ),
+)
+async def oauth_config(
+    session: SessionDep,
+    client_type: Literal["web", "ios", "android"] = Query(
+        description="Платформа клиента, запрашивающего конфиг"
+    ),
+) -> ApiResponse:
+    data = await oauth_service.get_oauth_config(session, client_type)
+    return ApiResponse.success(OAuthConfigResponse(**data).model_dump())
