@@ -5,7 +5,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."                # корень репозитория (на сервере: /opt/smenka)
-set -a; source .env; set +a            # подтянуть POSTGRES_USER / POSTGRES_DB
+# Не source .env целиком: значения вида "5/minute;30/hour" (rate-limit) содержат
+# ';' и парсятся bash'ом как отдельные команды. Тянем только нужные переменные.
+POSTGRES_USER=$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)
+POSTGRES_DB=$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)
 
 mkdir -p backups
 TS=$(date +%Y%m%d-%H%M)
