@@ -187,7 +187,12 @@ async def login(
         )
 
     user = await get_user_by_email(session, email)
-    if user is None or not verify_password(password, user.password_hash):
+    # password_hash is None для OAuth-only пользователей (нет пароля — нечего сверять).
+    if (
+        user is None
+        or user.password_hash is None
+        or not verify_password(password, user.password_hash)
+    ):
         await lockout.register_failure(email)
         raise AuthError("INVALID_CREDENTIALS", "Неверный email или пароль", 401)
 

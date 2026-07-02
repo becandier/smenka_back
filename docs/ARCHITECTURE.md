@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-06-22 (fines — штрафы: таблицы `organization_penalty_templates`/`penalties`, `shifts.is_deleted` (soft-delete смен) с фильтрацией всех читающих запросов по сменам, additive-интеграция в payroll/my-earnings/export — `include_penalties`, `penalty_amount_minor`/`penalties_count`/`net_amount_minor`)
+Последнее обновление: 2026-07-02 (oauth_login — вход через Google/Apple: таблицы `oauth_identities`/`oauth_provider_settings`, `users.password_hash` стал nullable, публичные `POST /auth/oauth/{google,apple}` + `GET /auth/oauth/config`, платформенные `GET/PUT /admin/oauth-providers/...` (super_admin))
 
 ---
 
@@ -8,8 +8,10 @@
 
 | Модель | Таблица | Описание |
 |--------|---------|----------|
-| `User` | `users` | Пользователь (email, name, phone, password_hash, is_verified, role: super_admin/user) |
+| `User` | `users` | Пользователь (email, name, phone, **password_hash nullable** — OAuth-only пользователь может не иметь пароля, is_verified, role: super_admin/user) |
 | `RefreshToken` | `refresh_tokens` | JWT refresh-токен (token, expires_at, revoked) |
+| `OAuthIdentity` | `oauth_identities` | Привязка user↔провайдер (user_id→CASCADE, provider google/apple, provider_user_id — `sub` из id-токена, email — справочно на момент привязки, created_at). `UNIQUE(provider, provider_user_id)`, `UNIQUE(user_id, provider)`, индекс `(user_id)` |
+| `OAuthProviderSetting` | `oauth_provider_settings` | Платформенная настройка: какой Client ID бэк принимает как `aud` для пары provider×client_type (5 валидных комбинаций: google×{web,android,ios}, apple×{ios,web}); enabled — kill-switch, updated_by→users SET NULL, updated_at. `UNIQUE(provider, client_type)`. Редактируется только super_admin, не ENV |
 | `VerificationCode` | `verification_codes` | Код верификации email (code, expires_at, **attempts** — счётчик неверных вводов; при `>= max_code_attempts` код «сжигается») |
 | `Shift` | `shifts` | Рабочая смена (user_id, organization_id, **work_location_id nullable FK→work_locations ON DELETE SET NULL, indexed** — точка открытия смены, started_at, finished_at, status, has_incomplete_required_checklists, **is_deleted bool NOT NULL default false** — soft-delete смены; все читающие запросы по сменам фильтруют `is_deleted=false`; пишущего эндпоинта удаления пока нет) |
 | `Pause` | `pauses` | Пауза внутри смены (shift_id, started_at, finished_at) |
@@ -47,6 +49,11 @@
 | POST | `/api/v1/auth/login` | Логин | Нет |
 | POST | `/api/v1/auth/refresh` | Обновление пары токенов | Нет (refresh_token в body) |
 | POST | `/api/v1/auth/logout` | Отзыв refresh-токена | Нет (refresh_token в body) |
+| POST | `/api/v1/auth/oauth/google` | Вход/автолинк/регистрация через Google id_token | Нет (rate-limit `oauth_login_rate_limit`) |
+| POST | `/api/v1/auth/oauth/apple` | Вход/автолинк/регистрация через Apple identity_token | Нет (rate-limit `oauth_login_rate_limit`) |
+| GET | `/api/v1/auth/oauth/config` | Публичный конфиг для клиентов: какие провайдеры включены и их client_id (`?client_type=web\|ios\|android`) | Нет |
+| GET | `/api/v1/admin/oauth-providers` | Список 5 комбинаций provider×client_type (заглушки для ненастроенных) | Bearer (super_admin) |
+| PUT | `/api/v1/admin/oauth-providers/{provider}/{client_type}` | Upsert client_id/enabled одной комбинации | Bearer (super_admin) |
 | GET | `/api/v1/users/me` | Текущий пользователь | Bearer |
 | PATCH | `/api/v1/users/me` | Обновление профиля (name, phone) | Bearer |
 | GET | `/api/v1/shifts` | История смен (пагинация, фильтры) | Bearer |
@@ -162,6 +169,8 @@
 
 > **Аудит действий (audit_logs).** Запись создаётся из endpoint-слоя ПОСЛЕ успешного сервисного вызова и ДО `session.commit()` — один commit, аудит не расходится с фактом. Покрытие: `org.update/delete/invite_rotate`, `member.join/remove/role_update`, `settings.update`, `location.create/update/delete`, `shift.finish` (actor = инициатор, IP из запроса), а также системные `shift.auto_finish`/`pause.auto_finish` из Celery (`record_sync`, `actor_user_id = null`). `summary` — ключевые поля без секретов (инвайт-код и токены не пишутся). Чтение — только `GET /organizations/{id}/audit-logs` (owner/admin, `created_at DESC`, фильтры `action`/`actor_user_id`/`date_from`/`date_to` с `date_to` включительно, пагинация limit≤200); `actor_name` подмешивается batch-запросом по `users` (или «Система» при null-акторе). Записи неизменяемы и не удаляются через API.
 
+> **Вход через Google/Apple (oauth_login).** Верификация id-токена — JWKS + RS256 (`services/oauth_tokens.py`, поверх `python-jose`+`httpx`, без новых зависимостей): подпись по `kid` из заголовка, `iss`/`aud`/`exp`; `aud` сверяется с `client_id`, настроенным в `oauth_provider_settings` для присланной пары provider×client_type (не ENV — редактирует только super_admin через `PUT /admin/oauth-providers/...`). JWKS кэшируется in-memory с TTL 1ч; при неизвестном `kid` кэш **форсированно рефетчится один раз** перед отказом (иначе легитимные токены, подписанные только что ротированным ключом провайдера, отклонялись бы до истечения TTL). Единая логика поиска/создания пользователя (`services/oauth.py._link_or_register_user`, три ветки): (1) есть `oauth_identities` по `(provider, sub)` → вход; (2) иначе поиск `users` по `lower(email) = lower(token_email)` **из проверенного id-токена** — один совпавший → автолинк без доп. подтверждения (`is_verified` выставляется `true`), больше одного → `500 OAUTH_LINK_AMBIGUOUS` (легаси case-дубли), ноль → регистрация нового `User(password_hash=null, is_verified=true)`. Токены выдаются тем же механизмом, что и `/auth/login` (`create_access_token` + `_create_refresh_token_db`). Для Apple, у которой email/name приходят от провайдера только при самой первой авторизации, тело запроса `email`/`name` используется **только** как fallback-имя нового аккаунта — identity-матчинг (поиск/линковка) всегда идёт по `claims.email` из подписанного токена, никогда по значению из тела запроса (в первой версии реализации была уязвимость: непроверенный body-email использовался для автолинка, что давало захват чужого аккаунта при повторном Apple-входе без email в токене — поймано и исправлено на ревью до мерджа). `GET /auth/oauth/config` отдаёт фронтам `{google, apple}` (`client_id`+`enabled` либо `null`) — фронты обязаны скрывать кнопку при `null`/`enabled=false`; для Apple на Android читается конфигурация `(apple, web)` (нативного Apple SDK на Android нет). Ошибки — переиспользуют `AuthError` (`INVALID_OAUTH_TOKEN`/`OAUTH_EMAIL_NOT_VERIFIED`/`OAUTH_PROVIDER_UNAVAILABLE`/`OAUTH_LINK_AMBIGUOUS`/`OAUTH_PROVIDER_NOT_CONFIGURED`) и `AdminError` (`VALIDATION_ERROR` — недопустимая комбинация provider/client_type). **Вне scope:** отвязка провайдера, server-side revoke через Apple/Google token endpoints, эндпоинт-редирект для Apple-входа на Android (`apple/android-callback`) — обнаружен мобильным треком как отдельная потребность, не описан в ТЗ, требует отдельного решения аналитика.
+
 > **Отправка кодов подтверждения по email (smtp_email).** Код верификации доставляется письмом через SMTP (`services/email.py`, транспорт `aiosmtplib` — async, не блокирует event loop). Флаг включения — непустой `SMTP_HOST`: **выключен** (dev/CI/тесты) — письмо не шлётся, код как раньше возвращается в ответе `register`/`resend-code` и пишется в лог (`verification_code_generated`/`_resent`); **включён** (прод) — код уходит ТОЛЬКО письмом, в ответе `verification_code=null`, в логи код не пишется (`auth._log_code` опускает поле `code` при `smtp_enabled`). Поле `verification_code` в схемах остаётся **nullable** (обратная совместимость со старыми мобильными билдами — не удаляется). Порт 465 → implicit SSL (`use_tls`), 587 → STARTTLS (`start_tls`), выбор по `SMTP_USE_SSL`; `From == SMTP_USERNAME` (требование Яндекса). Доставка вызывается из endpoint-слоя **после `session.commit()`**: пользователь/код уже сохранены, поэтому сбой SMTP не теряет регистрацию — `email.deliver_verification_code` ловит `SMTPException`/`OSError`, логирует (без кода) и поднимает `AuthError("EMAIL_SEND_FAILED", 502)`; пользователь повторяет через `resend-code`. Env: `SMTP_HOST`/`SMTP_PORT`/`SMTP_USE_SSL`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_FROM`/`SMTP_FROM_NAME` (+ `SMTP_TIMEOUT_SECONDS`).
 
 ---
@@ -170,7 +179,10 @@
 
 | Файл | Описание |
 |------|----------|
-| `services/auth.py` | Регистрация, верификация, логи��, refresh, logout |
+| `services/auth.py` | Регистрация, верификация, логин, refresh, logout |
+| `services/oauth_tokens.py` | Верификация id-токенов Google/Apple: JWKS-fetch с TTL-кэшем (форс-рефетч при неизвестном kid), RS256-decode, проверка iss/aud/exp/email_verified → `OAuthClaims` |
+| `services/oauth_provider_settings.py` | CRUD/чтение `oauth_provider_settings` (5 валидных комбинаций provider×client_type), `require_provider_setting` (kill-switch/не настроено → `OAUTH_PROVIDER_NOT_CONFIGURED`) |
+| `services/oauth.py` | Бизнес-логика входа: поиск по `sub`/автолинк по email/регистрация, выдача токенов, `get_oauth_config` для публичного эндпоинта |
 | `services/shift.py` | Lifecycle смен, статистика, автозавершение |
 | `services/organization.py` | CRUD организаций, инвайты, участники |
 | `services/work_location.py` | CRUD рабочих точек |

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.app.core.database import Base
 
 if TYPE_CHECKING:
+    from src.app.models.oauth import OAuthIdentity
     from src.app.models.organization import Organization, OrganizationMember
     from src.app.models.shift import Shift
 
@@ -29,7 +30,8 @@ class User(Base):
     )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    password_hash: Mapped[str] = mapped_column(Text)
+    # NULL для OAuth-only пользователей (вход только через Google/Apple, без пароля).
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(String(255))
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     role: Mapped[UserRole] = mapped_column(
@@ -59,6 +61,10 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     memberships: Mapped[list["OrganizationMember"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    oauth_identities: Mapped[list["OAuthIdentity"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
