@@ -5,8 +5,10 @@
 чек-листам/базе знаний приедут со своими фичами (паттерн FK-от-потребителя)."""
 
 import hashlib
+import io
 import re
 import uuid
+import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -34,6 +36,14 @@ settings = get_settings()
 _MB = 1024 * 1024
 _READ_CHUNK = _MB
 _IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/heic"})
+
+# Современные Office-форматы (OOXML) — ZIP-контейнеры с внутренней структурой.
+# Детектор (`filetype.guess`) распознаёт их по раскладке архива, а не по MIME
+# клиента; generic `application/zip` и легаси doc/xls/ppt (OLE) сюда не входят.
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_OOXML_MIMES = frozenset({_DOCX_MIME, _XLSX_MIME, _PPTX_MIME})
 
 
 class FileError(Exception):
@@ -69,7 +79,7 @@ CATEGORY_POLICIES: dict[FileCategory, CategoryPolicy] = {
     FileCategory.knowledge_base: CategoryPolicy(
         prefix="knowledge-base/",
         max_size_bytes=50 * _MB,
-        allowed_mimes=frozenset({"application/pdf"}),
+        allowed_mimes=frozenset({"application/pdf"}) | _OOXML_MIMES,
         allow_any_image=True,
         org_scoped=True,
     ),
@@ -103,6 +113,50 @@ def _sanitize_filename(name: str | None) -> str:
     candidate = (name or "file").replace("\\", "/").split("/")[-1]
     candidate = re.sub(r'[\x00-\x1f"\\]', "", candidate).strip()
     return (candidate or "file")[:255]
+
+
+def _reject_ooxml_with_macros(content: bytes) -> None:
+    """Отбивает macro-enabled OOXML (docm/xlsm/pptm) и нечитаемые архивы → 415.
+
+    Детектор по структуре видит docm как обычный docx — MIME недостаточно, поэтому
+    проверяем содержимое ZIP-контейнера (архив уже в памяти, stdlib `zipfile`):
+
+    1. запись `vbaProject.bin` на любом пути → макросы → 415;
+    2. `macroEnabled` в `[Content_Types].xml` → макросы → 415;
+    3. архив не читается/битый → 415 (не можем гарантировать отсутствие макросов).
+
+    Новых кодов ошибок не вводит — всё тот же `UNSUPPORTED_FILE_TYPE`."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            names = archive.namelist()
+            if any(name.rsplit("/", 1)[-1].lower() == "vbaproject.bin" for name in names):
+                raise FileError(
+                    "UNSUPPORTED_FILE_TYPE",
+                    "Файлы с макросами не поддерживаются",
+                    415,
+                )
+            if "[Content_Types].xml" in names:
+                content_types = archive.read("[Content_Types].xml")
+                if b"macroenabled" in content_types.lower():
+                    raise FileError(
+                        "UNSUPPORTED_FILE_TYPE",
+                        "Файлы с макросами не поддерживаются",
+                        415,
+                    )
+    except FileError:
+        raise
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        OSError,
+        EOFError,
+        NotImplementedError,
+    ) as exc:
+        raise FileError(
+            "UNSUPPORTED_FILE_TYPE",
+            "Файл повреждён или имеет неподдерживаемую структуру",
+            415,
+        ) from exc
 
 
 def _mime_allowed(policy: CategoryPolicy, mime: str | None) -> bool:
@@ -200,6 +254,10 @@ async def upload_file(
             "Тип файла не разрешён для этой категории",
             415,
         )
+
+    # Анти-макро: OOXML прошёл whitelist, но docm/xlsm/pptm неотличимы по MIME.
+    if detected_mime in _OOXML_MIMES:
+        _reject_ooxml_with_macros(content)
 
     content_type = detected_mime or upload.content_type or "application/octet-stream"
     original_filename = _sanitize_filename(upload.filename)
