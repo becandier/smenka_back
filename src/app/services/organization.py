@@ -138,11 +138,12 @@ async def batch_get_my_roles(
 async def update_organization(
     session: AsyncSession,
     org_id: uuid.UUID,
-    owner_id: uuid.UUID,
+    actor_id: uuid.UUID,
     name: str,
 ) -> Organization:
     org = await get_organization(session, org_id)
-    await ensure_owner(session, org, owner_id)
+    # Переименование — управляющее действие: доступно owner, admin-участнику и super_admin.
+    await ensure_admin_or_owner(session, org, actor_id)
     org.name = name
     await session.flush()
     return org
