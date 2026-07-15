@@ -181,7 +181,11 @@ async def get_organization(
 @router.patch(
     "/{org_id}",
     summary="Обновить организацию",
-    description="Обновляет название организации. Только для владельца (Owner).",
+    description=(
+        "Обновляет название организации. Доступно владельцу (Owner), участнику с "
+        "ролью admin и super_admin. В ответе my_role/my_custom_role отражают "
+        "фактическую роль вызывающего."
+    ),
 )
 async def update_organization(
     org_id: uuid.UUID,
@@ -202,7 +206,9 @@ async def update_organization(
         ip_address=get_client_ip(request),
     )
     await session.commit()
-    return ApiResponse.success(_org_to_response(org, "owner", None))
+    roles = await org_service.batch_get_my_roles(session, [org], user.id)
+    my_role, my_custom_role = roles.get(org.id, (None, None))
+    return ApiResponse.success(_org_to_response(org, my_role, my_custom_role))
 
 
 @router.delete(

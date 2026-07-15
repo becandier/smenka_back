@@ -32,6 +32,20 @@ async def _create_second_user(db_session: AsyncSession) -> User:
     return user
 
 
+async def _create_super_admin(db_session: AsyncSession, email: str) -> User:
+    user = User(
+        id=uuid.uuid4(),
+        email=email,
+        password_hash=hash_password("Test1234"),
+        name="Other Super Admin",
+        is_verified=True,
+        role=UserRole.super_admin,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    return user
+
+
 async def _add_member(
     db_session: AsyncSession,
     org_id: str,
@@ -103,9 +117,92 @@ class TestUpdateOrganization:
             json={"name": "New Name"},
         )
         assert response.status_code == 200
-        assert response.json()["data"]["name"] == "New Name"
+        data = response.json()["data"]
+        assert data["name"] == "New Name"
+        # Роль вызывающего в ответе — фактическая (owner), не захардкожена.
+        assert data["my_role"] == "owner"
+        assert data["my_custom_role"] is None
 
-    async def test_update_organization_not_owner(
+    async def test_update_by_admin_member(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        admin = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, admin.id, MemberRole.admin)
+        admin_headers = await _login_as(client, "second@example.com")
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=admin_headers,
+            json={"name": "Renamed by admin"},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["name"] == "Renamed by admin"
+        assert data["my_role"] == "admin"
+        assert data["my_custom_role"] is None
+
+    async def test_update_by_admin_member_with_custom_role(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        # Кастомная роль создаётся владельцем и назначается admin-участнику.
+        role_resp = await client.post(
+            f"/api/v1/organizations/{org_id}/roles",
+            headers=auth_headers,
+            json={"name": "Управляющий"},
+        )
+        role_id = role_resp.json()["data"]["id"]
+
+        admin = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, admin.id, MemberRole.admin)
+        await client.patch(
+            f"/api/v1/organizations/{org_id}/members/{admin.id}/custom-role",
+            headers=auth_headers,
+            json={"role_id": role_id},
+        )
+        admin_headers = await _login_as(client, "second@example.com")
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=admin_headers,
+            json={"name": "Renamed"},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["my_role"] == "admin"
+        assert data["my_custom_role"]["id"] == role_id
+        assert data["my_custom_role"]["name"] == "Управляющий"
+
+    async def test_update_by_employee_forbidden(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        employee = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, employee.id, MemberRole.employee)
+        employee_headers = await _login_as(client, "second@example.com")
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=employee_headers,
+            json={"name": "Hacked"},
+        )
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "FORBIDDEN"
+
+    async def test_update_organization_not_member(
         self, client: AsyncClient, auth_headers, db_session: AsyncSession
     ):
         create_resp = await client.post(
@@ -122,6 +219,109 @@ class TestUpdateOrganization:
             json={"name": "Hacked"},
         )
         assert response.status_code == 403
+        assert response.json()["error"]["code"] == "FORBIDDEN"
+
+    async def test_update_organization_not_found(self, client: AsyncClient, auth_headers):
+        response = await client.patch(
+            f"/api/v1/organizations/{uuid.uuid4()}",
+            headers=auth_headers,
+            json={"name": "New Name"},
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "ORG_NOT_FOUND"
+
+    async def test_update_by_foreign_super_admin(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        # Другой super_admin, не owner и не участник этой org.
+        await _create_super_admin(db_session, "other-sa@example.com")
+        sa_headers = await _login_as(client, "other-sa@example.com")
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=sa_headers,
+            json={"name": "Renamed by platform"},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "Renamed by platform"
+
+    async def test_update_name_only_spaces_422(self, client: AsyncClient, auth_headers):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=auth_headers,
+            json={"name": "   "},
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_update_name_too_long_422(self, client: AsyncClient, auth_headers):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=auth_headers,
+            json={"name": "a" * 256},
+        )
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_update_name_trimmed(self, client: AsyncClient, auth_headers):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        response = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=auth_headers,
+            json={"name": "  Trimmed Name  "},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["name"] == "Trimmed Name"
+
+    async def test_update_by_admin_writes_audit(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        create_resp = await client.post(
+            "/api/v1/organizations", headers=auth_headers, json={"name": "Org"}
+        )
+        org_id = create_resp.json()["data"]["id"]
+
+        admin = await _create_second_user(db_session)
+        await _add_member(db_session, org_id, admin.id, MemberRole.admin)
+        admin_headers = await _login_as(client, "second@example.com")
+
+        rename_resp = await client.patch(
+            f"/api/v1/organizations/{org_id}",
+            headers=admin_headers,
+            json={"name": "Renamed by admin"},
+        )
+        assert rename_resp.status_code == 200
+
+        # Владелец видит запись аудита org.update с actor = админ.
+        audit_resp = await client.get(
+            f"/api/v1/organizations/{org_id}/audit-logs",
+            headers=auth_headers,
+            params={"action": "org.update"},
+        )
+        assert audit_resp.status_code == 200
+        items = audit_resp.json()["data"]["items"]
+        entry = next(it for it in items if it["action"] == "org.update")
+        assert entry["actor_user_id"] == str(admin.id)
+        assert entry["summary"]["name"] == "Renamed by admin"
 
 
 class TestDeleteOrganization:
