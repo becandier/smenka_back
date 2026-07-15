@@ -1,5 +1,7 @@
 # tests/test_files.py
+import io
 import uuid
+import zipfile
 from dataclasses import replace
 
 import pytest
@@ -18,6 +20,59 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n" + b"0" * 64
 TEXT_BYTES = b"just some plain text content, not a recognizable binary type at all"
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def _ooxml(
+    main_dir: str,
+    main_name: str,
+    *,
+    content_types: bytes = b"<Types/>",
+    extra: list[tuple[str, bytes]] | None = None,
+) -> bytes:
+    """Минимальный валидный OOXML-контейнер, который распознаёт filetype.guess.
+
+    Раскладка как у настоящих Office-файлов: первым `[Content_Types].xml`, затем
+    `_rels/.rels` и главная часть (`word/`, `xl/`, `ppt/`). ZIP_STORED — чтобы имена
+    записей лежали в архиве буквально и детектор их видел."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", b"<Relationships/>")
+        archive.writestr(f"{main_dir}/{main_name}", b"<xml/>")
+        for name, data in extra or []:
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+DOCX_BYTES = _ooxml("word", "document.xml")
+XLSX_BYTES = _ooxml("xl", "workbook.xml")
+PPTX_BYTES = _ooxml("ppt", "presentation.xml")
+
+# docm: детектор видит docx, но внутри лежит vbaProject.bin (макросы).
+DOCM_BYTES = _ooxml("word", "document.xml", extra=[("word/vbaProject.bin", b"\x00\x01\x02")])
+# macroEnabled-тип в [Content_Types].xml (xlsm-стиль), структура — как xlsx.
+MACRO_CT_BYTES = _ooxml(
+    "xl",
+    "workbook.xml",
+    content_types=b"<Types><Override ContentType="
+    b'"application/vnd.ms-excel.sheet.macroEnabled.main+xml"/></Types>',
+)
+# Битый архив: детектор распознаёт docx по префиксу `word/`, но zipfile его не читает.
+BROKEN_OOXML_BYTES = b"PK\x03\x04" + b"\x00" * 26 + b"word/document.xml" + b"\xff" * 64
+# Легаси .doc — OLE/CFB (Office 97-2003), в whitelist не входит.
+LEGACY_DOC_BYTES = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 520
+
+
+def _zip_bytes() -> bytes:
+    """Произвольный ZIP (не OOXML) — детектор отдаёт application/zip."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("hello.txt", b"just a zip, not office")
+    return buffer.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -216,6 +271,140 @@ class TestUpload:
             content_type="image/jpeg",
         )
         assert resp.status_code == 422
+
+
+class TestKnowledgeBaseOffice:
+    """office_files: OOXML без макросов в базе знаний; макросы/легаси/битые — 415."""
+
+    @pytest.mark.parametrize(
+        ("content", "filename", "mime"),
+        [
+            (DOCX_BYTES, "reglament.docx", DOCX_MIME),
+            (XLSX_BYTES, "table.xlsx", XLSX_MIME),
+            (PPTX_BYTES, "training.pptx", PPTX_MIME),
+        ],
+    )
+    async def test_ooxml_upload_success(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        content: bytes,
+        filename: str,
+        mime: str,
+    ):
+        org = await _create_org(client, auth_headers)
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=content,
+            filename=filename,
+            content_type=mime,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 201
+        # content_type определяется по содержимому, а не по заголовку клиента.
+        assert resp.json()["data"]["content_type"] == mime
+
+    async def test_docm_with_vbaproject_rejected(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=DOCM_BYTES,
+            filename="macros.docx",
+            content_type=DOCX_MIME,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_macro_enabled_content_types_rejected(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=MACRO_CT_BYTES,
+            filename="macros.xlsx",
+            content_type=XLSX_MIME,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_arbitrary_zip_renamed_rejected(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        # Переименованный zip: детектор видит application/zip, не OOXML → 415.
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=_zip_bytes(),
+            filename="archive.docx",
+            content_type=DOCX_MIME,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_legacy_doc_rejected(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=LEGACY_DOC_BYTES,
+            filename="old.doc",
+            content_type="application/msword",
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_broken_ooxml_archive_rejected(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        # Детектор распознаёт docx по префиксу `word/`, но zipfile архив не читает.
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="knowledge_base",
+            content=BROKEN_OOXML_BYTES,
+            filename="broken.docx",
+            content_type=DOCX_MIME,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_ooxml_rejected_in_checklist_photo(self, client: AsyncClient, auth_headers):
+        org = await _create_org(client, auth_headers)
+        # Политика checklist_photo не расширялась — только image/*.
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="checklist_photo",
+            content=DOCX_BYTES,
+            filename="doc.docx",
+            content_type=DOCX_MIME,
+            organization_id=org["id"],
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
+
+    async def test_ooxml_rejected_in_avatar(self, client: AsyncClient, auth_headers):
+        # Персональная категория avatar — тоже только image/*.
+        resp = await _upload(
+            client,
+            auth_headers,
+            category="avatar",
+            content=XLSX_BYTES,
+            filename="sheet.xlsx",
+            content_type=XLSX_MIME,
+        )
+        assert resp.status_code == 415
+        assert resp.json()["error"]["code"] == "UNSUPPORTED_FILE_TYPE"
 
 
 class TestUploadRBAC:
