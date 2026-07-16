@@ -15,8 +15,17 @@ if [[ -n "${GHCR_TOKEN:-}" && -n "${GHCR_USER:-}" ]]; then
   echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 fi
 
-echo "▶ pull свежих образов"
-$COMPOSE pull
+# Образы приложения (ghcr.io) тянем строго: их обновление — суть деплоя.
+# Базовые образы (docker.io: caddy/postgres/redis/flower) — best-effort:
+# Docker Hub отдаёт 429 на анонимные pull'ы, и это не должно валить деплой —
+# при отказе продолжаем на локально закэшированных образах. На свежем сервере
+# (без локального кэша) повторить деплой позже или залогиниться в Docker Hub.
+echo "▶ pull образов приложения (ghcr)"
+$COMPOSE pull migrate api worker admin web
+
+echo "▶ pull базовых образов (docker.io, best-effort)"
+$COMPOSE pull --ignore-pull-failures caddy db redis flower \
+  || echo "  ⚠ базовые образы не обновлены (rate limit?) — используем локальные"
 
 echo "▶ up -d (migrate прогонит alembic upgrade head до старта api/worker)"
 $COMPOSE up -d --remove-orphans
