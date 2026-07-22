@@ -159,6 +159,44 @@ class ChecklistRoleAssignment(Base):
     )
 
 
+class ChecklistTemplateLocation(Base):
+    """Привязка шаблона чек-листа к рабочей точке (many-to-many).
+
+    Шаблон с привязками действует только на них; шаблон без привязок — на
+    любой точке (см. backend.md фичи checklist_work_location). Обе стороны
+    `ON DELETE CASCADE`: удаление шаблона или точки снимает привязку.
+    """
+
+    __tablename__ = "checklist_template_locations"
+    __table_args__ = (
+        UniqueConstraint(
+            "template_id",
+            "work_location_id",
+            name="uq_checklist_template_location",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_templates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    work_location_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_locations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+    )
+
+
 class ChecklistMemberOverride(Base):
     __tablename__ = "checklist_member_overrides"
     __table_args__ = (

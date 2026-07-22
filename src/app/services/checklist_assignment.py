@@ -13,10 +13,18 @@ from src.app.models.checklist import (
 )
 from src.app.models.organization import OrganizationMember
 from src.app.models.organization_role import OrganizationRole
+from src.app.services.checklist_location import (
+    _get_org_location,
+    get_location_ids_for_templates,
+    get_location_only_template_ids,
+    matches_location,
+)
 from src.app.services.checklist_template import (
     ChecklistError,
     _check_admin_or_owner,
+    _ensure_ids_belong_to_org,
     _get_template,
+    _replace_m2m_links,
 )
 from src.app.services.organization import _check_org_access, get_organization
 
@@ -53,38 +61,29 @@ async def assign_template_to_roles(
     await _check_admin_or_owner(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
-    if role_ids:
-        roles_result = await session.execute(
-            select(OrganizationRole.id).where(
-                OrganizationRole.id.in_(role_ids),
-                OrganizationRole.organization_id == org_id,
-            )
-        )
-        valid_ids = {row[0] for row in roles_result.all()}
-        if valid_ids != set(role_ids):
-            raise ChecklistError(
-                "INVALID_ROLE",
-                "Одна или несколько ролей не принадлежат организации",
-                400,
-            )
+    await _ensure_ids_belong_to_org(
+        session,
+        id_column=OrganizationRole.id,
+        org_column=OrganizationRole.organization_id,
+        org_id=org_id,
+        ids=role_ids,
+        error_code="INVALID_ROLE",
+        error_message="Одна или несколько ролей не принадлежат организации",
+    )
 
     existing_result = await session.execute(
         select(ChecklistRoleAssignment).where(
             ChecklistRoleAssignment.template_id == template_id,
         )
     )
-    existing = {a.role_id: a for a in existing_result.scalars().all()}
-
     target = set(role_ids)
-    current = set(existing.keys())
-
-    for role_id in current - target:
-        await session.delete(existing[role_id])
-
-    for role_id in target - current:
-        session.add(ChecklistRoleAssignment(template_id=template_id, role_id=role_id))
-
-    await session.flush()
+    await _replace_m2m_links(
+        session,
+        existing_result.scalars().all(),
+        key_of=lambda a: a.role_id,
+        target_ids=target,
+        make_new=lambda role_id: ChecklistRoleAssignment(template_id=template_id, role_id=role_id),
+    )
     logger.info(
         "checklist_template_roles_assigned",
         template_id=str(template_id),
@@ -98,7 +97,7 @@ async def get_template_assignments(
     org_id: uuid.UUID,
     template_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> tuple[list[uuid.UUID], list[OrganizationMember], list[OrganizationMember]]:
+) -> tuple[list[uuid.UUID], list[OrganizationMember], list[OrganizationMember], list[uuid.UUID]]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
     await _get_template(session, org_id, template_id)
@@ -109,6 +108,9 @@ async def get_template_assignments(
         )
     )
     role_ids = [row[0] for row in roles_result.all()]
+    location_ids = (await get_location_ids_for_templates(session, [template_id])).get(
+        template_id, []
+    )
 
     overrides_result = await session.execute(
         select(ChecklistMemberOverride).where(
@@ -139,7 +141,7 @@ async def get_template_assignments(
         else:
             personal_remove.append(member)
 
-    return role_ids, personal_add, personal_remove
+    return role_ids, personal_add, personal_remove, location_ids
 
 
 async def set_member_overrides(
@@ -173,21 +175,15 @@ async def set_member_overrides(
             ) from None
         parsed.append((tpl_id, t))
 
-    if parsed:
-        tpl_ids = [t[0] for t in parsed]
-        tpls_result = await session.execute(
-            select(ChecklistTemplate.id).where(
-                ChecklistTemplate.id.in_(tpl_ids),
-                ChecklistTemplate.organization_id == org_id,
-            )
-        )
-        valid_tpl_ids = {row[0] for row in tpls_result.all()}
-        if valid_tpl_ids != set(tpl_ids):
-            raise ChecklistError(
-                "INVALID_TEMPLATE",
-                "Один или несколько шаблонов не принадлежат организации",
-                400,
-            )
+    await _ensure_ids_belong_to_org(
+        session,
+        id_column=ChecklistTemplate.id,
+        org_column=ChecklistTemplate.organization_id,
+        org_id=org_id,
+        ids=[t[0] for t in parsed],
+        error_code="INVALID_TEMPLATE",
+        error_message="Один или несколько шаблонов не принадлежат организации",
+    )
 
     existing_result = await session.execute(
         select(ChecklistMemberOverride).where(
@@ -226,7 +222,17 @@ async def get_effective_templates(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> list[tuple[ChecklistTemplate, str]]:
+    *,
+    work_location_id: uuid.UUID | None = None,
+) -> list[tuple[ChecklistTemplate, str, list[uuid.UUID]]]:
+    """Эффективные чек-листы сотрудника.
+
+    Без `work_location_id` (обратная совместимость) — весь `by_assignment`
+    набор, `location_ids` каждого шаблона отдаются информационно, без
+    фильтра. С `work_location_id` — ровно то, что сотрудник получил бы,
+    открыв смену на этой точке (`matches_location`, backend.md §5.2);
+    точка валидируется на принадлежность org, иначе `WORK_LOCATION_NOT_FOUND`.
+    """
     org = await get_organization(session, org_id)
 
     if requester_id != user_id:
@@ -234,9 +240,23 @@ async def get_effective_templates(
     else:
         await _check_org_access(session, org, requester_id)
 
-    member = await _get_member(session, org_id, user_id)
+    if work_location_id is not None:
+        await _get_org_location(session, org_id, work_location_id)
 
-    return await _compute_effective(session, org_id, member)
+    member = await _get_member(session, org_id, user_id)
+    pairs = await _compute_effective(session, org_id, member)
+
+    location_ids_by_template = await get_location_ids_for_templates(
+        session, [t.id for t, _ in pairs]
+    )
+
+    result: list[tuple[ChecklistTemplate, str, list[uuid.UUID]]] = []
+    for template, source in pairs:
+        location_ids = location_ids_by_template.get(template.id, [])
+        if work_location_id is not None and not matches_location(location_ids, work_location_id):
+            continue
+        result.append((template, source, location_ids))
+    return result
 
 
 async def _compute_effective(
@@ -253,6 +273,14 @@ async def _compute_effective(
         )
         role_template_ids = {row[0] for row in role_result.all()}
 
+    # Новый канал (checklist_work_location): шаблон без привязки к ролям, но
+    # с привязкой к точке — назначен ВСЕМ сотрудникам org (независимо от их
+    # роли/её отсутствия), фильтруется по точке уже на уровне вызывающего
+    # кода (create_instances_for_shift / get_effective_templates). Пустая
+    # таблица привязок → пустое множество → нулевое изменение поведения.
+    location_only_ids = await get_location_only_template_ids(session, org_id)
+    candidate_ids = role_template_ids | location_only_ids
+
     overrides_result = await session.execute(
         select(ChecklistMemberOverride).where(
             ChecklistMemberOverride.member_id == member.id,
@@ -262,9 +290,9 @@ async def _compute_effective(
     add_ids = {o.template_id for o in overrides if o.override_type == OverrideType.add}
     remove_ids = {o.template_id for o in overrides if o.override_type == OverrideType.remove}
 
-    effective_role_ids = role_template_ids - remove_ids
+    effective_candidate_ids = candidate_ids - remove_ids
 
-    all_ids = effective_role_ids | add_ids
+    all_ids = effective_candidate_ids | add_ids
     if not all_ids:
         return []
 
@@ -278,12 +306,12 @@ async def _compute_effective(
     templates = {t.id: t for t in templates_result.scalars().all()}
 
     result: list[tuple[ChecklistTemplate, str]] = [
-        (templates[tpl_id], "role") for tpl_id in effective_role_ids if tpl_id in templates
+        (templates[tpl_id], "role") for tpl_id in effective_candidate_ids if tpl_id in templates
     ]
     result.extend(
         (templates[tpl_id], "personal_add")
         for tpl_id in add_ids
-        if tpl_id in templates and tpl_id not in effective_role_ids
+        if tpl_id in templates and tpl_id not in effective_candidate_ids
     )
     result.sort(key=lambda pair: pair[0].created_at)
     return result
