@@ -1,3 +1,4 @@
+import re
 import secrets
 import uuid
 
@@ -10,6 +11,12 @@ from src.app.models.organization import MemberRole, Organization, OrganizationMe
 from src.app.services.common import ensure_admin_or_owner, ensure_member, ensure_owner
 
 logger = get_logger(__name__)
+
+# Управляющие символы, которые НЕ являются переводом строки/табуляцией (те
+# схлопываются в пробел ДО этой проверки) — переносим их в исключение
+# INVALID_DISPLAY_NAME, а не молча вырезаем.
+_FORBIDDEN_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+DISPLAY_NAME_MAX_LENGTH = 100
 
 
 class OrgError(Exception):
@@ -341,6 +348,77 @@ async def update_member_role(
         new_role=new_role,
     )
     return member
+
+
+def normalize_display_name(raw: str | None) -> str | None:
+    """Нормализовать `display_name` участника (`member_display_name`).
+
+    - `None` → `None` (сброс на настоящее имя);
+    - внутренние `\\n`/`\\r`/`\\t` схлопываются в обычный пробел, затем обрезаются
+      пробелы по краям;
+    - пустая строка/строка из одних пробелов после нормализации → `None`
+      (тоже трактуется как сброс, а не ошибка);
+    - длина 1–100 символов, иначе `INVALID_DISPLAY_NAME`;
+    - прочие управляющие символы (не перевод строки/таб) отклоняются той же ошибкой.
+    """
+    if raw is None:
+        return None
+
+    collapsed = re.sub(r"[\n\r\t]+", " ", raw)
+    stripped = collapsed.strip()
+    if not stripped:
+        return None
+
+    if _FORBIDDEN_CONTROL_CHARS.search(stripped) or len(stripped) > DISPLAY_NAME_MAX_LENGTH:
+        raise OrgError(
+            "INVALID_DISPLAY_NAME",
+            "Имя в организации: от 1 до 100 символов",
+            400,
+        )
+    return stripped
+
+
+async def update_member_display_name(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    raw_display_name: str | None,
+    requester_id: uuid.UUID,
+) -> tuple[OrganizationMember, str | None, str | None]:
+    """Задать/сбросить `display_name` участника. Возвращает (member, old, new) для аудита.
+
+    Права — тот же хелпер, что и у прочих управляющих операций над участниками:
+    owner, admin-участник организации или super_admin. Сотрудник (в т.ч. себе)
+    получает `FORBIDDEN` (403) — это управленческий атрибут, не самообслуживание.
+    """
+    org = await get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id)
+
+    result = await session.execute(
+        select(OrganizationMember)
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
+        .where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == member_user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if member is None:
+        raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+
+    new_value = normalize_display_name(raw_display_name)
+    old_value = member.display_name
+    member.display_name = new_value
+    await session.flush()
+    logger.info(
+        "member_display_name_updated",
+        org_id=str(org_id),
+        user_id=str(member_user_id),
+    )
+    return member, old_value, new_value
 
 
 async def _check_org_access(
