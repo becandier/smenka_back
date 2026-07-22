@@ -801,6 +801,7 @@ class OrgChecklistInstanceRow:
     instance: ChecklistInstance
     shift: Shift
     user: User | None
+    display_name: str | None
     work_location: WorkLocation | None
     items_total: int
     items_completed: int
@@ -911,10 +912,17 @@ async def list_org_checklist_instances(
     total = (await session.execute(count_query)).scalar_one()
 
     page_query = (
-        select(ChecklistInstance, Shift, User, WorkLocation)
+        select(ChecklistInstance, Shift, User, WorkLocation, OrganizationMember)
         .join(Shift, ChecklistInstance.shift_id == Shift.id)
         .outerjoin(User, Shift.user_id == User.id)
         .outerjoin(WorkLocation, Shift.work_location_id == WorkLocation.id)
+        .outerjoin(
+            OrganizationMember,
+            and_(
+                OrganizationMember.organization_id == org_id,
+                OrganizationMember.user_id == Shift.user_id,
+            ),
+        )
         .where(*conditions)
         .order_by(_org_instance_order_by(sort, order))
         .limit(limit)
@@ -922,19 +930,20 @@ async def list_org_checklist_instances(
     )
     page_rows = (await session.execute(page_query)).all()
 
-    instance_ids = [instance.id for instance, _shift, _user, _location in page_rows]
+    instance_ids = [instance.id for instance, _shift, _user, _location, _member in page_rows]
     summary_by_instance = await _items_summary_by_instance(
         session, instance_ids, with_photos_total=True
     )
 
     out: list[OrgChecklistInstanceRow] = []
-    for instance, shift, user, work_location in page_rows:
+    for instance, shift, user, work_location, member in page_rows:
         summary = summary_by_instance.get(instance.id)
         out.append(
             OrgChecklistInstanceRow(
                 instance=instance,
                 shift=shift,
                 user=user,
+                display_name=member.display_name if member is not None else None,
                 work_location=work_location,
                 items_total=int(summary.total) if summary is not None else 0,
                 items_completed=int(summary.completed) if summary is not None else 0,

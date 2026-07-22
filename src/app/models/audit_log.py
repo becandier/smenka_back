@@ -19,6 +19,7 @@ class AuditAction(enum.StrEnum):
     member_join = "member.join"
     member_remove = "member.remove"
     member_role_update = "member.role_update"
+    member_display_name_update = "member.display_name_update"
     settings_update = "settings.update"
     location_create = "location.create"
     location_update = "location.update"

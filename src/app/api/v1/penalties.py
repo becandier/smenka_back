@@ -49,11 +49,15 @@ async def _build_penalty_payloads(
         return []
     member_ids = {p.member_id for p in penalties}
     members_result = await session.execute(
-        select(OrganizationMember.id, OrganizationMember.user_id).where(
-            OrganizationMember.id.in_(member_ids)
-        )
+        select(
+            OrganizationMember.id,
+            OrganizationMember.user_id,
+            OrganizationMember.display_name,
+        ).where(OrganizationMember.id.in_(member_ids))
     )
-    user_by_member = dict(members_result.tuples().all())
+    members_rows = members_result.all()
+    user_by_member = {row.id: row.user_id for row in members_rows}
+    display_name_by_member = {row.id: row.display_name for row in members_rows}
     user_ids = set(user_by_member.values())
     users_result = await session.execute(select(User.id, User.name).where(User.id.in_(user_ids)))
     name_by_user = dict(users_result.tuples().all())
@@ -68,6 +72,7 @@ async def _build_penalty_payloads(
                 member_id=str(p.member_id),
                 user_id=str(uid) if uid is not None else "",
                 user_name=user_name,
+                display_name=display_name_by_member.get(p.member_id),
                 template_id=str(p.template_id) if p.template_id is not None else None,
                 reason=p.reason,
                 amount_minor=p.amount_minor,

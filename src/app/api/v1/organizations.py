@@ -15,6 +15,7 @@ from src.app.schemas.checklist import OrgChecklistInstanceListResponse
 from src.app.schemas.organization import (
     InviteCodeResponse,
     JoinResponse,
+    MemberDisplayNameUpdate,
     MemberListResponse,
     MemberResponse,
     MemberRoleUpdate,
@@ -91,6 +92,7 @@ def _member_to_response(
         user_id=str(member.user_id),
         user_name=member.user.name,
         user_email=member.user.email,
+        display_name=member.display_name,
         role=member.role.value,
         custom_role=custom_role,
         joined_at=member.joined_at,
@@ -422,6 +424,57 @@ async def update_member_role(
     await session.commit()
 
     # Эндпоинт доступен только owner/super_admin — ставку показываем всегда
+    from src.app.services import payroll as payroll_service
+
+    current_rates = await payroll_service.get_current_rates(session, [member.id])
+    return ApiResponse.success(_member_to_response(member, current_rates.get(member.id)))
+
+
+@router.patch(
+    "/{org_id}/members/{member_user_id}",
+    summary="Задать/сбросить имя участника в организации",
+    description=(
+        "Устанавливает или сбрасывает display_name — имя, которым участник "
+        "отображается только в этой организации. Настоящее User.name не "
+        "меняется и остаётся доступным как user_name во всех орг-ответах. "
+        "null или пустая строка сбрасывают на настоящее имя. Доступно "
+        "владельцу (Owner), admin-участнику и super_admin; сотрудник (в т.ч. "
+        "себе) получает 403 — это управленческий атрибут (member_display_name)."
+    ),
+)
+async def update_member_display_name(
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    body: MemberDisplayNameUpdate,
+    user: CurrentUserDep,
+    session: SessionDep,
+    request: Request,
+) -> ApiResponse:
+    member, old_value, new_value = await org_service.update_member_display_name(
+        session,
+        org_id,
+        member_user_id,
+        body.display_name,
+        user.id,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.member_display_name_update,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        summary={
+            "user_id": str(member_user_id),
+            "old_display_name": old_value,
+            "new_display_name": new_value,
+        },
+        ip_address=get_client_ip(request),
+    )
+    await session.commit()
+
+    # Эндпоинт доступен только owner/admin/super_admin — ставку показываем всегда
+    # (то же правило видимости current_rate, что и в list_members/update_member_role).
     from src.app.services import payroll as payroll_service
 
     current_rates = await payroll_service.get_current_rates(session, [member.id])

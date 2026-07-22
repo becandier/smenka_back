@@ -32,8 +32,8 @@ def _shift_to_response(
     """Сериализовать смену.
 
     Без `identity` (персональный контекст) additive-поля сотрудника остаются
-    `null`. В орг-контексте `identity` наполняет `user_name` / `user_email` /
-    `role` / `custom_role_name`. Аналогично `checklists_summary` заполняется
+    `null`. В орг-контексте `identity` наполняет `user_name` / `display_name` /
+    `user_email` / `role` / `custom_role_name`. Аналогично `checklists_summary` заполняется
     ТОЛЬКО в орг-эндпоинтах смен (checklist_reports); в персональном контексте
     остаётся `null`.
     """
@@ -69,6 +69,7 @@ def _shift_to_response(
             getattr(shift, "has_incomplete_required_checklists", False)
         ),
         user_name=identity.user_name if identity is not None else None,
+        display_name=identity.display_name if identity is not None else None,
         user_email=identity.user_email if identity is not None else None,
         role=identity.role if identity is not None else None,
         custom_role_name=identity.custom_role_name if identity is not None else None,

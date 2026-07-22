@@ -59,8 +59,13 @@ class MemberResponse(BaseModel):
     id: str = Field(description="UUID записи об участии")
     organization_id: str = Field(description="UUID организации")
     user_id: str = Field(description="UUID пользователя")
-    user_name: str = Field(description="Имя участника")
+    user_name: str = Field(description="Настоящее имя участника (User.name)")
     user_email: str = Field(description="Email участника")
+    display_name: str | None = Field(
+        default=None,
+        description="Имя участника в этой организации (задаётся owner/admin через "
+        "PATCH .../members/{member_user_id}); null — используется user_name",
+    )
     role: str = Field(description="Системная роль: admin или employee")
     custom_role: RoleResponse | None = Field(
         default=None,
@@ -96,3 +101,11 @@ class InviteCodeResponse(BaseModel):
 
 class MemberRoleUpdate(BaseModel):
     role: str = Field(description="Новая роль: admin или employee")
+
+
+class MemberDisplayNameUpdate(BaseModel):
+    display_name: str | None = Field(
+        description="Имя участника в этой организации; null или пустая строка — "
+        "сброс на настоящее имя (User.name). Нормализация и лимит 1–100 символов "
+        "— на сервере (400 INVALID_DISPLAY_NAME)",
+    )

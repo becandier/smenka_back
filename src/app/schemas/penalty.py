@@ -88,7 +88,11 @@ class PenaltyResponse(BaseModel):
     id: str = Field(description="UUID штрафа")
     member_id: str = Field(description="UUID участника (organization_members.id)")
     user_id: str = Field(description="UUID сотрудника")
-    user_name: str = Field(description="Имя сотрудника")
+    user_name: str = Field(description="Настоящее имя сотрудника (User.name)")
+    display_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника в этой организации; null — не задано (member_display_name)",
+    )
     template_id: str | None = Field(default=None, description="UUID шаблона или null")
     reason: str = Field(description="Причина (снимок)")
     amount_minor: int = Field(description="Сумма в копейках (снимок)")

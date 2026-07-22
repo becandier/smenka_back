@@ -5,8 +5,12 @@ from pydantic import BaseModel, Field
 
 class EmployeeStatsResponse(BaseModel):
     user_id: str = Field(description="UUID сотрудника")
-    user_name: str = Field(description="Имя сотрудника")
+    user_name: str = Field(description="Настоящее имя сотрудника (User.name)")
     user_email: str = Field(description="Email сотрудника")
+    display_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника в этой организации; null — не задано (member_display_name)",
+    )
     shift_count: int = Field(description="Количество смен")
     total_worked_seconds: int = Field(description="Суммарное отработанное время")
     average_shift_seconds: int = Field(description="Среднее время смены")
