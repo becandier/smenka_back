@@ -26,9 +26,11 @@ from src.app.services.file_storage import FileError
 from src.app.services.knowledge import KnowledgeError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
+from src.app.services.overtime import OvertimeError
 from src.app.services.payroll import PayrollError
 from src.app.services.penalty import PenaltyError
 from src.app.services.shift import ShiftError
+from src.app.services.work_schedule import WorkScheduleError
 
 settings = get_settings()
 
@@ -169,6 +171,18 @@ app = FastAPI(
                 "Ставки участников (история с effective_from) и расчёт "
                 "зарплаты: отчёт по организации и личный заработок."
             ),
+        },
+        {
+            "name": "work-schedules",
+            "description": (
+                "Графики работы (интервалы внутри суток, в т.ч. ночные), "
+                "назначение сотрудникам, эффективный набор при старте смены, "
+                "смена графика у смены администратором."
+            ),
+        },
+        {
+            "name": "overtime-requests",
+            "description": "Заявки на переработку: подача сотрудником, согласование owner/admin.",
         },
         {
             "name": "admin",
@@ -360,6 +374,22 @@ async def penalty_error_handler(request: Request, exc: PenaltyError) -> JSONResp
 
 @app.exception_handler(KnowledgeError)
 async def knowledge_error_handler(request: Request, exc: KnowledgeError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(WorkScheduleError)
+async def work_schedule_error_handler(request: Request, exc: WorkScheduleError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(OvertimeError)
+async def overtime_error_handler(request: Request, exc: OvertimeError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

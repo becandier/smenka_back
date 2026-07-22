@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,8 +22,25 @@ class ShiftStatus(enum.StrEnum):
     finished = "finished"
 
 
+class ShiftFinishReason(enum.StrEnum):
+    """Причина завершения смены. NULL у активных/паузных и у всех исторических
+    смен, заведённых до фичи work_schedules."""
+
+    manual = "manual"
+    auto_schedule = "auto_schedule"
+
+
 class Shift(Base):
     __tablename__ = "shifts"
+    __table_args__ = (
+        # Под выборку Celery-задачи авто-завершения (backend.md, R4): частичный —
+        # завершённые смены в предикат не попадают и никогда не сканируются.
+        Index(
+            "ix_shifts_scheduled_end_at",
+            "scheduled_end_at",
+            postgresql_where=text("status IN ('active', 'paused')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -68,6 +85,29 @@ class Shift(Base):
         Boolean,
         default=False,
         server_default="false",
+    )
+    # --- work_schedules: график и снимок планового окна ---
+    work_schedule_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_schedules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    schedule_name: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    scheduled_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    scheduled_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    finish_reason: Mapped[ShiftFinishReason | None] = mapped_column(
+        Enum(ShiftFinishReason),
+        nullable=True,
     )
 
     user: Mapped["User"] = relationship(back_populates="shifts")

@@ -33,9 +33,20 @@ from src.app.models.organization import MemberRole, Organization, OrganizationMe
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
-from src.app.models.shift import Pause, Shift
+from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
+from src.app.models.shift_overtime_request import (
+    OvertimeRequestStatus,
+    ShiftOvertimeRequest,
+)
 from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_location import WorkLocation
+from src.app.models.work_schedule import (
+    ScheduleOverrideType,
+    WorkSchedule,
+    WorkScheduleLocation,
+    WorkScheduleMemberOverride,
+    WorkScheduleRole,
+)
 
 __all__ = [
     "AuditAction",
@@ -70,14 +81,23 @@ __all__ = [
     "OrganizationRole",
     "OrganizationSettings",
     "OverrideType",
+    "OvertimeRequestStatus",
     "Pause",
     "Penalty",
     "PhotoRequirement",
     "PhotoSource",
     "RateType",
     "RefreshToken",
+    "ScheduleOverrideType",
     "Shift",
+    "ShiftFinishReason",
+    "ShiftOvertimeRequest",
+    "ShiftStatus",
     "User",
     "VerificationCode",
     "WorkLocation",
+    "WorkSchedule",
+    "WorkScheduleLocation",
+    "WorkScheduleMemberOverride",
+    "WorkScheduleRole",
 ]

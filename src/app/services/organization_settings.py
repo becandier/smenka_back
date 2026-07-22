@@ -8,6 +8,7 @@ from src.app.core.logging import get_logger
 from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
+from src.app.models.work_schedule import WorkSchedule
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import OrgError, get_organization
 
@@ -58,6 +59,18 @@ async def _count_locations(session: AsyncSession, org_id: uuid.UUID) -> int:
     return result.scalar_one()
 
 
+async def _count_active_schedules(session: AsyncSession, org_id: uuid.UUID) -> int:
+    result = await session.execute(
+        select(func.count())
+        .select_from(WorkSchedule)
+        .where(
+            WorkSchedule.organization_id == org_id,
+            WorkSchedule.is_archived.is_(False),
+        )
+    )
+    return result.scalar_one()
+
+
 async def update_settings(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -86,6 +99,17 @@ async def update_settings(
             409,
         )
 
+    if (
+        fields.get("require_schedule") is True
+        and not settings.require_schedule
+        and await _count_active_schedules(session, org_id) == 0
+    ):
+        raise OrgError(
+            "SCHEDULE_REQUIRED_NO_SCHEDULES",
+            "Нельзя требовать график: у организации нет ни одного неархивного графика",
+            409,
+        )
+
     for key, value in fields.items():
         setattr(settings, key, value)
     await session.flush()
@@ -104,3 +128,20 @@ async def get_settings_for_org(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def get_late_tolerance_minutes_map(
+    session: AsyncSession,
+    org_ids: set[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """org_id → `late_tolerance_minutes`, батч без N+1 (персональный `GET /shifts`,
+    где страница может смешивать смены разных организаций пользователя)."""
+    if not org_ids:
+        return {}
+    result = await session.execute(
+        select(
+            OrganizationSettings.organization_id,
+            OrganizationSettings.late_tolerance_minutes,
+        ).where(OrganizationSettings.organization_id.in_(org_ids))
+    )
+    return dict(result.tuples().all())

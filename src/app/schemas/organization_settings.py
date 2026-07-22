@@ -7,9 +7,6 @@ class OrganizationSettingsResponse(BaseModel):
     require_work_location: bool = Field(
         description="Требовать привязку точки к смене (влияет на старт при выключенной гео)"
     )
-    auto_finish_hours: int | None = Field(
-        description="Часы до автозавершения смены (null — отключено, по умолчанию 16)"
-    )
     max_pause_minutes: int | None = Field(
         default=None,
         description="Максимальная длительность паузы в минутах (null — без ограничений)",
@@ -17,6 +14,20 @@ class OrganizationSettingsResponse(BaseModel):
     max_pauses_per_shift: int | None = Field(
         default=None,
         description="Максимальное количество пауз за смену (null — без ограничений)",
+    )
+    auto_finish_by_schedule: bool = Field(
+        description="Завершать смену автоматически в плановое время окончания графика "
+        "(work_schedules)"
+    )
+    require_schedule: bool = Field(
+        description="Требовать выбор графика при старте смены (work_schedules)"
+    )
+    late_tolerance_minutes: int = Field(
+        description="Допуск по опозданию в минутах (0–120); опоздание в пределах "
+        "допуска не показывается"
+    )
+    overtime_request_days: int = Field(
+        description="Срок подачи заявки на переработку в днях (1–90) после завершения смены"
     )
 
     model_config = {"from_attributes": True}
@@ -30,12 +41,24 @@ class OrganizationSettingsUpdate(BaseModel):
         default=None,
         description="Требовать привязку точки к смене. Нельзя включить без рабочих точек",
     )
-    auto_finish_hours: int | None = Field(
-        default=None, ge=1, le=48, description="Часы до автозавершения (1–48, null — отключить)"
-    )
     max_pause_minutes: int | None = Field(
         default=None, ge=1, le=480, description="Макс. длительность паузы в минутах (1–480)"
     )
     max_pauses_per_shift: int | None = Field(
         default=None, ge=1, le=50, description="Макс. количество пауз за смену (1–50)"
+    )
+    auto_finish_by_schedule: bool | None = Field(
+        default=None,
+        description="Завершать смену автоматически в плановое время окончания графика",
+    )
+    require_schedule: bool | None = Field(
+        default=None,
+        description="Требовать выбор графика при старте смены. Нельзя включить без "
+        "неархивных графиков организации",
+    )
+    late_tolerance_minutes: int | None = Field(
+        default=None, ge=0, le=120, description="Допуск по опозданию в минутах (0–120)"
+    )
+    overtime_request_days: int | None = Field(
+        default=None, ge=1, le=90, description="Срок подачи заявки на переработку в днях (1–90)"
     )

@@ -3,6 +3,7 @@
 Покрывают матрицу гео×require_work_location при старте смены, валидацию настройки,
 сериализацию точки в ShiftResponse и обратную совместимость.
 """
+
 import uuid
 from typing import Any
 
@@ -81,7 +82,6 @@ async def _make_org(
             organization_id=org.id,
             geo_check_enabled=geo,
             require_work_location=require,
-            auto_finish_hours=16,
         )
     )
 
@@ -375,9 +375,7 @@ class TestSettingsRequireWorkLocation:
         org, _ = await _make_org(
             db_session, owner, employee_user, geo=False, require=False, locations=[]
         )
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/settings", headers=owner_headers
-        )
+        resp = await client.get(f"/api/v1/organizations/{org.id}/settings", headers=owner_headers)
         assert resp.status_code == 200
         assert resp.json()["data"]["require_work_location"] is False
 
@@ -514,7 +512,6 @@ class TestOrganizationResponseExposesRequireWorkLocation:
                 organization_id=org.id,
                 geo_check_enabled=False,
                 require_work_location=True,
-                auto_finish_hours=16,
             )
         )
         db_session.add(
@@ -542,9 +539,7 @@ class TestOrganizationResponseExposesRequireWorkLocation:
         )
         headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
 
-        resp = await client.post(
-            f"/api/v1/organizations/join/{org.invite_code}", headers=headers
-        )
+        resp = await client.post(f"/api/v1/organizations/join/{org.invite_code}", headers=headers)
         assert resp.status_code in (200, 201)
         assert resp.json()["data"]["require_work_location"] is True
 

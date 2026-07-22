@@ -36,6 +36,7 @@ from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.shift import (
     calculate_worked_seconds,
+    compute_late_seconds,
     ensure_utc,
     validate_date_range,
 )
@@ -296,38 +297,85 @@ def _rate_for_moment(
 def _calc_earnings(
     shifts: list[Shift],
     rates_asc: list[OrganizationMemberRate],
+    *,
+    overtime_minutes_by_shift: dict[uuid.UUID, int] | None = None,
+    late_tolerance_minutes: int = 0,
 ) -> dict[str, Any]:
     """Агрегаты по завершённым сменам: каждая смена — по ставке на её started_at.
 
     Сумма накапливается точным Decimal; half-up до целой копейки — один раз
-    на итог. Смены без действующей ставки в gross не входят (unpaid_*).
+    на итог (и для факта, и для плана — round-once применяется одинаково к
+    обеим суммам). Смены без действующей ставки в gross/planned не входят
+    (unpaid_*). `overtime_minutes_by_shift` — согласованная переработка
+    (backend.md, R6/R8): добавляется к оплачиваемому времени `hourly`-ставки,
+    `per_shift` игнорирует (план = факт, дельта 0). `late_tolerance_minutes` —
+    допуск организации для подсчёта опозданий (R5/R8).
     """
+    overtime_map = overtime_minutes_by_shift or {}
+
     amount = Decimal(0)
+    planned_amount = Decimal(0)
     worked_seconds = 0
+    overtime_seconds = 0
+    planned_seconds = 0
     unpaid_seconds = 0
     unpaid_shifts_count = 0
+    late_count = 0
+    late_seconds_total = 0
 
     for shift in shifts:
         seconds = calculate_worked_seconds(shift)
         worked_seconds += seconds
+
+        shift_overtime_seconds = overtime_map.get(shift.id, 0) * 60
+        overtime_seconds += shift_overtime_seconds
+        paid_seconds = seconds + shift_overtime_seconds
+
+        # План: у смены есть график → длительность окна; иначе план = факт
+        # (backend.md, R8 — иначе дельта врала бы на весь объём таких смен).
+        if shift.scheduled_start_at is not None and shift.scheduled_end_at is not None:
+            shift_planned_seconds = int(
+                (shift.scheduled_end_at - shift.scheduled_start_at).total_seconds()
+            )
+        else:
+            shift_planned_seconds = seconds
+        planned_seconds += shift_planned_seconds
+
+        late = compute_late_seconds(shift, late_tolerance_minutes)
+        if late is not None and late > 0:
+            late_count += 1
+            late_seconds_total += late
+
         rate = _rate_for_moment(rates_asc, shift.started_at)
         if rate is None:
             unpaid_seconds += seconds
             unpaid_shifts_count += 1
             continue
+
         if rate.rate_type == RateType.hourly:
-            amount += Decimal(seconds) * rate.rate_amount_minor / SECONDS_PER_HOUR
-        else:  # per_shift
+            amount += Decimal(paid_seconds) * rate.rate_amount_minor / SECONDS_PER_HOUR
+            planned_amount += (
+                Decimal(shift_planned_seconds) * rate.rate_amount_minor / (SECONDS_PER_HOUR)
+            )
+        else:  # per_shift: переработка не влияет на деньги, план = факт (дельта 0)
             amount += Decimal(rate.rate_amount_minor)
+            planned_amount += Decimal(rate.rate_amount_minor)
 
     gross = int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    planned = int(planned_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return {
         "worked_seconds": worked_seconds,
+        "overtime_seconds": overtime_seconds,
         "shifts_count": len(shifts),
         "gross_amount_minor": gross,
         "unpaid_seconds": unpaid_seconds,
         "unpaid_shifts_count": unpaid_shifts_count,
         "has_missing_rate": unpaid_shifts_count > 0,
+        "planned_seconds": planned_seconds,
+        "planned_amount_minor": planned,
+        "delta_amount_minor": gross - planned,
+        "late_count": late_count,
+        "late_seconds_total": late_seconds_total,
     }
 
 
@@ -470,17 +518,37 @@ def _bucket_start(day: date, granularity: str) -> date:
     return day  # granularity == day
 
 
+_BREAKDOWN_SUM_FIELDS = (
+    "worked_seconds",
+    "overtime_seconds",
+    "shifts_count",
+    "gross_amount_minor",
+    "unpaid_seconds",
+    "unpaid_shifts_count",
+    "planned_seconds",
+    "planned_amount_minor",
+    "late_count",
+    "late_seconds_total",
+)
+
+
 def _build_breakdown(
     user_shifts: list[Shift],
     rates_asc: list[OrganizationMemberRate],
     zone: ZoneInfo,
     granularity: str,
+    *,
+    overtime_minutes_by_shift: dict[uuid.UUID, int] | None = None,
+    late_tolerance_minutes: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Суточная разбивка сотрудника: округление денег — атомарно по дню.
 
     Каждая смена попадает в день по `started_at` в таймзоне `zone`. По дню сумма
-    округляется half-up один раз; корзины week/month и итог сотрудника — суммы
-    уже округлённых дневных значений (день → корзина → сотрудник → всего).
+    округляется half-up один раз (факт И план — тем же правилом); корзины
+    week/month и итог сотрудника — суммы уже округлённых дневных значений
+    (день → корзина → сотрудник → всего). `delta_amount_minor` считается ПОСЛЕ
+    суммирования (простое вычитание уже округлённых целых, доп. округление не
+    нужно) — и на уровне корзины, и на уровне агрегата.
     """
     shifts_by_day: dict[date, list[Shift]] = defaultdict(list)
     for shift in user_shifts:
@@ -488,45 +556,37 @@ def _build_breakdown(
 
     buckets: dict[date, dict[str, Any]] = {}
     for day, day_shifts in shifts_by_day.items():
-        daily = _calc_earnings(day_shifts, rates_asc)
+        daily = _calc_earnings(
+            day_shifts,
+            rates_asc,
+            overtime_minutes_by_shift=overtime_minutes_by_shift,
+            late_tolerance_minutes=late_tolerance_minutes,
+        )
         start = _bucket_start(day, granularity)
         acc = buckets.setdefault(
             start,
-            {
-                "worked_seconds": 0,
-                "shifts_count": 0,
-                "gross_amount_minor": 0,
-                "unpaid_seconds": 0,
-                "unpaid_shifts_count": 0,
-                "has_missing_rate": False,
-            },
+            dict.fromkeys(_BREAKDOWN_SUM_FIELDS, 0) | {"has_missing_rate": False},
         )
-        acc["worked_seconds"] += daily["worked_seconds"]
-        acc["shifts_count"] += daily["shifts_count"]
-        acc["gross_amount_minor"] += daily["gross_amount_minor"]
-        acc["unpaid_seconds"] += daily["unpaid_seconds"]
-        acc["unpaid_shifts_count"] += daily["unpaid_shifts_count"]
+        for field in _BREAKDOWN_SUM_FIELDS:
+            acc[field] += daily[field]
         acc["has_missing_rate"] = acc["has_missing_rate"] or daily["has_missing_rate"]
 
     breakdown = [
         {
             "bucket_start": start.isoformat(),
-            "worked_seconds": acc["worked_seconds"],
-            "shifts_count": acc["shifts_count"],
-            "gross_amount_minor": acc["gross_amount_minor"],
-            "unpaid_seconds": acc["unpaid_seconds"],
+            **{field: acc[field] for field in _BREAKDOWN_SUM_FIELDS},
+            "delta_amount_minor": acc["gross_amount_minor"] - acc["planned_amount_minor"],
             "has_missing_rate": acc["has_missing_rate"],
         }
         for start, acc in sorted(buckets.items())
     ]
     aggregate = {
-        "worked_seconds": sum(acc["worked_seconds"] for acc in buckets.values()),
-        "shifts_count": sum(acc["shifts_count"] for acc in buckets.values()),
-        "gross_amount_minor": sum(acc["gross_amount_minor"] for acc in buckets.values()),
-        "unpaid_seconds": sum(acc["unpaid_seconds"] for acc in buckets.values()),
-        "unpaid_shifts_count": sum(acc["unpaid_shifts_count"] for acc in buckets.values()),
-        "has_missing_rate": any(acc["has_missing_rate"] for acc in buckets.values()),
+        field: sum(acc[field] for acc in buckets.values()) for field in _BREAKDOWN_SUM_FIELDS
     }
+    aggregate["delta_amount_minor"] = (
+        aggregate["gross_amount_minor"] - aggregate["planned_amount_minor"]
+    )
+    aggregate["has_missing_rate"] = any(acc["has_missing_rate"] for acc in buckets.values())
     return breakdown, aggregate
 
 
@@ -588,6 +648,14 @@ async def get_org_payroll(
 
     shift_user_ids = set(shifts_by_user)
 
+    # Согласованная переработка (R6/R8) и допуск по опозданию организации (R5/R8).
+    from src.app.services import overtime as overtime_service
+
+    overtime_minutes_by_shift = await overtime_service.get_approved_overtime_minutes_by_shift(
+        session, [s.id for s in shifts]
+    )
+    late_tolerance_minutes = org.settings.late_tolerance_minutes if org.settings is not None else 0
+
     # Штрафы периода: атрибутируются сотруднику (member → user), вычитаются из net.
     # Сотрудник только со штрафами (без завершённых смен) тоже попадает в items —
     # иначе штраф «потеряется» (см. backend.md).
@@ -636,10 +704,25 @@ async def get_org_payroll(
             "display_name": display_name_by_user.get(uid),
         }
         if detailed:
-            breakdown, aggregate = _build_breakdown(user_shifts, rates_asc, zone, granularity)
+            breakdown, aggregate = _build_breakdown(
+                user_shifts,
+                rates_asc,
+                zone,
+                granularity,
+                overtime_minutes_by_shift=overtime_minutes_by_shift,
+                late_tolerance_minutes=late_tolerance_minutes,
+            )
             entry = {**base, **aggregate, "breakdown": breakdown}
         else:
-            entry = {**base, **_calc_earnings(user_shifts, rates_asc)}
+            entry = {
+                **base,
+                **_calc_earnings(
+                    user_shifts,
+                    rates_asc,
+                    overtime_minutes_by_shift=overtime_minutes_by_shift,
+                    late_tolerance_minutes=late_tolerance_minutes,
+                ),
+            }
         penalty_amount, penalties_count = penalties_by_user.get(uid, (0, 0))
         entry["penalty_amount_minor"] = penalty_amount
         entry["penalties_count"] = penalties_count
@@ -649,20 +732,22 @@ async def get_org_payroll(
     if only_missing_rate:
         # Сотрудник только со штрафами (penalties_count>0) остаётся в выборке,
         # иначе его штраф «потеряется» из items и totals (см. backend.md).
-        items = [
-            item
-            for item in items
-            if item["has_missing_rate"] or item["penalties_count"] > 0
-        ]
+        items = [item for item in items if item["has_missing_rate"] or item["penalties_count"] > 0]
     items.sort(key=lambda item: (item["user_name"], item["user_id"]))
 
     totals = {
         "worked_seconds": sum(i["worked_seconds"] for i in items),
+        "overtime_seconds": sum(i["overtime_seconds"] for i in items),
         "shifts_count": sum(i["shifts_count"] for i in items),
         "gross_amount_minor": sum(i["gross_amount_minor"] for i in items),
         "penalty_amount_minor": sum(i["penalty_amount_minor"] for i in items),
         "penalties_count": sum(i["penalties_count"] for i in items),
         "net_amount_minor": sum(i["net_amount_minor"] for i in items),
+        "planned_seconds": sum(i["planned_seconds"] for i in items),
+        "planned_amount_minor": sum(i["planned_amount_minor"] for i in items),
+        "delta_amount_minor": sum(i["delta_amount_minor"] for i in items),
+        "late_count": sum(i["late_count"] for i in items),
+        "late_seconds_total": sum(i["late_seconds_total"] for i in items),
     }
     report: dict[str, Any] = {
         "period": {"date_from": norm_from, "date_to": norm_to},
@@ -689,7 +774,7 @@ async def get_my_earnings(
     Доступ только реальным участникам организации: owner (не member)
     и посторонние получают 403 FORBIDDEN.
     """
-    await org_service.get_organization(session, org_id)
+    org = await org_service.get_organization(session, org_id)
 
     member_result = await session.execute(
         select(OrganizationMember).where(
@@ -719,7 +804,19 @@ async def get_my_earnings(
     rates_by_member = await _load_rates_asc(session, [member.id])
     rates_asc = rates_by_member.get(member.id, [])
 
-    earnings = _calc_earnings(shifts, rates_asc)
+    from src.app.services import overtime as overtime_service
+
+    overtime_minutes_by_shift = await overtime_service.get_approved_overtime_minutes_by_shift(
+        session, [s.id for s in shifts]
+    )
+    late_tolerance_minutes = org.settings.late_tolerance_minutes if org.settings is not None else 0
+
+    earnings = _calc_earnings(
+        shifts,
+        rates_asc,
+        overtime_minutes_by_shift=overtime_minutes_by_shift,
+        late_tolerance_minutes=late_tolerance_minutes,
+    )
     current_rate = _rate_for_moment(rates_asc, datetime.now(UTC))
 
     # Для self штрафы учитываются всегда (флага include_penalties здесь нет).
@@ -733,6 +830,7 @@ async def get_my_earnings(
         "period": {"date_from": norm_from, "date_to": norm_to},
         "currency": PAYROLL_CURRENCY,
         "worked_seconds": earnings["worked_seconds"],
+        "overtime_seconds": earnings["overtime_seconds"],
         "shifts_count": earnings["shifts_count"],
         "gross_amount_minor": earnings["gross_amount_minor"],
         "penalty_amount_minor": penalty_amount,
@@ -740,6 +838,11 @@ async def get_my_earnings(
         "net_amount_minor": earnings["gross_amount_minor"] - penalty_amount,
         "has_missing_rate": earnings["has_missing_rate"],
         "current_rate": current_rate,
+        "planned_seconds": earnings["planned_seconds"],
+        "planned_amount_minor": earnings["planned_amount_minor"],
+        "delta_amount_minor": earnings["delta_amount_minor"],
+        "late_count": earnings["late_count"],
+        "late_seconds_total": earnings["late_seconds_total"],
     }
 
 
@@ -790,6 +893,12 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             "К выплате, ₽",
             "Без ставки (смен)",
             "Без ставки (часов)",
+            "Переработка, ч",
+            "По графику, ч",
+            "По графику, ₽",
+            "Разница, ₽",
+            "Опозданий",
+            "Опоздания, мин",
         ]
     )
     for item in report["items"]:
@@ -803,6 +912,12 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
                 _money(item["net_amount_minor"]),
                 item["unpaid_shifts_count"],
                 _hours(item["unpaid_seconds"]),
+                _hours(item["overtime_seconds"]),
+                _hours(item["planned_seconds"]),
+                _money(item["planned_amount_minor"]),
+                _money(item["delta_amount_minor"]),
+                item["late_count"],
+                round(item["late_seconds_total"] / 60, 1),
             ]
         )
     totals = report["totals"]
@@ -816,6 +931,12 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             _money(totals["net_amount_minor"]),
             "",
             "",
+            _hours(totals["overtime_seconds"]),
+            _hours(totals["planned_seconds"]),
+            _money(totals["planned_amount_minor"]),
+            _money(totals["delta_amount_minor"]),
+            totals["late_count"],
+            round(totals["late_seconds_total"] / 60, 1),
         ]
     )
 
@@ -832,6 +953,9 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             "Штраф, ₽",
             "К выплате, ₽",
             "Без ставки (часов)",
+            "По графику, ч",
+            "По графику, ₽",
+            "Разница, ₽",
         ]
     )
     for item in report["items"]:
@@ -846,6 +970,9 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
                     _money(0),
                     _money(bucket["gross_amount_minor"]),
                     _hours(bucket["unpaid_seconds"]),
+                    _hours(bucket["planned_seconds"]),
+                    _money(bucket["planned_amount_minor"]),
+                    _money(bucket["delta_amount_minor"]),
                 ]
             )
 

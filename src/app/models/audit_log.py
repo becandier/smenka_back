@@ -26,7 +26,10 @@ class AuditAction(enum.StrEnum):
     location_delete = "location.delete"
     shift_finish = "shift.finish"
     shift_auto_finish = "shift.auto_finish"
+    shift_schedule_change = "shift.schedule_change"
     pause_auto_finish = "pause.auto_finish"
+    overtime_request = "overtime.request"
+    overtime_review = "overtime.review"
 
 
 class AuditResource(enum.StrEnum):
@@ -38,6 +41,7 @@ class AuditResource(enum.StrEnum):
     location = "location"
     shift = "shift"
     pause = "pause"
+    overtime = "overtime"
 
 
 class AuditLog(Base):

@@ -15,6 +15,7 @@ from src.app.core.security import hash_password
 from src.app.models.member_rate import OrganizationMemberRate, RateType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.shift import Pause, Shift, ShiftStatus
+from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
 
@@ -675,14 +676,21 @@ class TestPayrollReport:
         assert item["unpaid_seconds"] == 0
         assert item["unpaid_shifts_count"] == 0
         assert item["has_missing_rate"] is False
-        assert data["totals"] == {
-            "worked_seconds": 10800,
-            "shifts_count": 2,
-            "gross_amount_minor": 54000,
-            "penalty_amount_minor": 0,
-            "penalties_count": 0,
-            "net_amount_minor": 54000,
-        }
+        # Смены без графика: план = факт (work_schedules, R8) -> delta = 0.
+        assert item["planned_seconds"] == 10800
+        assert item["planned_amount_minor"] == 54000
+        assert item["delta_amount_minor"] == 0
+        totals = data["totals"]
+        assert totals["worked_seconds"] == 10800
+        assert totals["shifts_count"] == 2
+        assert totals["gross_amount_minor"] == 54000
+        assert totals["penalty_amount_minor"] == 0
+        assert totals["penalties_count"] == 0
+        assert totals["net_amount_minor"] == 54000
+        assert totals["planned_seconds"] == 10800
+        assert totals["planned_amount_minor"] == 54000
+        assert totals["delta_amount_minor"] == 0
+        assert totals["late_count"] == 0
 
     async def test_rate_change_applies_by_shift_start(
         self,
@@ -1047,6 +1055,256 @@ class TestPayrollReport:
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "INVALID_DATE_RANGE"
+
+
+class TestPayrollWorkSchedules:
+    """R8 (work_schedules): план против факта, переработка, опоздания в payroll."""
+
+    async def test_planned_from_schedule_window_differs_from_actual(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        """180 ₽/час, план 9ч (09:00-18:00), факт — 8ч (пришёл на час раньше, ушёл раньше)."""
+        await _make_rate(db_session, employee_member.id, 18000)
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 1, 17, 0, tzinfo=UTC),  # 8ч факт
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),  # 9ч план
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["worked_seconds"] == 8 * 3600
+        assert item["gross_amount_minor"] == 8 * 18000
+        assert item["planned_seconds"] == 9 * 3600
+        assert item["planned_amount_minor"] == 9 * 18000
+        assert item["delta_amount_minor"] == 8 * 18000 - 9 * 18000
+        assert item["delta_amount_minor"] < 0  # недозаработал
+
+    async def test_shift_without_schedule_plan_equals_fact(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        await _make_finished_shift(
+            db_session,
+            verified_user.id,
+            org.id,
+            datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
+            datetime(2026, 6, 1, 13, 0, tzinfo=UTC),
+        )
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["planned_seconds"] == item["worked_seconds"]
+        assert item["planned_amount_minor"] == item["gross_amount_minor"]
+        assert item["delta_amount_minor"] == 0
+
+    async def test_shift_without_rate_excluded_from_planned_amount(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        """Нет действующей ставки -> gross=0 и planned_amount_minor=0, delta=0."""
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 1, 17, 0, tzinfo=UTC),
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["has_missing_rate"] is True
+        assert item["gross_amount_minor"] == 0
+        assert item["planned_amount_minor"] == 0
+        assert item["delta_amount_minor"] == 0
+        assert item["planned_seconds"] == 9 * 3600  # время само по себе не зависит от ставки
+
+    async def test_per_shift_rate_plan_equals_fact_regardless_of_window(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 300000, rate_type=RateType.per_shift)
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 1, 17, 0, tzinfo=UTC),  # 8ч факт
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),  # 9ч план
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["gross_amount_minor"] == 300000
+        assert item["planned_amount_minor"] == 300000
+        assert item["delta_amount_minor"] == 0
+
+    async def test_approved_overtime_increases_gross_for_hourly(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)  # 180 ₽/час
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),  # 9ч факт == план
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        overtime = ShiftOvertimeRequest(
+            shift_id=shift.id,
+            minutes=30,
+            comment="Задержался",
+            status=OvertimeRequestStatus.approved,
+        )
+        db_session.add(overtime)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["overtime_seconds"] == 30 * 60
+        # 9ч факт + 30 мин переработки, оплачено по часовой ставке.
+        assert item["gross_amount_minor"] == round((9 * 3600 + 30 * 60) * 18000 / 3600)
+        assert item["planned_amount_minor"] == 9 * 18000  # план не включает переработку
+        assert item["delta_amount_minor"] > 0  # переработал -> заработал больше плана
+
+    async def test_pending_overtime_does_not_affect_gross(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        await _make_rate(db_session, employee_member.id, 18000)
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            finished_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        db_session.add(
+            ShiftOvertimeRequest(
+                shift_id=shift.id,
+                minutes=30,
+                comment="На согласовании",
+                status=OvertimeRequestStatus.pending,
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["overtime_seconds"] == 0
+        assert item["gross_amount_minor"] == 9 * 18000
+
+    async def test_late_count_and_seconds_with_tolerance(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, Any],
+        db_session: AsyncSession,
+        org: Organization,
+        verified_user: User,
+        employee_member: OrganizationMember,
+    ) -> None:
+        from src.app.models.organization_settings import OrganizationSettings
+
+        db_session.add(OrganizationSettings(organization_id=org.id, late_tolerance_minutes=10))
+        await _make_rate(db_session, employee_member.id, 18000)
+        shift = Shift(
+            user_id=verified_user.id,
+            organization_id=org.id,
+            started_at=datetime(2026, 6, 1, 9, 20, tzinfo=UTC),  # опоздал на 20 мин
+            finished_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+            status=ShiftStatus.finished,
+            scheduled_start_at=datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
+            scheduled_end_at=datetime(2026, 6, 1, 18, 0, tzinfo=UTC),
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{org.id}/payroll",
+            headers=owner_headers,
+            params={"date_from": "2026-06-01T00:00:00Z", "date_to": "2026-06-30T23:59:59Z"},
+        )
+        item = resp.json()["data"]["items"][0]
+        assert item["late_count"] == 1
+        # 20 мин опоздания - 10 мин допуска = 10 мин = 600 сек
+        assert item["late_seconds_total"] == 600
 
 
 class TestMyEarnings:

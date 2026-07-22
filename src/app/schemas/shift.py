@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from src.app.schemas.overtime import OvertimeInfo
+
 
 class PauseResponse(BaseModel):
     id: str = Field(description="UUID паузы")
@@ -92,6 +94,33 @@ class ShiftResponse(BaseModel):
         "(GET /organizations/{org_id}/shifts и .../shifts/{shift_id}); в "
         "персональных эндпоинтах — всегда null (checklist_reports)",
     )
+    work_schedule_id: str | None = Field(
+        default=None,
+        description="UUID графика работы (null — без графика / персональная смена)",
+    )
+    schedule_name: str | None = Field(
+        default=None,
+        description="Снимок имени графика на момент старта смены; null — без графика",
+    )
+    scheduled_start_at: datetime | None = Field(
+        default=None, description="Снимок планового начала окна (UTC); null — без графика"
+    )
+    scheduled_end_at: datetime | None = Field(
+        default=None, description="Снимок планового конца окна (UTC); null — без графика"
+    )
+    late_seconds: int | None = Field(
+        default=None,
+        description="Опоздание в секундах относительно scheduled_start_at, за вычетом "
+        "допуска организации; null — без графика (work_schedules, R5)",
+    )
+    finish_reason: str | None = Field(
+        default=None,
+        description="manual | auto_schedule | null (активные и исторические смены до "
+        "фичи work_schedules)",
+    )
+    overtime: OvertimeInfo | None = Field(
+        default=None, description="Последняя заявка на переработку по смене; null — заявки нет"
+    )
 
     model_config = {"from_attributes": True}
 
@@ -144,4 +173,11 @@ class ShiftStartRequest(BaseModel):
         description="UUID точки смены. При гео-проверке игнорируется (точку определяет "
         "сервер). При выключенной гео обязателен, если у организации включён "
         "`require_work_location`; иначе опционален",
+    )
+    work_schedule_id: str | None = Field(
+        default=None,
+        description="UUID графика работы. Игнорируется для персональных смен. Если "
+        "передан — обязан быть в эффективном наборе сотрудника (иначе "
+        "SCHEDULE_NOT_AVAILABLE). Если не передан — сервер подставляет автоматически "
+        "(1 доступный) или требует выбора (require_schedule=true и >1/0 доступных)",
     )

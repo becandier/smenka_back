@@ -34,6 +34,7 @@ from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
+from src.app.services import overtime as overtime_service
 from src.app.services import shift as shift_service
 from src.app.utils.request import get_client_ip
 
@@ -67,6 +68,7 @@ def _org_to_response(
         is_deleted=org.is_deleted,
         geo_check_enabled=geo_check,
         require_work_location=require_work_location,
+        timezone=org.timezone,
         created_at=org.created_at,
         my_role=my_role,
         my_custom_role=custom_role_payload,
@@ -199,7 +201,14 @@ async def update_organization(
     session: SessionDep,
     request: Request,
 ) -> ApiResponse:
-    org = await org_service.update_organization(session, org_id, user.id, body.name)
+    org = await org_service.update_organization(
+        session, org_id, user.id, name=body.name, timezone=body.timezone
+    )
+    summary: dict[str, Any] = {}
+    if body.name is not None:
+        summary["name"] = body.name
+    if body.timezone is not None:
+        summary["timezone"] = body.timezone
     await audit_service.record(
         session,
         action=AuditAction.org_update,
@@ -207,7 +216,7 @@ async def update_organization(
         organization_id=org_id,
         actor_user_id=user.id,
         resource_id=org_id,
-        summary={"name": body.name},
+        summary=summary,
         ip_address=get_client_ip(request),
     )
     await session.commit()
@@ -486,9 +495,12 @@ def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
         organization_id=str(s.organization_id),
         geo_check_enabled=s.geo_check_enabled,
         require_work_location=s.require_work_location,
-        auto_finish_hours=s.auto_finish_hours,
         max_pause_minutes=s.max_pause_minutes,
         max_pauses_per_shift=s.max_pauses_per_shift,
+        auto_finish_by_schedule=s.auto_finish_by_schedule,
+        require_schedule=s.require_schedule,
+        late_tolerance_minutes=s.late_tolerance_minutes,
+        overtime_request_days=s.overtime_request_days,
     ).model_dump()
 
 
@@ -566,6 +578,13 @@ async def list_org_shifts(
         description="Фильтр по чек-листам: none, all_completed, has_incomplete, "
         "required_incomplete (checklist_reports)",
     ),
+    only_late: bool | None = Query(
+        None, description="Только смены с опозданием (с учётом допуска, work_schedules)"
+    ),
+    work_schedule_id: uuid.UUID | None = Query(None, description="Фильтр по графику работы"),
+    has_overtime: str | None = Query(
+        None, description="Фильтр по заявке на переработку: pending, approved, any"
+    ),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
@@ -593,6 +612,10 @@ async def list_org_shifts(
 
     shift_service.validate_date_range(date_from, date_to)
     shift_service.validate_checklists_filter(checklists)
+    shift_service.validate_has_overtime_filter(has_overtime)
+
+    org_settings = org.settings
+    late_tolerance = org_settings.late_tolerance_minutes if org_settings is not None else 0
 
     shifts, total = await shift_service.get_org_shifts(
         session,
@@ -602,6 +625,10 @@ async def list_org_shifts(
         date_from=date_from,
         date_to=date_to,
         checklists=checklists,
+        only_late=only_late,
+        late_tolerance_minutes=late_tolerance,
+        work_schedule_id=work_schedule_id,
+        has_overtime=has_overtime,
         limit=limit,
         offset=offset,
         sort=sort,
@@ -611,6 +638,9 @@ async def list_org_shifts(
     summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
         session, [s.id for s in shifts]
     )
+    overtime_map = await overtime_service.get_latest_overtime_for_shifts(
+        session, [s.id for s in shifts]
+    )
     return ApiResponse.success(
         ShiftListResponse(
             items=[
@@ -618,6 +648,8 @@ async def list_org_shifts(
                     s,
                     identities.get(s.user_id),
                     summaries.get(s.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
+                    late_tolerance_minutes=late_tolerance,
+                    overtime=overtime_map.get(s.id),
                 )
                 for s in shifts
             ],
@@ -654,11 +686,15 @@ async def get_org_shift(
     summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
         session, [shift.id]
     )
+    overtime_map = await overtime_service.get_latest_overtime_for_shifts(session, [shift.id])
+    late_tolerance = org.settings.late_tolerance_minutes if org.settings is not None else 0
     return ApiResponse.success(
         _shift_to_response(
             shift,
             identities.get(shift.user_id),
             summaries.get(shift.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
+            late_tolerance_minutes=late_tolerance,
+            overtime=overtime_map.get(shift.id),
         )
     )
 

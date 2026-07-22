@@ -46,6 +46,11 @@ class Organization(Base):
         unique=True,
         default=_generate_invite_code,
     )
+    timezone: Mapped[str] = mapped_column(
+        String(64),
+        default="Europe/Moscow",
+        server_default="Europe/Moscow",
+    )
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

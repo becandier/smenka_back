@@ -31,8 +31,28 @@ class OrganizationSettings(Base):
         default=False,
         server_default="false",
     )
-    auto_finish_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_pause_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_pauses_per_shift: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # --- work_schedules ---
+    auto_finish_by_schedule: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+    )
+    require_schedule: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
+    late_tolerance_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
+    overtime_request_days: Mapped[int] = mapped_column(
+        Integer,
+        default=7,
+        server_default="7",
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="settings")

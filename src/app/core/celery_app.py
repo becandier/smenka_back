@@ -39,7 +39,10 @@ celery_app.conf.update(
     beat_schedule={
         "auto-finish-stale-shifts": {
             "task": "auto_finish_stale_shifts",
-            "schedule": 300.0,
+            # 60с (не 300) — авто-завершение по плановому концу графика (work_schedules,
+            # R4): задержка закрытия смены до минуты вместо пяти; запрос лёгкий
+            # (частичный индекс по scheduled_end_at, только active/paused).
+            "schedule": 60.0,
         },
         "auto-finish-stale-pauses": {
             "task": "auto_finish_stale_pauses",

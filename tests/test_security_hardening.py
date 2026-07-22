@@ -19,6 +19,8 @@ from src.app.core.database import get_session
 from src.app.core.security import hash_password
 from src.app.main import app
 from src.app.models.audit_log import AuditLog
+from src.app.models.organization import Organization
+from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User, VerificationCode
 from src.app.tasks.shifts import auto_finish_stale_shifts
@@ -293,7 +295,9 @@ class TestAuditLog:
 
 class TestCeleryAudit:
     async def test_auto_finish_writes_system_audit_entry(self, db_session: AsyncSession):
-        """Авто-завершение смены Celery пишет аудит с actor_user_id = null."""
+        """Авто-завершение org-смены по графику (work_schedules, R4) пишет аудит
+        с actor_user_id = null. Персональные смены больше не авто-завершаются —
+        сценарий проверяется на org-смене с просроченным scheduled_end_at."""
         user = User(
             id=uuid.uuid4(),
             email=f"celery-{uuid.uuid4().hex[:8]}@example.com",
@@ -304,13 +308,22 @@ class TestCeleryAudit:
         db_session.add(user)
         await db_session.flush()
 
+        org = Organization(id=uuid.uuid4(), name="Celery Org", owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+        db_session.add(OrganizationSettings(id=uuid.uuid4(), organization_id=org.id))
+        await db_session.flush()
+
         shift_id = uuid.uuid4()
+        scheduled_end = datetime.now(UTC) - timedelta(hours=1)
         shift = Shift(
             id=shift_id,
             user_id=user.id,
-            organization_id=None,
+            organization_id=org.id,
             started_at=datetime.now(UTC) - timedelta(hours=17),
             status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=17),
+            scheduled_end_at=scheduled_end,
         )
         db_session.add(shift)
         await db_session.commit()

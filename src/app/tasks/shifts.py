@@ -6,17 +6,15 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from src.app.core.celery_app import celery_app
-from src.app.core.config import get_settings
 from src.app.core.database import get_sync_session
 from src.app.core.logging import get_logger
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
 from src.app.models.organization_settings import OrganizationSettings
-from src.app.models.shift import Shift, ShiftStatus
+from src.app.models.shift import Shift, ShiftFinishReason, ShiftStatus
 from src.app.services import audit as audit_service
 
 logger = get_logger(__name__)
-settings = get_settings()
 
 
 def _finalize_shift_checklists_sync(session: Session, shift_id: uuid.UUID) -> bool:
@@ -45,61 +43,52 @@ def _finalize_shift_checklists_sync(session: Session, shift_id: uuid.UUID) -> bo
 
 @celery_app.task(name="auto_finish_stale_shifts")
 def auto_finish_stale_shifts() -> None:
-    """Auto-finish shifts that exceeded timeout."""
+    """Авто-завершение org-смен ровно в плановый конец графика (backend.md, R4).
+
+    Персональные смены (`organization_id is None`) больше не авто-завершаются
+    вообще — персональный трекер работает только по ручному завершению.
+    `finished_at` ставится равным `scheduled_end_at` (момент срабатывания
+    задачи в расчёт не идёт), `finish_reason = auto_schedule`.
+    """
     with get_sync_session() as session:
         now = datetime.now(UTC)
 
-        # 1. Personal shifts (no org) — use global default
-        global_hours = settings.default_auto_finish_hours
-        global_cutoff = now - timedelta(hours=global_hours)
-        result = session.execute(
-            select(Shift)
-            .options(selectinload(Shift.pauses))
-            .where(
-                Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
-                Shift.organization_id.is_(None),
-                Shift.started_at < global_cutoff,
-                Shift.is_deleted.is_(False),
-            )
-        )
-        stale: list[tuple[Shift, int]] = [(s, global_hours) for s in result.scalars().all()]
-
-        # 2. Org shifts — use per-org auto_finish_hours
         org_settings_result = session.execute(select(OrganizationSettings))
         all_org_settings = {s.organization_id: s for s in org_settings_result.scalars().all()}
 
-        org_result = session.execute(
+        result = session.execute(
             select(Shift)
             .options(selectinload(Shift.pauses))
             .where(
                 Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
                 Shift.organization_id.isnot(None),
                 Shift.is_deleted.is_(False),
+                Shift.scheduled_end_at.isnot(None),
+                Shift.scheduled_end_at <= now,
             )
         )
 
-        for shift in org_result.scalars().all():
+        stale: list[Shift] = []
+        for shift in result.scalars().all():
             org_s = all_org_settings.get(cast(uuid.UUID, shift.organization_id))
-            if org_s is None:
-                hours = global_hours
-            elif org_s.auto_finish_hours is None:
-                continue  # auto-finish disabled for this org
-            else:
-                hours = org_s.auto_finish_hours
-            cutoff = now - timedelta(hours=hours)
-            if shift.started_at < cutoff:
-                stale.append((shift, hours))
+            # Запись настроек отсутствует → считаем true (server_default).
+            auto_finish_enabled = org_s.auto_finish_by_schedule if org_s is not None else True
+            if auto_finish_enabled:
+                stale.append(shift)
 
-        for shift, hours in stale:
+        for shift in stale:
             has_incomplete = _finalize_shift_checklists_sync(session, shift.id)
             shift.has_incomplete_required_checklists = has_incomplete
 
-            shift_finish = shift.started_at + timedelta(hours=hours)
+            finish_at = shift.scheduled_end_at
+            if finish_at is None:
+                continue  # narrowing для mypy — уже отфильтровано в WHERE
             for pause in shift.pauses:
                 if pause.finished_at is None:
-                    pause.finished_at = shift_finish
+                    pause.finished_at = finish_at
             shift.status = ShiftStatus.finished
-            shift.finished_at = shift_finish
+            shift.finished_at = finish_at
+            shift.finish_reason = ShiftFinishReason.auto_schedule
 
             audit_service.record_sync(
                 session,
@@ -108,7 +97,13 @@ def auto_finish_stale_shifts() -> None:
                 organization_id=shift.organization_id,
                 actor_user_id=None,
                 resource_id=shift.id,
-                summary={"finished_at": shift_finish.isoformat(), "auto_finish_hours": hours},
+                summary={
+                    "finished_at": finish_at.isoformat(),
+                    "work_schedule_id": (
+                        str(shift.work_schedule_id) if shift.work_schedule_id else None
+                    ),
+                    "schedule_name": shift.schedule_name,
+                },
             )
 
         if stale:

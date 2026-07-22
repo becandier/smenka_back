@@ -11,11 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.app.core.config import get_settings
 from src.app.core.security import hash_password
+from src.app.models.audit_log import AuditLog
 from src.app.models.file import File, FileCategory
 from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
-from src.app.models.shift import Pause, Shift, ShiftStatus
+from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
 from src.app.models.user import RefreshToken, User, VerificationCode
+from src.app.models.work_schedule import WorkSchedule
 from src.app.tasks.cleanup import cleanup_expired_tokens, cleanup_orphan_files
 from src.app.tasks.shifts import auto_finish_stale_pauses, auto_finish_stale_shifts
 
@@ -65,38 +67,24 @@ def _make_org(*, owner_id: uuid.UUID, org_id: uuid.UUID | None = None) -> Organi
     )
 
 
+def _make_schedule(org_id: uuid.UUID) -> WorkSchedule:
+    from datetime import time as dt_time
+
+    return WorkSchedule(
+        id=uuid.uuid4(),
+        organization_id=org_id,
+        name="Дневная",
+        start_time=dt_time(9, 0),
+        end_time=dt_time(18, 0),
+    )
+
+
 class TestAutoFinishStaleShifts:
-    async def test_personal_stale_shift_finished(self, db_session: AsyncSession):
-        """Personal shift started 17h ago (exceeds 16h default) -> finished at started_at + 16h."""
-        user = _make_user()
-        db_session.add(user)
-        await db_session.flush()
+    """R4 (work_schedules): авто-завершение org-смен ровно в scheduled_end_at.
+    Персональные смены больше не авто-завершаются вообще."""
 
-        started = datetime.now(UTC) - timedelta(hours=17)
-        shift_id = uuid.uuid4()
-        shift = Shift(
-            id=shift_id,
-            user_id=user.id,
-            organization_id=None,
-            started_at=started,
-            status=ShiftStatus.active,
-        )
-        db_session.add(shift)
-        await db_session.commit()
-
-        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
-            auto_finish_stale_shifts()
-
-        db_session.expire_all()
-        result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
-        updated = result.scalar_one()
-
-        assert updated.status == ShiftStatus.finished
-        expected_finish = started + timedelta(hours=16)
-        assert updated.finished_at == expected_finish
-
-    async def test_personal_fresh_shift_not_finished(self, db_session: AsyncSession):
-        """Personal shift started 5h ago (within 16h default) -> untouched."""
+    async def test_personal_shift_never_auto_finished(self, db_session: AsyncSession):
+        """Personal shift started 100h ago -> NEVER auto-finished (feature removed)."""
         user = _make_user()
         db_session.add(user)
         await db_session.flush()
@@ -106,7 +94,7 @@ class TestAutoFinishStaleShifts:
             id=shift_id,
             user_id=user.id,
             organization_id=None,
-            started_at=datetime.now(UTC) - timedelta(hours=5),
+            started_at=datetime.now(UTC) - timedelta(hours=100),
             status=ShiftStatus.active,
         )
         db_session.add(shift)
@@ -122,8 +110,8 @@ class TestAutoFinishStaleShifts:
         assert updated.status == ShiftStatus.active
         assert updated.finished_at is None
 
-    async def test_org_shift_uses_org_settings(self, db_session: AsyncSession):
-        """Org with auto_finish_hours=8, shift started 9h ago -> finished at started_at + 8h."""
+    async def test_org_shift_finished_exactly_at_scheduled_end(self, db_session: AsyncSession):
+        """scheduled_end_at in the past -> finished_at == scheduled_end_at (not "now")."""
         user = _make_user()
         db_session.add(user)
         await db_session.flush()
@@ -132,22 +120,28 @@ class TestAutoFinishStaleShifts:
         db_session.add(org)
         await db_session.flush()
 
-        org_settings = OrganizationSettings(
-            id=uuid.uuid4(),
-            organization_id=org.id,
-            auto_finish_hours=8,
-        )
+        schedule = _make_schedule(org.id)
+        db_session.add(schedule)
+        org_settings = OrganizationSettings(id=uuid.uuid4(), organization_id=org.id)
         db_session.add(org_settings)
         await db_session.flush()
 
-        started = datetime.now(UTC) - timedelta(hours=9)
+        started = datetime.now(UTC) - timedelta(hours=2)
+        scheduled_end = datetime.now(UTC) - timedelta(minutes=5)
         shift_id = uuid.uuid4()
+        # Фиксируем значения ДО expire_all — иначе доступ к ORM-атрибутам после
+        # него триггерит ленивую async-загрузку в синхронном контексте.
+        schedule_id, schedule_name = schedule.id, schedule.name
         shift = Shift(
             id=shift_id,
             user_id=user.id,
             organization_id=org.id,
             started_at=started,
             status=ShiftStatus.active,
+            work_schedule_id=schedule_id,
+            schedule_name=schedule_name,
+            scheduled_start_at=started,
+            scheduled_end_at=scheduled_end,
         )
         db_session.add(shift)
         await db_session.commit()
@@ -160,11 +154,21 @@ class TestAutoFinishStaleShifts:
         updated = result.scalar_one()
 
         assert updated.status == ShiftStatus.finished
-        expected_finish = started + timedelta(hours=8)
-        assert updated.finished_at == expected_finish
+        assert updated.finished_at == scheduled_end
+        assert updated.finish_reason == ShiftFinishReason.auto_schedule
 
-    async def test_org_shift_skipped_when_auto_finish_disabled(self, db_session: AsyncSession):
-        """Org with auto_finish_hours=None, shift started 100h ago -> NOT finished."""
+        audit_result = await db_session.execute(
+            select(AuditLog).where(AuditLog.resource_id == shift_id)
+        )
+        audit = audit_result.scalar_one()
+        assert audit.action == "shift.auto_finish"
+        assert audit.actor_user_id is None
+        assert audit.summary["work_schedule_id"] == str(schedule_id)
+        assert audit.summary["schedule_name"] == "Дневная"
+
+    async def test_org_shift_skipped_when_auto_finish_by_schedule_disabled(
+        self, db_session: AsyncSession
+    ):
         user = _make_user()
         db_session.add(user)
         await db_session.flush()
@@ -176,8 +180,81 @@ class TestAutoFinishStaleShifts:
         org_settings = OrganizationSettings(
             id=uuid.uuid4(),
             organization_id=org.id,
-            auto_finish_hours=None,
+            auto_finish_by_schedule=False,
         )
+        db_session.add(org_settings)
+        await db_session.flush()
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=2),
+            scheduled_end_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            auto_finish_stale_shifts()
+
+        db_session.expire_all()
+        result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        updated = result.scalar_one()
+
+        assert updated.status == ShiftStatus.active
+        assert updated.finished_at is None
+
+    async def test_org_shift_without_missing_settings_defaults_to_enabled(
+        self, db_session: AsyncSession
+    ):
+        """No OrganizationSettings row at all -> still auto-finished (server_default true)."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+        # Intentionally no OrganizationSettings row.
+
+        scheduled_end = datetime.now(UTC) - timedelta(minutes=1)
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=2),
+            scheduled_end_at=scheduled_end,
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            auto_finish_stale_shifts()
+
+        db_session.expire_all()
+        result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        updated = result.scalar_one()
+        assert updated.status == ShiftStatus.finished
+        assert updated.finished_at == scheduled_end
+
+    async def test_org_shift_without_schedule_not_finished(self, db_session: AsyncSession):
+        """scheduled_end_at is null -> never auto-finished, regardless of started_at age."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(id=uuid.uuid4(), organization_id=org.id)
         db_session.add(org_settings)
         await db_session.flush()
 
@@ -198,24 +275,70 @@ class TestAutoFinishStaleShifts:
         db_session.expire_all()
         result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
         updated = result.scalar_one()
-
         assert updated.status == ShiftStatus.active
         assert updated.finished_at is None
 
-    async def test_stale_shift_pauses_also_closed(self, db_session: AsyncSession):
-        """Stale shift with an open pause -> pause.finished_at = shift.finished_at."""
+    async def test_org_shift_future_scheduled_end_not_finished(self, db_session: AsyncSession):
         user = _make_user()
         db_session.add(user)
         await db_session.flush()
 
-        started = datetime.now(UTC) - timedelta(hours=17)
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(id=uuid.uuid4(), organization_id=org.id)
+        db_session.add(org_settings)
+        await db_session.flush()
+
         shift_id = uuid.uuid4()
         shift = Shift(
             id=shift_id,
             user_id=user.id,
-            organization_id=None,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=1),
+            status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=1),
+            scheduled_end_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            auto_finish_stale_shifts()
+
+        db_session.expire_all()
+        result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        updated = result.scalar_one()
+        assert updated.status == ShiftStatus.active
+
+    async def test_stale_shift_pauses_closed_at_scheduled_end(self, db_session: AsyncSession):
+        """Stale shift with an open pause -> pause.finished_at = shift.finished_at
+
+        (= scheduled_end_at)."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(id=uuid.uuid4(), organization_id=org.id)
+        db_session.add(org_settings)
+        await db_session.flush()
+
+        started = datetime.now(UTC) - timedelta(hours=2)
+        scheduled_end = datetime.now(UTC) - timedelta(minutes=5)
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
             started_at=started,
             status=ShiftStatus.paused,
+            scheduled_start_at=started,
+            scheduled_end_at=scheduled_end,
         )
         db_session.add(shift)
         await db_session.flush()
@@ -235,16 +358,14 @@ class TestAutoFinishStaleShifts:
 
         db_session.expire_all()
 
-        expected_finish = started + timedelta(hours=16)
-
         result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
         updated_shift = result.scalar_one()
         assert updated_shift.status == ShiftStatus.finished
-        assert updated_shift.finished_at == expected_finish
+        assert updated_shift.finished_at == scheduled_end
 
         pause_result = await db_session.execute(select(Pause).where(Pause.id == pause_id))
         updated_pause = pause_result.scalar_one()
-        assert updated_pause.finished_at == expected_finish
+        assert updated_pause.finished_at == scheduled_end
 
 
 class TestAutoFinishStalePauses:
@@ -261,7 +382,6 @@ class TestAutoFinishStalePauses:
         org_settings = OrganizationSettings(
             id=uuid.uuid4(),
             organization_id=org.id,
-            auto_finish_hours=16,
             max_pause_minutes=30,
         )
         db_session.add(org_settings)
@@ -314,7 +434,6 @@ class TestAutoFinishStalePauses:
         org_settings = OrganizationSettings(
             id=uuid.uuid4(),
             organization_id=org.id,
-            auto_finish_hours=16,
             max_pause_minutes=60,
         )
         db_session.add(org_settings)
