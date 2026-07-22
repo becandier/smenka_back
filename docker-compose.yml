@@ -64,7 +64,10 @@ services:
   api:
     build:
       context: .
-      target: app
+      # dev, не app: даёт ruff/mypy/pytest внутри контейнера для `make lint/typecheck/test`
+      # (см. Dockerfile). Прод (docker-compose.prod.yml) и CI/release по-прежнему
+      # используют target: app — эта строка на состав прод-образа не влияет.
+      target: dev
     command: >
       sh -c "alembic -c src/alembic.ini upgrade head &&
              uvicorn src.app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -91,6 +94,10 @@ services:
       S3_PRESIGN_EXPIRE_SECONDS: "3600"
     volumes:
       - ./src:/app/src
+      # tests/ и scripts/ не входят в образ (COPY только src/) — монтируем, чтобы
+      # `make test`/`make lint` видели их из контейнера без пересборки образа.
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
     depends_on:
       db:
         condition: service_healthy
