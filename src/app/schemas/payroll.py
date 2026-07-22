@@ -99,7 +99,15 @@ class PayrollPeriod(BaseModel):
 
 class PayrollItemResponse(BaseModel):
     user_id: str = Field(description="UUID сотрудника")
-    user_name: str = Field(description="Имя сотрудника")
+    user_name: str = Field(
+        description="Настоящее имя сотрудника (User.name) — денежный документ, "
+        "основная строка всегда настоящее имя"
+    )
+    display_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника в этой организации; null — не задано "
+        "(member_display_name; для payroll — подпись, не основная строка)",
+    )
     worked_seconds: int = Field(
         description="Отработанное время по завершённым сменам периода (вкл. неоплаченные)",
     )

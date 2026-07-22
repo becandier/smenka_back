@@ -62,7 +62,13 @@ class ShiftResponse(BaseModel):
     )
     user_name: str | None = Field(
         default=None,
-        description="Имя сотрудника (User.name). Заполнено в орг-контексте, в персональном — null",
+        description="Настоящее имя сотрудника (User.name). Заполнено в орг-контексте, "
+        "в персональном — null",
+    )
+    display_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника в этой организации (organization_members.display_name); "
+        "null — не задано или персональный контекст (member_display_name)",
     )
     user_email: str | None = Field(
         default=None,

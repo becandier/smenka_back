@@ -88,6 +88,7 @@ def _org_instance_row_to_response(
         photos_count=row.photos_count,
         user_id=str(shift.user_id),
         user_name=user.name if user is not None else None,
+        display_name=row.display_name,
         user_email=user.email if user is not None else None,
         shift_started_at=shift.started_at,
         shift_finished_at=shift.finished_at,

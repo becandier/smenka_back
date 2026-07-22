@@ -271,6 +271,10 @@ class OrgChecklistInstanceResponse(BaseModel):
     photos_count: int = Field(description="Всего фото по всем пунктам экземпляра")
     user_id: str
     user_name: str | None = Field(default=None, description="null, если пользователь удалён")
+    display_name: str | None = Field(
+        default=None,
+        description="Имя сотрудника в этой организации; null — не задано (member_display_name)",
+    )
     user_email: str | None = Field(default=None, description="null, если пользователь удалён")
     shift_started_at: datetime
     shift_finished_at: datetime | None

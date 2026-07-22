@@ -605,6 +605,7 @@ async def get_org_payroll(
     all_user_ids = list(shift_user_ids | set(penalties_by_user))
     users_map: dict[uuid.UUID, str] = {}
     member_id_by_user: dict[uuid.UUID, uuid.UUID] = {}
+    display_name_by_user: dict[uuid.UUID, str | None] = {}
     rates_by_member: dict[uuid.UUID, list[OrganizationMemberRate]] = {}
     if all_user_ids:
         users_result = await session.execute(
@@ -620,6 +621,7 @@ async def get_org_payroll(
         )
         members = list(members_result.scalars().all())
         member_id_by_user = {m.user_id: m.id for m in members}
+        display_name_by_user = {m.user_id: m.display_name for m in members}
         rates_by_member = await _load_rates_asc(session, [m.id for m in members])
 
     detailed = granularity != Granularity.none
@@ -628,7 +630,11 @@ async def get_org_payroll(
         user_shifts = shifts_by_user.get(uid, [])
         member_id = member_id_by_user.get(uid)
         rates_asc = rates_by_member.get(member_id, []) if member_id else []
-        base = {"user_id": str(uid), "user_name": users_map.get(uid, "Unknown")}
+        base = {
+            "user_id": str(uid),
+            "user_name": users_map.get(uid, "Unknown"),
+            "display_name": display_name_by_user.get(uid),
+        }
         if detailed:
             breakdown, aggregate = _build_breakdown(user_shifts, rates_asc, zone, granularity)
             entry = {**base, **aggregate, "breakdown": breakdown}

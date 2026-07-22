@@ -657,9 +657,20 @@ async def get_org_stats(
 
     per_employee = []
     if by_user:
+        from src.app.models.organization import OrganizationMember
+
         user_ids = list(by_user.keys())
         users_result = await session.execute(select(User).where(User.id.in_(user_ids)))
         users_map = {u.id: u for u in users_result.scalars().all()}
+
+        # display_name — тем же batch-запросом по org_id, без N+1 (member_display_name).
+        members_result = await session.execute(
+            select(OrganizationMember.user_id, OrganizationMember.display_name).where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id.in_(user_ids),
+            )
+        )
+        display_name_map = dict(members_result.tuples().all())
 
         for uid, user_shifts in by_user.items():
             user = users_map.get(uid)
@@ -670,6 +681,7 @@ async def get_org_stats(
                     "user_id": str(uid),
                     "user_name": user.name if user else "Unknown",
                     "user_email": user.email if user else "",
+                    "display_name": display_name_map.get(uid),
                     "shift_count": user_count,
                     "total_worked_seconds": user_total,
                     "average_shift_seconds": user_total // user_count if user_count > 0 else 0,
@@ -824,12 +836,13 @@ async def get_org_shift_detail(
 class ShiftIdentity:
     """Идентификация сотрудника для орг-обогащения ShiftResponse.
 
-    Вычисляется на чтении: имя/почта из `users`, роль/кастомная роль из
-    `organization_members`. В `shifts` ничего не денормализуется.
+    Вычисляется на чтении: имя/почта из `users`, display_name/роль/кастомная
+    роль из `organization_members`. В `shifts` ничего не денормализуется.
     """
 
     user_name: str | None
     user_email: str | None
+    display_name: str | None
     role: str | None
     custom_role_name: str | None
 
@@ -847,7 +860,8 @@ async def build_org_shift_identities(
       множеству в пределах организации.
 
     Если сотрудник исключён из org (записи `OrganizationMember` нет) — имя/почта
-    всё равно отдаются из `users`, а `role`/`custom_role_name` будут `null`.
+    всё равно отдаются из `users`, а `display_name`/`role`/`custom_role_name`
+    будут `null`.
     """
     from src.app.models.organization import OrganizationMember
     from src.app.models.user import User
@@ -884,6 +898,7 @@ async def build_org_shift_identities(
         identities[uid] = ShiftIdentity(
             user_name=name,
             user_email=email,
+            display_name=member.display_name if member is not None else None,
             role=role,
             custom_role_name=custom_role_name,
         )
