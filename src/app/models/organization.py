@@ -97,6 +97,11 @@ class OrganizationMember(Base):
         nullable=True,
         index=True,
     )
+    display_name: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        default=None,
+    )
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
