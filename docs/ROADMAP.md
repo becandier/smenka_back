@@ -6,6 +6,18 @@
 
 ---
 
+## Фича — Имя участника в организации (`member_display_name`) `[~]`
+ТЗ: `../../docs/tasks/member_display_name/backend.md`  STATUS: `../../docs/tasks/member_display_name/STATUS.md`
+- [x] Колонка `organization_members.display_name` (VARCHAR(100) NULL, без уникальности/индекса) — имя участника внутри ЭТОЙ организации, не трогает `users.name`; owner не member (ADR-001) ⇒ поля у владельца нет
+- [x] Нормализация на сервере (`services/organization.normalize_display_name`): trim + `\n`/`\r`/`\t`→пробел, пусто/пробелы→`NULL` (сброс), 1–100 символов иначе `400 INVALID_DISPLAY_NAME`, управляющие символы отклоняются
+- [x] `PATCH /organizations/{org_id}/members/{member_user_id}` (`{"display_name": "..." | null}`) — owner/admin/super_admin (`ensure_admin_or_owner`); employee, включая переименование самого себя — `403`; чужой участник — `404 MEMBER_NOT_FOUND`; аудит `member.display_name_update` (старое/новое значение)
+- [x] Additive nullable `display_name` рядом с `user_name` (не переименован, не удалён — обратная совместимость мобильных билдов) в `MemberResponse`, `ShiftResponse` (орг-контекст), `OrgChecklistInstanceResponse`, `PenaltyResponse`, `PayrollItemResponse` (обе проекции), `EmployeeStatsResponse` — везде тем же запросом/join, без N+1
+- [x] Миграция `352f7e3148af` (голова `a4b5c6d7e803` → `352f7e3148af`): только `ADD COLUMN`, без бэкфилла, обратима
+- [x] 21 тест (`tests/test_member_display_name.py`): установка/сброс (null/пустая строка/пробелы), обрезка и схлопывание пробелов, границы 100/101 символ, права (owner/admin/super_admin — да; employee на себе и на других — 403; чужая org — 403; несуществующий участник — 404), два одинаковых `display_name`, аудит-запись, регресс поля (и что `user_name` не подменяется) во всех перечисленных схемах
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Управленческие отчёты по чек-листам (`checklist_reports`) `[x]`
 ТЗ: `../../docs/tasks/checklist_reports/backend.md`  STATUS: `../../docs/tasks/checklist_reports/STATUS.md`
 - [x] Query-параметр `checklists` (`none`/`all_completed`/`has_incomplete`/`required_incomplete`) в `GET /organizations/{id}/shifts` — считается на лету по `checklist_instances` (флаг `has_incomplete_required_checklists` для этого не годится — проставляется только на завершении смены); `400 INVALID_CHECKLIST_FILTER` на неизвестное значение; комбинируется с `user_id`/`status`/`date_from`/`date_to`, `total`/пагинация учитывают фильтр
