@@ -24,6 +24,15 @@ class ShiftWorkLocation(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ShiftChecklistsSummary(BaseModel):
+    """Сводка по чек-листам смены (checklist_reports). Только для орг-эндпоинтов."""
+
+    total: int = Field(description="Всего экземпляров чек-листов в смене")
+    completed: int = Field(description="Экземпляров со status=completed")
+    required_total: int = Field(description="Обязательных экземпляров (is_required=true)")
+    required_incomplete: int = Field(description="Обязательных экземпляров со status != completed")
+
+
 class ShiftResponse(BaseModel):
     id: str = Field(description="UUID смены")
     user_id: str = Field(description="UUID пользователя")
@@ -69,6 +78,13 @@ class ShiftResponse(BaseModel):
         default=None,
         description="Плоское имя кастомной роли (OrganizationRole.name). null, если "
         "кастомная роль не назначена / участник исключён / персональный контекст",
+    )
+    checklists_summary: ShiftChecklistsSummary | None = Field(
+        default=None,
+        description="Сводка по чек-листам смены (total/completed/required_total/"
+        "required_incomplete). Заполняется ТОЛЬКО в орг-эндпоинтах "
+        "(GET /organizations/{org_id}/shifts и .../shifts/{shift_id}); в "
+        "персональных эндпоинтах — всегда null (checklist_reports)",
     )
 
     model_config = {"from_attributes": True}

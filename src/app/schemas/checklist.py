@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from src.app.models.checklist import PhotoRequirement, PhotoSource
+from src.app.schemas.shift import ShiftWorkLocation
 
 
 class TemplateCreate(BaseModel):
@@ -249,3 +250,38 @@ class PhotoBindRequest(BaseModel):
     )
     latitude: float | None = Field(default=None)
     longitude: float | None = Field(default=None)
+
+
+class OrgChecklistInstanceResponse(BaseModel):
+    """Строка реестра `GET /organizations/{org_id}/checklist-instances` (checklist_reports)."""
+
+    id: str
+    shift_id: str
+    template_id: str | None = Field(
+        description="null, если шаблон-источник удалён (ON DELETE SET NULL); "
+        "name/type экземпляра — снимок, строка остаётся читаемой"
+    )
+    name: str
+    type: str = Field(description="shift_start | shift_end")
+    is_required: bool
+    status: str = Field(description="pending | completed | incomplete")
+    completed_at: datetime | None
+    created_at: datetime
+    items_summary: ItemsSummary
+    photos_count: int = Field(description="Всего фото по всем пунктам экземпляра")
+    user_id: str
+    user_name: str | None = Field(default=None, description="null, если пользователь удалён")
+    user_email: str | None = Field(default=None, description="null, если пользователь удалён")
+    shift_started_at: datetime
+    shift_finished_at: datetime | None
+    shift_status: str = Field(description="active | paused | finished")
+    work_location: ShiftWorkLocation | None = Field(
+        default=None, description="Денормализованная точка смены, null — нет точки"
+    )
+
+
+class OrgChecklistInstanceListResponse(BaseModel):
+    items: list[OrgChecklistInstanceResponse]
+    total: int
+    limit: int
+    offset: int

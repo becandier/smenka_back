@@ -3,12 +3,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.app.core.config import get_settings
 from src.app.core.logging import get_logger
+from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
 from src.app.models.shift import Pause, Shift, ShiftStatus
 
 logger = get_logger(__name__)
@@ -411,6 +412,19 @@ def validate_date_range(
         )
 
 
+VALID_CHECKLISTS_FILTERS = {"none", "all_completed", "has_incomplete", "required_incomplete"}
+
+
+def validate_checklists_filter(checklists: str | None) -> None:
+    """400 INVALID_CHECKLIST_FILTER для неизвестного значения `checklists` (checklist_reports)."""
+    if checklists is not None and checklists not in VALID_CHECKLISTS_FILTERS:
+        raise ShiftError(
+            "INVALID_CHECKLIST_FILTER",
+            "Фильтр должен быть: none, all_completed, has_incomplete, required_incomplete",
+            400,
+        )
+
+
 def _preset_window_start(period: str, now: datetime) -> datetime:
     if period == "day":
         return now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -673,6 +687,56 @@ async def get_org_stats(
     }
 
 
+def _checklists_summary_subquery() -> Any:
+    """shift_id -> (total, completed, required_incomplete) по её экземплярам чек-листов.
+
+    Используется ТОЛЬКО для фильтра `checklists` в списке орг-смен (checklist_reports).
+    Отдельно от `checklist_instance.get_checklists_summary_for_shifts` — та функция
+    строит сводку ДЛЯ УЖЕ выбранной страницы, а этот подзапрос должен участвовать в
+    WHERE/COUNT ДО пагинации.
+    """
+    completed_case = case(
+        (ChecklistInstance.status == ChecklistInstanceStatus.completed, 1), else_=0
+    )
+    required_incomplete_case = case(
+        (
+            and_(
+                ChecklistInstance.is_required.is_(True),
+                ChecklistInstance.status != ChecklistInstanceStatus.completed,
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    return (
+        select(
+            ChecklistInstance.shift_id.label("shift_id"),
+            func.count().label("total"),
+            func.sum(completed_case).label("completed"),
+            func.sum(required_incomplete_case).label("required_incomplete"),
+        )
+        .group_by(ChecklistInstance.shift_id)
+        .subquery()
+    )
+
+
+def _checklists_filter_condition(checklists: str, summary_subq: Any) -> Any:
+    if checklists == "none":
+        return summary_subq.c.total.is_(None)
+    if checklists == "all_completed":
+        return and_(
+            summary_subq.c.total.isnot(None),
+            summary_subq.c.completed == summary_subq.c.total,
+        )
+    if checklists == "has_incomplete":
+        return and_(
+            summary_subq.c.total.isnot(None),
+            summary_subq.c.completed < summary_subq.c.total,
+        )
+    # required_incomplete
+    return summary_subq.c.required_incomplete > 0
+
+
 async def get_org_shifts(
     session: AsyncSession,
     organization_id: uuid.UUID,
@@ -681,12 +745,18 @@ async def get_org_shifts(
     status: ShiftStatus | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    checklists: str | None = None,
     limit: int = 20,
     offset: int = 0,
     sort: str = "started_at",
     order: str = "desc",
 ) -> tuple[list[Shift], int]:
-    """Get shifts for an organization (admin view)."""
+    """Get shifts for an organization (admin view).
+
+    `checklists` (checklist_reports) — фильтр по состоянию чек-листов смены, считается
+    на лету по `checklist_instances` (none/all_completed/has_incomplete/required_incomplete);
+    комбинируется с остальными фильтрами по И, пагинация/`total` учитывают его.
+    """
     conditions = [Shift.organization_id == organization_id, Shift.is_deleted.is_(False)]
 
     if user_id is not None:
@@ -699,8 +769,6 @@ async def get_org_shifts(
         conditions.append(Shift.started_at <= ensure_utc(date_to))
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
-    total = (await session.execute(count_query)).scalar_one()
-
     query = (
         select(Shift)
         .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
@@ -709,6 +777,16 @@ async def get_org_shifts(
         .limit(limit)
         .offset(offset)
     )
+
+    if checklists is not None:
+        summary_subq = _checklists_summary_subquery()
+        condition = _checklists_filter_condition(checklists, summary_subq)
+        count_query = count_query.outerjoin(
+            summary_subq, summary_subq.c.shift_id == Shift.id
+        ).where(condition)
+        query = query.outerjoin(summary_subq, summary_subq.c.shift_id == Shift.id).where(condition)
+
+    total = (await session.execute(count_query)).scalar_one()
     result = await session.execute(query)
     shifts = list(result.scalars().all())
 
