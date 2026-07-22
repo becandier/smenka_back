@@ -613,3 +613,74 @@ class TestListOvertimeRequests:
             f"/api/v1/organizations/{org.id}/overtime-requests", headers=employee_headers
         )
         assert resp.status_code == 403
+
+
+class TestOrganizationResponseExposesOvertimeRequestDays:
+    """Контракт-гап (addendum): employee должен видеть overtime_request_days в
+    контексте org, т.к. к /settings (owner/admin) у него доступа нет — иначе
+    кнопка «Добавить переработку» показывается и после истечения срока."""
+
+    async def test_employee_sees_value_in_org_detail(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, str],
+        org: Organization,
+    ) -> None:
+        resp = await client.get(f"/api/v1/organizations/{org.id}", headers=employee_headers)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["overtime_request_days"] == 7
+
+    async def test_employee_sees_value_in_org_list(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, str],
+        org: Organization,
+    ) -> None:
+        resp = await client.get("/api/v1/organizations", headers=employee_headers)
+        assert resp.status_code == 200
+        items = resp.json()["data"]["items"]
+        target = next(i for i in items if i["id"] == str(org.id))
+        assert target["overtime_request_days"] == 7
+
+    async def test_value_reflects_settings_update_and_is_read_only(
+        self,
+        client: AsyncClient,
+        owner_headers: dict[str, str],
+        employee_headers: dict[str, str],
+        org: Organization,
+    ) -> None:
+        patch_resp = await client.patch(
+            f"/api/v1/organizations/{org.id}/settings",
+            headers=owner_headers,
+            json={"overtime_request_days": 14},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["data"]["overtime_request_days"] == 14
+
+        detail_resp = await client.get(f"/api/v1/organizations/{org.id}", headers=employee_headers)
+        assert detail_resp.json()["data"]["overtime_request_days"] == 14
+
+        # Поле read-only в OrganizationResponse — попытка передать его через
+        # PATCH /organizations/{id} (не /settings) молча игнорируется схемой.
+        rename_resp = await client.patch(
+            f"/api/v1/organizations/{org.id}",
+            headers=owner_headers,
+            json={"name": "Overtime Org Renamed", "overtime_request_days": 1},
+        )
+        assert rename_resp.status_code == 200
+        assert rename_resp.json()["data"]["overtime_request_days"] == 14
+
+    async def test_default_seven_when_settings_record_missing(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        owner: User,
+        owner_headers: dict[str, str],
+    ) -> None:
+        organization = Organization(name="No Settings Org", owner_id=owner.id)
+        db_session.add(organization)
+        await db_session.commit()
+
+        resp = await client.get(f"/api/v1/organizations/{organization.id}", headers=owner_headers)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["overtime_request_days"] == 7

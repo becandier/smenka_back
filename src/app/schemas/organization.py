@@ -55,6 +55,11 @@ class OrganizationResponse(BaseModel):
         description="IANA-имя таймзоны организации (work_schedules) — по нему считаются "
         "плановые окна графиков и отчёты"
     )
+    overtime_request_days: int = Field(
+        description="Срок подачи заявки на переработку в днях (work_schedules), read-only — "
+        "денормализовано из OrganizationSettings, чтобы employee (без доступа к /settings) "
+        "мог скрыть кнопку подачи заявки после истечения срока"
+    )
     created_at: datetime = Field(description="Дата создания")
     my_role: str | None = Field(
         default=None,

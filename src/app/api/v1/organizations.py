@@ -36,6 +36,7 @@ from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import overtime as overtime_service
 from src.app.services import shift as shift_service
+from src.app.services.overtime import DEFAULT_OVERTIME_REQUEST_DAYS
 from src.app.utils.request import get_client_ip
 
 if TYPE_CHECKING:
@@ -53,6 +54,9 @@ def _org_to_response(
 ) -> dict[str, Any]:
     geo_check = org.settings.geo_check_enabled if org.settings else False
     require_work_location = org.settings.require_work_location if org.settings else False
+    overtime_request_days = (
+        org.settings.overtime_request_days if org.settings else DEFAULT_OVERTIME_REQUEST_DAYS
+    )
     custom_role_payload = None
     if my_custom_role is not None:
         custom_role_payload = {
@@ -69,6 +73,7 @@ def _org_to_response(
         geo_check_enabled=geo_check,
         require_work_location=require_work_location,
         timezone=org.timezone,
+        overtime_request_days=overtime_request_days,
         created_at=org.created_at,
         my_role=my_role,
         my_custom_role=custom_role_payload,
