@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -231,6 +232,11 @@ class ChecklistMemberOverride(Base):
 
 class ChecklistInstance(Base):
     __tablename__ = "checklist_instances"
+    __table_args__ = (
+        # Под агрегаты `checklists_summary`/фильтр `checklists` (список орг-смен) и
+        # фильтр `status` реестра `GET .../checklist-instances` (checklist_reports).
+        Index("ix_checklist_instances_shift_id_status", "shift_id", "status"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -246,6 +252,8 @@ class ChecklistInstance(Base):
         UUID(as_uuid=True),
         ForeignKey("checklist_templates.id", ondelete="SET NULL"),
         nullable=True,
+        # Основной фильтр реестра `GET .../checklist-instances` (checklist_reports).
+        index=True,
     )
     name: Mapped[str] = mapped_column(String(255))
     type: Mapped[ChecklistType] = mapped_column(Enum(ChecklistType))

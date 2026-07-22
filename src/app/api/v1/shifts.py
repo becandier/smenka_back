@@ -17,6 +17,7 @@ from src.app.schemas.shift import (
 )
 from src.app.services import audit as audit_service
 from src.app.services import shift as shift_service
+from src.app.services.checklist_instance import ShiftChecklistsSummary
 from src.app.services.shift import ShiftIdentity, calculate_worked_seconds
 from src.app.utils.request import get_client_ip
 
@@ -26,12 +27,15 @@ router = APIRouter(prefix="/shifts", tags=["shifts"])
 def _shift_to_response(
     shift: Shift,
     identity: ShiftIdentity | None = None,
+    checklists_summary: ShiftChecklistsSummary | None = None,
 ) -> dict[str, Any]:
     """Сериализовать смену.
 
     Без `identity` (персональный контекст) additive-поля сотрудника остаются
     `null`. В орг-контексте `identity` наполняет `user_name` / `user_email` /
-    `role` / `custom_role_name`.
+    `role` / `custom_role_name`. Аналогично `checklists_summary` заполняется
+    ТОЛЬКО в орг-эндпоинтах смен (checklist_reports); в персональном контексте
+    остаётся `null`.
     """
     work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
@@ -68,6 +72,16 @@ def _shift_to_response(
         user_email=identity.user_email if identity is not None else None,
         role=identity.role if identity is not None else None,
         custom_role_name=identity.custom_role_name if identity is not None else None,
+        checklists_summary=(
+            {
+                "total": checklists_summary.total,
+                "completed": checklists_summary.completed,
+                "required_total": checklists_summary.required_total,
+                "required_incomplete": checklists_summary.required_incomplete,
+            }
+            if checklists_summary is not None
+            else None
+        ),
     ).model_dump(mode="json")
 
 

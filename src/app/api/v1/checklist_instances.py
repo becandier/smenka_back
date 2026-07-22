@@ -20,9 +20,11 @@ from src.app.schemas.checklist import (
     InstanceItemResponse,
     InstanceItemUpdate,
     ItemsSummary,
+    OrgChecklistInstanceResponse,
     PhotoBindRequest,
     PhotoResponse,
 )
+from src.app.schemas.shift import ShiftWorkLocation
 from src.app.services import checklist_instance as instance_service
 from src.app.services import file_storage
 
@@ -59,6 +61,49 @@ def _instance_to_response(
     ).model_dump(mode="json")
 
 
+def _org_instance_row_to_response(
+    row: instance_service.OrgChecklistInstanceRow,
+) -> dict[str, Any]:
+    """Строка реестра организации (checklist_reports) в JSON-совместимый dict."""
+    instance = row.instance
+    shift = row.shift
+    user = row.user
+    work_location = row.work_location
+    return OrgChecklistInstanceResponse(
+        id=str(instance.id),
+        shift_id=str(instance.shift_id),
+        template_id=str(instance.template_id) if instance.template_id else None,
+        name=instance.name,
+        type=instance.type.value,
+        is_required=instance.is_required,
+        status=instance.status.value,
+        completed_at=instance.completed_at,
+        created_at=instance.created_at,
+        items_summary=ItemsSummary(
+            total=row.items_total,
+            completed=row.items_completed,
+            satisfied_count=row.satisfied_count,
+            photos_required_missing=row.photos_required_missing,
+        ),
+        photos_count=row.photos_count,
+        user_id=str(shift.user_id),
+        user_name=user.name if user is not None else None,
+        user_email=user.email if user is not None else None,
+        shift_started_at=shift.started_at,
+        shift_finished_at=shift.finished_at,
+        shift_status=shift.status.value,
+        work_location=(
+            ShiftWorkLocation(
+                id=str(work_location.id),
+                name=work_location.name,
+                address=work_location.address,
+            )
+            if work_location is not None
+            else None
+        ),
+    ).model_dump(mode="json")
+
+
 def _photo_to_response(photo: ChecklistItemPhoto, url_map: _UrlMap) -> PhotoResponse:
     url, expires_at = url_map.get(photo.file_id, (None, None))
     return PhotoResponse(
@@ -75,8 +120,7 @@ def _photo_to_response(photo: ChecklistItemPhoto, url_map: _UrlMap) -> PhotoResp
 
 def _item_to_response(item: ChecklistInstanceItem, url_map: _UrlMap) -> dict[str, Any]:
     photos = [
-        _photo_to_response(p, url_map)
-        for p in sorted(item.photos, key=lambda x: x.position)
+        _photo_to_response(p, url_map) for p in sorted(item.photos, key=lambda x: x.position)
     ]
     return InstanceItemResponse(
         id=str(item.id),

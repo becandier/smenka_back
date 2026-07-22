@@ -1,5 +1,7 @@
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -14,15 +16,20 @@ from src.app.models.checklist import (
     ChecklistInstanceStatus,
     ChecklistItemPhoto,
     ChecklistTemplateItem,
+    ChecklistType,
     PhotoRequirement,
 )
 from src.app.models.file import File, FileCategory
 from src.app.models.organization import OrganizationMember
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
+from src.app.models.work_location import WorkLocation
 from src.app.services.checklist_assignment import _compute_effective
 from src.app.services.checklist_location import get_location_ids_for_templates, matches_location
 from src.app.services.checklist_template import ChecklistError
+from src.app.services.common import ensure_admin_or_owner
+from src.app.services.organization import get_organization
+from src.app.services.shift import ensure_utc, validate_date_range
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -172,9 +179,7 @@ async def _recompute_instance_status(
     # друг друга и статус может «застрять» в pending. Лок именно на строке instance;
     # авто-финиш тоже сперва трогает строки экземпляров, цикла блокировок с ним нет.
     await session.execute(
-        select(ChecklistInstance.id)
-        .where(ChecklistInstance.id == instance.id)
-        .with_for_update()
+        select(ChecklistInstance.id).where(ChecklistInstance.id == instance.id).with_for_update()
     )
     photos_count_subq = (
         select(func.count(ChecklistItemPhoto.id))
@@ -210,27 +215,10 @@ async def _recompute_instance_status(
     await session.flush()
 
 
-async def get_shift_checklists(
-    session: AsyncSession,
-    shift_id: uuid.UUID,
-    requester_id: uuid.UUID,
-) -> list[tuple[ChecklistInstance, int, int, int, int]]:
-    """Возвращает (instance, total, completed, satisfied_count, photos_required_missing)."""
-    shift = await _get_shift(session, shift_id)
-    await _check_shift_access(session, shift, requester_id)
-
-    result = await session.execute(
-        select(ChecklistInstance)
-        .where(ChecklistInstance.shift_id == shift_id)
-        .order_by(ChecklistInstance.created_at)
-    )
-    instances = list(result.scalars().all())
-    if not instances:
-        return []
-
-    instance_ids = [i.id for i in instances]
-    # Per-item photo counts (LEFT JOIN), затем агрегаты per-instance — один запрос.
-    per_item = (
+def _per_item_photo_subquery(instance_ids: list[uuid.UUID]) -> Any:
+    """Per-item photo counts (LEFT JOIN) для набора экземпляров — переиспользуется
+    `get_shift_checklists` и реестром организации (`_items_summary_by_instance`)."""
+    return (
         select(
             ChecklistInstanceItem.instance_id.label("instance_id"),
             ChecklistInstanceItem.is_completed.label("is_completed"),
@@ -246,6 +234,25 @@ async def get_shift_checklists(
         .group_by(ChecklistInstanceItem.id)
         .subquery()
     )
+
+
+async def _items_summary_by_instance(
+    session: AsyncSession,
+    instance_ids: list[uuid.UUID],
+    *,
+    with_photos_total: bool = False,
+) -> dict[uuid.UUID, Any]:
+    """instance_id -> row(total, completed, satisfied_count, photos_required_missing,
+    [photos_count]).
+
+    Один агрегирующий запрос (GROUP BY) поверх `_per_item_photo_subquery` — без N+1
+    на каждый экземпляр. `with_photos_total` добавляет суммарное число фото
+    экземпляра (нужно реестру организации, не нужно детали смены).
+    """
+    if not instance_ids:
+        return {}
+
+    per_item = _per_item_photo_subquery(instance_ids)
     completed_case = case((per_item.c.is_completed.is_(True), 1), else_=0)
     satisfied_case = case(
         (
@@ -270,16 +277,40 @@ async def get_shift_checklists(
         ),
         else_=0,
     )
-    summary_result = await session.execute(
-        select(
-            per_item.c.instance_id,
-            func.count().label("total"),
-            func.coalesce(func.sum(completed_case), 0).label("completed"),
-            func.coalesce(func.sum(satisfied_case), 0).label("satisfied_count"),
-            func.coalesce(func.sum(missing_case), 0).label("photos_required_missing"),
-        ).group_by(per_item.c.instance_id)
+    columns = [
+        per_item.c.instance_id,
+        func.count().label("total"),
+        func.coalesce(func.sum(completed_case), 0).label("completed"),
+        func.coalesce(func.sum(satisfied_case), 0).label("satisfied_count"),
+        func.coalesce(func.sum(missing_case), 0).label("photos_required_missing"),
+    ]
+    if with_photos_total:
+        columns.append(func.coalesce(func.sum(per_item.c.photos_count), 0).label("photos_count"))
+
+    summary_result = await session.execute(select(*columns).group_by(per_item.c.instance_id))
+    return {row.instance_id: row for row in summary_result.all()}
+
+
+async def get_shift_checklists(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> list[tuple[ChecklistInstance, int, int, int, int]]:
+    """Возвращает (instance, total, completed, satisfied_count, photos_required_missing)."""
+    shift = await _get_shift(session, shift_id)
+    await _check_shift_access(session, shift, requester_id)
+
+    result = await session.execute(
+        select(ChecklistInstance)
+        .where(ChecklistInstance.shift_id == shift_id)
+        .order_by(ChecklistInstance.created_at)
     )
-    by_instance = {row.instance_id: row for row in summary_result.all()}
+    instances = list(result.scalars().all())
+    if not instances:
+        return []
+
+    instance_ids = [i.id for i in instances]
+    by_instance = await _items_summary_by_instance(session, instance_ids)
 
     out: list[tuple[ChecklistInstance, int, int, int, int]] = []
     for inst in instances:
@@ -362,9 +393,7 @@ async def update_instance_item(
 
     item_result = await session.execute(
         select(ChecklistInstanceItem)
-        .options(
-            selectinload(ChecklistInstanceItem.photos).selectinload(ChecklistItemPhoto.file)
-        )
+        .options(selectinload(ChecklistInstanceItem.photos).selectinload(ChecklistItemPhoto.file))
         .where(
             ChecklistInstanceItem.id == item_id,
             ChecklistInstanceItem.instance_id == instance_id,
@@ -480,9 +509,7 @@ async def attach_photo(
         raise ChecklistError("PHOTO_NOT_ALLOWED", "К этому пункту нельзя прикреплять фото", 400)
 
     # Любая проблема с файлом-кандидатом → единый PHOTO_FILE_INVALID (мобилка перезаливает).
-    file = (
-        await session.execute(select(File).where(File.id == file_id))
-    ).scalar_one_or_none()
+    file = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
     if (
         file is None
         or file.category != FileCategory.checklist_photo
@@ -593,9 +620,7 @@ async def detach_photo(
     file_id = photo.file_id
     # Снять привязку до delete_file (тот бросает FILE_IN_USE для is_attached=true).
     await session.delete(photo)
-    file = (
-        await session.execute(select(File).where(File.id == file_id))
-    ).scalar_one_or_none()
+    file = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
     if file is not None:
         file.is_attached = False
         await session.flush()
@@ -647,9 +672,7 @@ async def cleanup_shift_photo_files(
     )
     deleted = 0
     for file_id in file_ids:
-        file = (
-            await session.execute(select(File).where(File.id == file_id))
-        ).scalar_one_or_none()
+        file = (await session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
         if file is None:
             continue
         file.is_attached = False
@@ -691,3 +714,235 @@ async def finalize_shift_checklists(
     has_incomplete = incomplete_count_result.scalar_one() > 0
     await session.flush()
     return has_incomplete
+
+
+# --- checklist_reports: сводка в ShiftResponse и реестр организации ---------
+
+
+@dataclass(frozen=True)
+class ShiftChecklistsSummary:
+    """Сводка по чек-листам одной смены для `ShiftResponse.checklists_summary`."""
+
+    total: int
+    completed: int
+    required_total: int
+    required_incomplete: int
+
+
+ZERO_SHIFT_CHECKLISTS_SUMMARY = ShiftChecklistsSummary(0, 0, 0, 0)
+
+
+async def get_checklists_summary_for_shifts(
+    session: AsyncSession,
+    shift_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, ShiftChecklistsSummary]:
+    """shift_id -> сводка по чек-листам, один агрегирующий запрос (без N+1).
+
+    Используется ТОЛЬКО в орг-эндпоинтах смен (список/деталь); персональные
+    эндпоинты не вызывают эту функцию — там `checklists_summary` остаётся `null`.
+    """
+    if not shift_ids:
+        return {}
+
+    completed_case = case(
+        (ChecklistInstance.status == ChecklistInstanceStatus.completed, 1), else_=0
+    )
+    required_case = case((ChecklistInstance.is_required.is_(True), 1), else_=0)
+    required_incomplete_case = case(
+        (
+            and_(
+                ChecklistInstance.is_required.is_(True),
+                ChecklistInstance.status != ChecklistInstanceStatus.completed,
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    result = await session.execute(
+        select(
+            ChecklistInstance.shift_id,
+            func.count().label("total"),
+            func.coalesce(func.sum(completed_case), 0).label("completed"),
+            func.coalesce(func.sum(required_case), 0).label("required_total"),
+            func.coalesce(func.sum(required_incomplete_case), 0).label("required_incomplete"),
+        )
+        .where(ChecklistInstance.shift_id.in_(shift_ids))
+        .group_by(ChecklistInstance.shift_id)
+    )
+    return {
+        row.shift_id: ShiftChecklistsSummary(
+            total=int(row.total),
+            completed=int(row.completed),
+            required_total=int(row.required_total),
+            required_incomplete=int(row.required_incomplete),
+        )
+        for row in result.all()
+    }
+
+
+VALID_ORG_INSTANCE_SORTS = {"shift_started_at", "completed_at", "created_at"}
+
+_ORG_INSTANCE_SORT_COLUMNS = {
+    "shift_started_at": Shift.started_at,
+    "completed_at": ChecklistInstance.completed_at,
+    "created_at": ChecklistInstance.created_at,
+}
+
+
+def _org_instance_order_by(sort: str, order: str) -> Any:
+    column = _ORG_INSTANCE_SORT_COLUMNS.get(sort, Shift.started_at)
+    return column.asc() if order.lower() == "asc" else column.desc()
+
+
+@dataclass(frozen=True)
+class OrgChecklistInstanceRow:
+    """Одна строка реестра `GET /organizations/{org_id}/checklist-instances`."""
+
+    instance: ChecklistInstance
+    shift: Shift
+    user: User | None
+    work_location: WorkLocation | None
+    items_total: int
+    items_completed: int
+    satisfied_count: int
+    photos_required_missing: int
+    photos_count: int
+
+
+async def list_org_checklist_instances(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID | None = None,
+    template_id: uuid.UUID | None = None,
+    type_: str | None = None,
+    status: str | None = None,
+    state: str | None = None,
+    is_required: bool | None = None,
+    work_location_id: uuid.UUID | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    limit: int = 20,
+    offset: int = 0,
+    sort: str = "shift_started_at",
+    order: str = "desc",
+) -> tuple[list[OrgChecklistInstanceRow], int]:
+    """Реестр экземпляров чек-листов организации: фильтры + сортировка + пагинация.
+
+    Только owner/admin организации. Персональные смены (`organization_id is null`)
+    и `is_deleted=true` не попадают в выдачу никогда (`checklist_reports`).
+    """
+    org = await get_organization(session, org_id)
+    await ensure_admin_or_owner(
+        session,
+        org,
+        requester_id,
+        message="Нет прав на просмотр чек-листов организации",
+    )
+
+    validate_date_range(date_from, date_to)
+
+    if sort not in VALID_ORG_INSTANCE_SORTS:
+        raise ChecklistError(
+            "INVALID_SORT",
+            f"Сортировка должна быть: {', '.join(sorted(VALID_ORG_INSTANCE_SORTS))}",
+            400,
+        )
+
+    type_enum = None
+    if type_ is not None:
+        try:
+            type_enum = ChecklistType(type_)
+        except ValueError:
+            raise ChecklistError(
+                "INVALID_TYPE",
+                f"Тип должен быть: {', '.join(t.value for t in ChecklistType)}",
+                400,
+            ) from None
+
+    status_enum = None
+    if status is not None:
+        try:
+            status_enum = ChecklistInstanceStatus(status)
+        except ValueError:
+            raise ChecklistError(
+                "INVALID_STATUS",
+                f"Статус должен быть: {', '.join(s.value for s in ChecklistInstanceStatus)}",
+                400,
+            ) from None
+
+    if state is not None and state not in {"completed", "not_completed"}:
+        raise ChecklistError(
+            "INVALID_STATE",
+            "Состояние должно быть: completed, not_completed",
+            400,
+        )
+
+    conditions = [Shift.organization_id == org_id, Shift.is_deleted.is_(False)]
+    if user_id is not None:
+        conditions.append(Shift.user_id == user_id)
+    if template_id is not None:
+        conditions.append(ChecklistInstance.template_id == template_id)
+    if type_enum is not None:
+        conditions.append(ChecklistInstance.type == type_enum)
+    if status_enum is not None:
+        # status приоритетнее state — при обоих переданных state игнорируется.
+        conditions.append(ChecklistInstance.status == status_enum)
+    elif state == "completed":
+        conditions.append(ChecklistInstance.status == ChecklistInstanceStatus.completed)
+    elif state == "not_completed":
+        conditions.append(ChecklistInstance.status != ChecklistInstanceStatus.completed)
+    if is_required is not None:
+        conditions.append(ChecklistInstance.is_required.is_(is_required))
+    if work_location_id is not None:
+        conditions.append(Shift.work_location_id == work_location_id)
+    if date_from is not None:
+        conditions.append(Shift.started_at >= ensure_utc(date_from))
+    if date_to is not None:
+        conditions.append(Shift.started_at <= ensure_utc(date_to))
+
+    count_query = (
+        select(func.count())
+        .select_from(ChecklistInstance)
+        .join(Shift, ChecklistInstance.shift_id == Shift.id)
+        .where(*conditions)
+    )
+    total = (await session.execute(count_query)).scalar_one()
+
+    page_query = (
+        select(ChecklistInstance, Shift, User, WorkLocation)
+        .join(Shift, ChecklistInstance.shift_id == Shift.id)
+        .outerjoin(User, Shift.user_id == User.id)
+        .outerjoin(WorkLocation, Shift.work_location_id == WorkLocation.id)
+        .where(*conditions)
+        .order_by(_org_instance_order_by(sort, order))
+        .limit(limit)
+        .offset(offset)
+    )
+    page_rows = (await session.execute(page_query)).all()
+
+    instance_ids = [instance.id for instance, _shift, _user, _location in page_rows]
+    summary_by_instance = await _items_summary_by_instance(
+        session, instance_ids, with_photos_total=True
+    )
+
+    out: list[OrgChecklistInstanceRow] = []
+    for instance, shift, user, work_location in page_rows:
+        summary = summary_by_instance.get(instance.id)
+        out.append(
+            OrgChecklistInstanceRow(
+                instance=instance,
+                shift=shift,
+                user=user,
+                work_location=work_location,
+                items_total=int(summary.total) if summary is not None else 0,
+                items_completed=int(summary.completed) if summary is not None else 0,
+                satisfied_count=int(summary.satisfied_count) if summary is not None else 0,
+                photos_required_missing=(
+                    int(summary.photos_required_missing) if summary is not None else 0
+                ),
+                photos_count=int(summary.photos_count) if summary is not None else 0,
+            )
+        )
+    return out, total

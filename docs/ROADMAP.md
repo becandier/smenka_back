@@ -6,6 +6,16 @@
 
 ---
 
+## Фича — Управленческие отчёты по чек-листам (`checklist_reports`) `[x]`
+ТЗ: `../../docs/tasks/checklist_reports/backend.md`  STATUS: `../../docs/tasks/checklist_reports/STATUS.md`
+- [x] Query-параметр `checklists` (`none`/`all_completed`/`has_incomplete`/`required_incomplete`) в `GET /organizations/{id}/shifts` — считается на лету по `checklist_instances` (флаг `has_incomplete_required_checklists` для этого не годится — проставляется только на завершении смены); `400 INVALID_CHECKLIST_FILTER` на неизвестное значение; комбинируется с `user_id`/`status`/`date_from`/`date_to`, `total`/пагинация учитывают фильтр
+- [x] Additive nullable `checklists_summary` (`total`/`completed`/`required_total`/`required_incomplete`) в `ShiftResponse` — заполняется ТОЛЬКО в орг-эндпоинтах списка/детали смены одним GROUP BY на страницу (`get_checklists_summary_for_shifts`, без N+1); в персональных эндпоинтах остаётся `null`
+- [x] Новый реестр `GET /organizations/{id}/checklist-instances`: фильтры `user_id`/`template_id`/`type`/`status`/`state`/`is_required`/`work_location_id`/`date_from`/`date_to`, сортировка (`shift_started_at`/`completed_at`/`created_at`), пагинация; только owner/admin; персональные смены и `is_deleted=true` исключены структурно; `template_id=null` (удалённый шаблон) не ломает выдачу
+- [x] Миграция `a4b5c6d7e803`: индексы `ix_checklist_instances_template_id` и составной `ix_checklist_instances_shift_id_status` (только индексы, без бэкфилла), обратима
+- [x] 29 тестов (`tests/test_checklist_reports.py`): фильтр `checklists` (4 значения + комбинации + total), регресс на активную смену с необязательным флагом, `checklists_summary` в орг/персональном контексте, реестр (пагинация, все фильтры по отдельности, сортировки, 403, изоляция чужой org, персональные смены исключены, `template_id=null`)
+
+---
+
 ## Фича — Привязка чек-листов к рабочим точкам (`checklist_work_location`) `[x]`
 ТЗ: `../../docs/tasks/checklist_work_location/backend.md`  STATUS: `../../docs/tasks/checklist_work_location/STATUS.md`
 - [x] Модель `ChecklistTemplateLocation` (`checklist_template_locations`): many-to-many шаблон↔точка, обе стороны `ON DELETE CASCADE`, `UNIQUE(template_id, work_location_id)`

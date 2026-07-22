@@ -5,11 +5,13 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Query, Request
 
 from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
+from src.app.api.v1.checklist_instances import _org_instance_row_to_response
 from src.app.api.v1.shifts import _shift_to_response
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.user import UserRole
 from src.app.schemas.audit import AuditLogEntry, AuditLogListResponse
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.checklist import OrgChecklistInstanceListResponse
 from src.app.schemas.organization import (
     InviteCodeResponse,
     JoinResponse,
@@ -28,6 +30,7 @@ from src.app.schemas.organization_settings import (
 from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse
 from src.app.services import audit as audit_service
+from src.app.services import checklist_instance as checklist_instance_service
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import shift as shift_service
@@ -505,6 +508,11 @@ async def list_org_shifts(
     status: str | None = Query(None, description="Фильтр по статусу: active, paused, finished"),
     date_from: dt_datetime | None = Query(None, description="Смены начатые после этой даты"),
     date_to: dt_datetime | None = Query(None, description="Смены начатые до этой даты"),
+    checklists: str | None = Query(
+        None,
+        description="Фильтр по чек-листам: none, all_completed, has_incomplete, "
+        "required_incomplete (checklist_reports)",
+    ),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
@@ -531,6 +539,7 @@ async def list_org_shifts(
             ) from None
 
     shift_service.validate_date_range(date_from, date_to)
+    shift_service.validate_checklists_filter(checklists)
 
     shifts, total = await shift_service.get_org_shifts(
         session,
@@ -539,15 +548,26 @@ async def list_org_shifts(
         status=status_enum,
         date_from=date_from,
         date_to=date_to,
+        checklists=checklists,
         limit=limit,
         offset=offset,
         sort=sort,
         order=order,
     )
     identities = await shift_service.build_org_shift_identities(session, org_id, shifts)
+    summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
+        session, [s.id for s in shifts]
+    )
     return ApiResponse.success(
         ShiftListResponse(
-            items=[_shift_to_response(s, identities.get(s.user_id)) for s in shifts],
+            items=[
+                _shift_to_response(
+                    s,
+                    identities.get(s.user_id),
+                    summaries.get(s.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
+                )
+                for s in shifts
+            ],
             total=total,
             limit=limit,
             offset=offset,
@@ -578,7 +598,90 @@ async def get_org_shift(
 
     shift = await shift_service.get_org_shift_detail(session, org_id, shift_id)
     identities = await shift_service.build_org_shift_identities(session, org_id, [shift])
-    return ApiResponse.success(_shift_to_response(shift, identities.get(shift.user_id)))
+    summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
+        session, [shift.id]
+    )
+    return ApiResponse.success(
+        _shift_to_response(
+            shift,
+            identities.get(shift.user_id),
+            summaries.get(shift.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
+        )
+    )
+
+
+@router.get(
+    "/{org_id}/checklist-instances",
+    tags=["checklist-instances"],
+    summary="Реестр экземпляров чек-листов организации",
+    description=(
+        "Плоский список всех экземпляров чек-листов смен организации "
+        "(персональные смены и is_deleted=true исключены) с фильтрами по "
+        "сотруднику/шаблону/типу/статусу/точке/периоду, сортировкой и "
+        "пагинацией. Доступно владельцу (Owner) и админам (checklist_reports)."
+    ),
+)
+async def list_org_checklist_instances(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    user_id: uuid.UUID | None = Query(None, description="Фильтр по UUID сотрудника"),
+    template_id: uuid.UUID | None = Query(None, description="Фильтр по UUID шаблона"),
+    checklist_type: str | None = Query(
+        None,
+        alias="type",
+        description="Фильтр по типу: shift_start, shift_end",
+    ),
+    status: str | None = Query(
+        None, description="Фильтр по статусу: pending, completed, incomplete"
+    ),
+    state: str | None = Query(
+        None,
+        description="Агрегированный фильтр: completed, not_completed. "
+        "Игнорируется, если передан status",
+    ),
+    is_required: bool | None = Query(None, description="Только обязательные / необязательные"),
+    work_location_id: uuid.UUID | None = Query(None, description="Фильтр по точке смены"),
+    date_from: dt_datetime | None = Query(
+        None, description="Нижняя граница по началу смены, включительно (UTC)"
+    ),
+    date_to: dt_datetime | None = Query(
+        None, description="Верхняя граница по началу смены, включительно (UTC)"
+    ),
+    limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
+    offset: int = Query(0, ge=0, description="Смещение для пагинации"),
+    sort: str = Query(
+        "shift_started_at",
+        description="Поле сортировки: shift_started_at, completed_at, created_at",
+    ),
+    order: str = Query("desc", description="Направление: asc или desc"),
+) -> ApiResponse:
+    rows, total = await checklist_instance_service.list_org_checklist_instances(
+        session,
+        org_id,
+        user.id,
+        user_id=user_id,
+        template_id=template_id,
+        type_=checklist_type,
+        status=status,
+        state=state,
+        is_required=is_required,
+        work_location_id=work_location_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+        offset=offset,
+        sort=sort,
+        order=order,
+    )
+    return ApiResponse.success(
+        OrgChecklistInstanceListResponse(
+            items=[_org_instance_row_to_response(r) for r in rows],
+            total=total,
+            limit=limit,
+            offset=offset,
+        ).model_dump(mode="json")
+    )
 
 
 @router.get(
