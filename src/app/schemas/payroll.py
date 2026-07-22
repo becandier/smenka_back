@@ -111,9 +111,14 @@ class PayrollItemResponse(BaseModel):
     worked_seconds: int = Field(
         description="Отработанное время по завершённым сменам периода (вкл. неоплаченные)",
     )
+    overtime_seconds: int = Field(
+        default=0,
+        description="Согласованная переработка (approved-заявки) в секундах (work_schedules)",
+    )
     shifts_count: int = Field(description="Число завершённых смен в периоде")
     gross_amount_minor: int = Field(
-        description="Начисление в копейках (half-up, округлено один раз на итог)",
+        description="Начисление в копейках (half-up, округлено один раз на итог); для "
+        "hourly-ставки включает согласованную переработку",
     )
     unpaid_seconds: int = Field(
         description="Время смен, для которых не нашлось действующей ставки",
@@ -130,10 +135,30 @@ class PayrollItemResponse(BaseModel):
     net_amount_minor: int = Field(
         description="К выплате: gross_amount_minor − penalty_amount_minor (может быть < 0)",
     )
+    planned_seconds: int = Field(
+        default=0,
+        description="Плановое время по графику (смены без графика — план = факт, work_schedules)",
+    )
+    planned_amount_minor: int = Field(
+        default=0,
+        description="Плановые деньги: planned_seconds × действующая ставка (hourly); "
+        "для per_shift равно gross_amount_minor (план = факт)",
+    )
+    delta_amount_minor: int = Field(
+        default=0,
+        description="gross_amount_minor − planned_amount_minor; отрицательное = недозаработал",
+    )
+    late_count: int = Field(default=0, description="Число смен с опозданием (после допуска)")
+    late_seconds_total: int = Field(
+        default=0, description="Суммарное опоздание в секундах (после допуска)"
+    )
 
 
 class PayrollTotalsResponse(BaseModel):
     worked_seconds: int = Field(description="Суммарное время по всем сотрудникам")
+    overtime_seconds: int = Field(
+        default=0, description="Суммарная согласованная переработка в секундах"
+    )
     shifts_count: int = Field(description="Суммарное число смен")
     gross_amount_minor: int = Field(
         description="Сумма округлённых итогов сотрудников, в копейках",
@@ -146,6 +171,11 @@ class PayrollTotalsResponse(BaseModel):
     net_amount_minor: int = Field(
         description="Сумма «к выплате» по всем сотрудникам (может быть < 0)",
     )
+    planned_seconds: int = Field(default=0, description="Суммарное плановое время")
+    planned_amount_minor: int = Field(default=0, description="Суммарные плановые деньги")
+    delta_amount_minor: int = Field(default=0, description="Сумма дельт (может быть < 0)")
+    late_count: int = Field(default=0, description="Суммарное число опозданий")
+    late_seconds_total: int = Field(default=0, description="Суммарное опоздание в секундах")
 
 
 class PayrollResponse(BaseModel):
@@ -168,12 +198,20 @@ class PayrollBreakdownBucket(BaseModel):
         description="ISO-дата начала корзины в tz отчёта (день/понедельник недели/1-е месяца)",
     )
     worked_seconds: int = Field(description="Отработанное время смен корзины (вкл. неоплаченные)")
+    overtime_seconds: int = Field(default=0, description="Согласованная переработка корзины")
     shifts_count: int = Field(description="Число завершённых смен в корзине")
     gross_amount_minor: int = Field(
         description="Начисление за корзину в копейках (сумма округлённых дневных значений)",
     )
     unpaid_seconds: int = Field(description="Время смен корзины без действующей ставки")
     has_missing_rate: bool = Field(description="true, если в корзине были смены без ставки")
+    planned_seconds: int = Field(default=0, description="Плановое время корзины")
+    planned_amount_minor: int = Field(default=0, description="Плановые деньги корзины")
+    delta_amount_minor: int = Field(
+        default=0, description="gross_amount_minor − planned_amount_minor корзины"
+    )
+    late_count: int = Field(default=0, description="Число опозданий в корзине")
+    late_seconds_total: int = Field(default=0, description="Суммарное опоздание корзины, сек")
 
 
 class PayrollDetailedItem(PayrollItemResponse):
@@ -202,6 +240,9 @@ class MyEarningsResponse(BaseModel):
     period: PayrollPeriod = Field(description="Применённый период")
     currency: str = Field(description="Валюта (RUB)")
     worked_seconds: int = Field(description="Отработанное время за период")
+    overtime_seconds: int = Field(
+        default=0, description="Согласованная переработка за период, секунды"
+    )
     shifts_count: int = Field(description="Число завершённых смен за период")
     gross_amount_minor: int = Field(description="Заработок в копейках (half-up один раз)")
     penalty_amount_minor: int = Field(
@@ -219,3 +260,12 @@ class MyEarningsResponse(BaseModel):
     has_missing_rate: bool = Field(
         description="true, если в периоде были смены без действующей ставки",
     )
+    planned_seconds: int = Field(
+        default=0, description="Плановое время за период (work_schedules)"
+    )
+    planned_amount_minor: int = Field(default=0, description="Плановый заработок за период")
+    delta_amount_minor: int = Field(
+        default=0, description="gross_amount_minor − planned_amount_minor (< 0 — недозаработал)"
+    )
+    late_count: int = Field(default=0, description="Число опозданий за период")
+    late_seconds_total: int = Field(default=0, description="Суммарное опоздание за период, сек")

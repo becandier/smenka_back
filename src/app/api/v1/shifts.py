@@ -8,7 +8,9 @@ from fastapi import APIRouter, Query, Request
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.shift import Shift
+from src.app.models.shift_overtime_request import ShiftOvertimeRequest
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.overtime import OvertimeCreateRequest, OvertimeInfo
 from src.app.schemas.shift import (
     ShiftListResponse,
     ShiftResponse,
@@ -16,18 +18,40 @@ from src.app.schemas.shift import (
     ShiftStatsResponse,
 )
 from src.app.services import audit as audit_service
+from src.app.services import overtime as overtime_service
 from src.app.services import shift as shift_service
 from src.app.services.checklist_instance import ShiftChecklistsSummary
-from src.app.services.shift import ShiftIdentity, calculate_worked_seconds
+from src.app.services.organization_settings import (
+    get_late_tolerance_minutes_map,
+    get_settings_for_org,
+)
+from src.app.services.shift import ShiftIdentity, calculate_worked_seconds, compute_late_seconds
 from src.app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/shifts", tags=["shifts"])
+
+
+def _overtime_payload(request: ShiftOvertimeRequest | None) -> dict[str, Any] | None:
+    if request is None:
+        return None
+    return OvertimeInfo(
+        id=str(request.id),
+        minutes=request.minutes,
+        status=request.status.value,
+        comment=request.comment,
+        review_comment=request.review_comment,
+        reviewed_at=request.reviewed_at,
+        created_at=request.created_at,
+    ).model_dump(mode="json")
 
 
 def _shift_to_response(
     shift: Shift,
     identity: ShiftIdentity | None = None,
     checklists_summary: ShiftChecklistsSummary | None = None,
+    *,
+    late_tolerance_minutes: int = 0,
+    overtime: ShiftOvertimeRequest | None = None,
 ) -> dict[str, Any]:
     """Сериализовать смену.
 
@@ -35,7 +59,8 @@ def _shift_to_response(
     `null`. В орг-контексте `identity` наполняет `user_name` / `display_name` /
     `user_email` / `role` / `custom_role_name`. Аналогично `checklists_summary` заполняется
     ТОЛЬКО в орг-эндпоинтах смен (checklist_reports); в персональном контексте
-    остаётся `null`.
+    остаётся `null`. `late_tolerance_minutes`/`overtime` — ингредиенты для R5/R6
+    (work_schedules), передаются вызывающим кодом (батч без N+1 в списках).
     """
     work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
@@ -83,7 +108,29 @@ def _shift_to_response(
             if checklists_summary is not None
             else None
         ),
+        work_schedule_id=str(shift.work_schedule_id) if shift.work_schedule_id else None,
+        schedule_name=shift.schedule_name,
+        scheduled_start_at=shift.scheduled_start_at,
+        scheduled_end_at=shift.scheduled_end_at,
+        late_seconds=compute_late_seconds(shift, late_tolerance_minutes),
+        finish_reason=shift.finish_reason.value if shift.finish_reason else None,
+        overtime=_overtime_payload(overtime),
     ).model_dump(mode="json")
+
+
+async def _enrich_single_shift(
+    session: SessionDep,
+    shift: Shift,
+) -> tuple[int, ShiftOvertimeRequest | None]:
+    """late_tolerance_minutes организации смены (0 — персональная/без записи настроек)
+    + последняя заявка на переработку. Для одиночных эндпоинтов (старт/пауза/резюме/финиш)."""
+    late_tolerance = 0
+    if shift.organization_id is not None:
+        org_settings = await get_settings_for_org(session, shift.organization_id)
+        if org_settings is not None:
+            late_tolerance = org_settings.late_tolerance_minutes
+    overtime_map = await overtime_service.get_latest_overtime_for_shifts(session, [shift.id])
+    return late_tolerance, overtime_map.get(shift.id)
 
 
 @router.get(
@@ -135,9 +182,26 @@ async def list_shifts(
         order=order,
     )
     await session.commit()
+
+    # Персональная история может смешивать org-смены разных организаций
+    # пользователя — оба батча без N+1 (work_schedules: R5/R6).
+    org_ids = {s.organization_id for s in shifts if s.organization_id is not None}
+    tolerance_map = await get_late_tolerance_minutes_map(session, org_ids)
+    overtime_map = await overtime_service.get_latest_overtime_for_shifts(
+        session, [s.id for s in shifts]
+    )
     return ApiResponse.success(
         ShiftListResponse(
-            items=[_shift_to_response(s) for s in shifts],
+            items=[
+                _shift_to_response(
+                    s,
+                    late_tolerance_minutes=(
+                        tolerance_map.get(s.organization_id, 0) if s.organization_id else 0
+                    ),
+                    overtime=overtime_map.get(s.id),
+                )
+                for s in shifts
+            ],
             total=total,
             limit=limit,
             offset=offset,
@@ -195,11 +259,13 @@ async def start_shift(
     lat = None
     lng = None
     work_location_id = None
+    work_schedule_id = None
     if body is not None:
         org_id = uuid.UUID(body.organization_id) if body.organization_id else None
         lat = body.latitude
         lng = body.longitude
         work_location_id = body.work_location_id
+        work_schedule_id = body.work_schedule_id
 
     shift = await shift_service.start_shift(
         session,
@@ -208,9 +274,13 @@ async def start_shift(
         latitude=lat,
         longitude=lng,
         work_location_id=work_location_id,
+        work_schedule_id=work_schedule_id,
     )
     await session.commit()
-    return ApiResponse.success(_shift_to_response(shift))
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    return ApiResponse.success(
+        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+    )
 
 
 @router.post(
@@ -226,7 +296,10 @@ async def pause_shift(
 ) -> ApiResponse:
     shift = await shift_service.pause_shift(session, shift_id, user.id)
     await session.commit()
-    return ApiResponse.success(_shift_to_response(shift))
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    return ApiResponse.success(
+        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+    )
 
 
 @router.post(
@@ -241,7 +314,63 @@ async def resume_shift(
 ) -> ApiResponse:
     shift = await shift_service.resume_shift(session, shift_id, user.id)
     await session.commit()
-    return ApiResponse.success(_shift_to_response(shift))
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    return ApiResponse.success(
+        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+    )
+
+
+@router.post(
+    "/{shift_id}/overtime",
+    status_code=201,
+    summary="Подать заявку на переработку",
+    description="Владелец завершённой смены просит зачесть время сверх планового окна. "
+    "Допустимо только когда у смены есть график, факт не превысил план, срок подачи "
+    "не истёк и по смене нет активной заявки (work_schedules, R6).",
+)
+async def create_overtime_request(
+    shift_id: uuid.UUID,
+    body: OvertimeCreateRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+    request: Request,
+) -> ApiResponse:
+    overtime_request = await overtime_service.create_overtime_request(
+        session,
+        shift_id,
+        user.id,
+        minutes=body.minutes,
+        comment=body.comment,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.overtime_request,
+        resource_type=AuditResource.overtime,
+        organization_id=None,
+        actor_user_id=user.id,
+        resource_id=overtime_request.id,
+        summary={"shift_id": str(shift_id), "minutes": body.minutes},
+        ip_address=get_client_ip(request),
+    )
+    await session.commit()
+    return ApiResponse.success(_overtime_payload(overtime_request))
+
+
+@router.delete(
+    "/{shift_id}/overtime",
+    summary="Отозвать заявку на переработку",
+    description="Удаляет свою заявку на переработку по смене, пока она в статусе pending. "
+    "200 с конвертом {data:null,error:null} — как остальные DELETE в проекте (не 204 без "
+    "тела: контракт {data,error} обязан быть на любом ответе).",
+)
+async def delete_overtime_request(
+    shift_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    await overtime_service.delete_own_overtime_request(session, shift_id, user.id)
+    await session.commit()
+    return ApiResponse.success(None)
 
 
 @router.post(
@@ -268,4 +397,7 @@ async def finish_shift(
         ip_address=get_client_ip(request),
     )
     await session.commit()
-    return ApiResponse.success(_shift_to_response(shift))
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    return ApiResponse.success(
+        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+    )

@@ -51,7 +51,6 @@ async def _make_org(
             OrganizationSettings(
                 organization_id=org.id,
                 geo_check_enabled=False,
-                auto_finish_hours=16,
             )
         )
     await session.commit()

@@ -73,7 +73,6 @@ async def org(db_session: AsyncSession, owner: User) -> Organization:
             organization_id=organization.id,
             geo_check_enabled=False,
             require_work_location=False,
-            auto_finish_hours=16,
         )
     )
     await db_session.commit()
@@ -873,7 +872,6 @@ class TestOrgChecklistInstancesRegistry:
             OrganizationSettings(
                 organization_id=other_org.id,
                 geo_check_enabled=False,
-                auto_finish_hours=16,
             )
         )
         await db_session.commit()

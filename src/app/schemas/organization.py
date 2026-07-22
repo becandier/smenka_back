@@ -11,11 +11,25 @@ class OrganizationCreate(BaseModel):
 
 
 class OrganizationUpdate(BaseModel):
-    name: str = Field(description="Новое название (обрезается по краям, 1–255 символов)")
+    # Опционально (exclude_unset) — начиная с work_schedules можно обновить
+    # только `timezone`, не указывая `name` заново (админка шлёт их отдельными
+    # запросами, см. backend.md). Передача только `name`, как раньше, работает
+    # без изменений — обратная совместимость сохранена.
+    name: str | None = Field(
+        default=None,
+        description="Новое название (обрезается по краям, 1–255 символов)",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="IANA-имя таймзоны организации (напр. Europe/Moscow). "
+        "Должно резолвиться через zoneinfo, иначе 400 INVALID_TIMEZONE",
+    )
 
     @field_validator("name")
     @classmethod
-    def _normalize_name(cls, value: str) -> str:
+    def _normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         # Trim по краям применяем ДО проверок: пустое после trim и >255 символов → 422.
         stripped = value.strip()
         if not stripped:
@@ -36,6 +50,15 @@ class OrganizationResponse(BaseModel):
         default=False,
         description="Требовать привязку точки к смене (для активации обязательного "
         "выбора точки на клиенте при выключенной гео)",
+    )
+    timezone: str = Field(
+        description="IANA-имя таймзоны организации (work_schedules) — по нему считаются "
+        "плановые окна графиков и отчёты"
+    )
+    overtime_request_days: int = Field(
+        description="Срок подачи заявки на переработку в днях (work_schedules), read-only — "
+        "денормализовано из OrganizationSettings, чтобы employee (без доступа к /settings) "
+        "мог скрыть кнопку подачи заявки после истечения срока"
     )
     created_at: datetime = Field(description="Дата создания")
     my_role: str | None = Field(

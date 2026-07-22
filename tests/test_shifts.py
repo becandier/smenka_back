@@ -142,10 +142,11 @@ class TestFinishShift:
 
 
 class TestAutoFinish:
-    async def test_stale_shift_auto_finished_on_start(
+    async def test_personal_stale_shift_never_auto_finished(
         self, client: AsyncClient, auth_headers, db_session: AsyncSession
     ):
-        """A shift older than 16h should be auto-finished when starting a new one."""
+        """Персональные смены больше не авто-завершаются (work_schedules) — старая
+        смена остаётся активной, новую личную смену начать нельзя (SHIFT_ALREADY_ACTIVE)."""
         from src.app.models.shift import Shift, ShiftStatus
 
         me_resp = await client.get("/api/v1/users/me", headers=auth_headers)
@@ -153,19 +154,19 @@ class TestAutoFinish:
 
         stale_shift = Shift(
             user_id=user_id,
-            started_at=datetime.now(UTC) - timedelta(hours=17),
+            started_at=datetime.now(UTC) - timedelta(hours=100),
             status=ShiftStatus.active,
         )
         db_session.add(stale_shift)
         await db_session.commit()
 
         response = await client.post("/api/v1/shifts/start", headers=auth_headers)
-        assert response.status_code == 201
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "SHIFT_ALREADY_ACTIVE"
 
         list_resp = await client.get("/api/v1/shifts", headers=auth_headers)
         shifts = list_resp.json()["data"]["items"]
-        finished_shifts = [s for s in shifts if s["status"] == "finished"]
-        assert len(finished_shifts) == 1
+        assert all(s["status"] == "active" for s in shifts)
 
 
 class TestListShifts:

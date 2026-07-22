@@ -2,18 +2,19 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.app.core.config import get_settings
 from src.app.core.logging import get_logger
 from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
-from src.app.models.shift import Pause, Shift, ShiftStatus
+from src.app.models.organization import OrganizationMember
+from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
+from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
 
 logger = get_logger(__name__)
-settings = get_settings()
 
 
 class ShiftError(Exception):
@@ -35,6 +36,19 @@ def calculate_worked_seconds(shift: Shift) -> int:
         total -= (pause_end - pause.started_at).total_seconds()
 
     return max(0, int(total))
+
+
+def compute_late_seconds(shift: Shift, late_tolerance_minutes: int) -> int | None:
+    """R5: опоздание сотрудника относительно планового начала.
+
+    `null` (в API) для смен без графика — здесь это `None`. Вычисляется на
+    лету (не хранится): допуск — настройка организации, которая может
+    меняться, а хранимое значение немедленно разошлось бы с ней.
+    """
+    if shift.scheduled_start_at is None:
+        return None
+    diff_seconds = (shift.started_at - shift.scheduled_start_at).total_seconds()
+    return max(0, int(diff_seconds) - late_tolerance_minutes * 60)
 
 
 async def _get_shift_with_pauses(
@@ -180,12 +194,18 @@ async def _auto_finish_stale_for_user(
     session: AsyncSession,
     user_id: uuid.UUID,
 ) -> None:
-    """Inline safety net: auto-finish stale shifts for this user before starting a new one.
+    """Inline safety net: авто-завершение org-смен пользователя, у которых плановое
+    окно уже закрылось (R4), перед стартом новой. Та же логика, что и в фоновой
+    Celery-задаче (`tasks/shifts.py::auto_finish_stale_shifts`), плюс запись в
+    аудит — раньше inline-ветка аудит не писала, это расхождение чинится здесь.
 
-    The main cleanup is done by the Celery background task every 5 min.
-    This ensures the user is never blocked by their own stale shift.
+    Персональные смены (`organization_id is None`) больше не авто-завершаются —
+    персональный трекер работает только по ручному завершению.
     """
+    from src.app.models.audit_log import AuditAction, AuditResource
     from src.app.models.organization_settings import OrganizationSettings
+    from src.app.services import audit as audit_service
+    from src.app.services.checklist_instance import finalize_shift_checklists
 
     now = datetime.now(UTC)
     result = await session.execute(
@@ -195,47 +215,129 @@ async def _auto_finish_stale_for_user(
             Shift.user_id == user_id,
             Shift.status.in_([ShiftStatus.active, ShiftStatus.paused]),
             Shift.is_deleted.is_(False),
+            Shift.organization_id.isnot(None),
+            Shift.scheduled_end_at.isnot(None),
+            Shift.scheduled_end_at <= now,
         )
     )
     active_shifts = list(result.scalars().all())
+    if not active_shifts:
+        return
+
+    org_ids = {s.organization_id for s in active_shifts if s.organization_id is not None}
+    settings_result = await session.execute(
+        select(OrganizationSettings).where(OrganizationSettings.organization_id.in_(org_ids))
+    )
+    settings_map = {s.organization_id: s for s in settings_result.scalars().all()}
 
     for shift in active_shifts:
-        if shift.organization_id is not None:
-            org_result = await session.execute(
-                select(OrganizationSettings).where(
-                    OrganizationSettings.organization_id == shift.organization_id,
-                )
-            )
-            org_settings = org_result.scalar_one_or_none()
-            if org_settings is None:
-                hours = settings.default_auto_finish_hours
-            elif org_settings.auto_finish_hours is None:
-                continue  # auto-finish disabled for this org
-            else:
-                hours = org_settings.auto_finish_hours
-        else:
-            hours = settings.default_auto_finish_hours
+        if shift.organization_id is None or shift.scheduled_end_at is None:
+            continue  # narrowing для mypy — уже отфильтровано в WHERE, но явно
 
-        cutoff = now - timedelta(hours=hours)
-        if shift.started_at < cutoff:
-            from src.app.services.checklist_instance import finalize_shift_checklists
+        org_settings = settings_map.get(shift.organization_id)
+        auto_finish_enabled = (
+            org_settings.auto_finish_by_schedule if org_settings is not None else True
+        )
+        if not auto_finish_enabled:
+            continue
 
-            has_incomplete = await finalize_shift_checklists(session, shift.id)
-            shift.has_incomplete_required_checklists = has_incomplete
+        has_incomplete = await finalize_shift_checklists(session, shift.id)
+        shift.has_incomplete_required_checklists = has_incomplete
 
-            shift_finish = shift.started_at + timedelta(hours=hours)
-            for pause in shift.pauses:
-                if pause.finished_at is None:
-                    pause.finished_at = shift_finish
-            shift.status = ShiftStatus.finished
-            shift.finished_at = shift_finish
-            logger.info(
-                "stale_shift_auto_finished_inline",
-                shift_id=str(shift.id),
-                user_id=str(user_id),
-            )
+        finish_at = shift.scheduled_end_at
+        for pause in shift.pauses:
+            if pause.finished_at is None:
+                pause.finished_at = finish_at
+        shift.status = ShiftStatus.finished
+        shift.finished_at = finish_at
+        shift.finish_reason = ShiftFinishReason.auto_schedule
+
+        await audit_service.record(
+            session,
+            action=AuditAction.shift_auto_finish,
+            resource_type=AuditResource.shift,
+            organization_id=shift.organization_id,
+            actor_user_id=None,
+            resource_id=shift.id,
+            summary={
+                "finished_at": finish_at.isoformat(),
+                "work_schedule_id": (
+                    str(shift.work_schedule_id) if shift.work_schedule_id else None
+                ),
+                "schedule_name": shift.schedule_name,
+            },
+        )
+        logger.info(
+            "stale_shift_auto_finished_inline",
+            shift_id=str(shift.id),
+            user_id=str(user_id),
+        )
 
     await session.flush()
+
+
+async def _resolve_org_shift_schedule(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    member: OrganizationMember,
+    work_location_id: uuid.UUID | None,
+    requested_schedule_id: str | None,
+    started_at: datetime,
+) -> tuple[uuid.UUID | None, str | None, datetime | None, datetime | None]:
+    """R3: резолв графика при старте org-смены.
+
+    Возвращает `(work_schedule_id, schedule_name, scheduled_start_at, scheduled_end_at)` —
+    `(None, None, None, None)`, если смена стартует без графика.
+    """
+    from src.app.services.organization import get_organization
+    from src.app.services.organization_settings import get_settings_for_org
+    from src.app.services.work_schedule import (
+        WorkScheduleError,
+        _get_schedule,
+        compute_scheduled_window,
+        get_effective_schedules,
+    )
+
+    org = await get_organization(session, organization_id)
+    org_settings = await get_settings_for_org(session, organization_id)
+    require_schedule = org_settings.require_schedule if org_settings is not None else False
+
+    effective = await get_effective_schedules(session, organization_id, member, work_location_id)
+
+    if requested_schedule_id is not None:
+        try:
+            requested_uuid = uuid.UUID(requested_schedule_id)
+        except (ValueError, AttributeError, TypeError):
+            raise ShiftError("SCHEDULE_NOT_FOUND", "График не найден", 404) from None
+
+        try:
+            await _get_schedule(session, organization_id, requested_uuid)
+        except WorkScheduleError as exc:
+            raise ShiftError(exc.code, exc.message, exc.status_code) from None
+
+        effective_ids = {s.id for s, _source in effective}
+        if requested_uuid not in effective_ids:
+            raise ShiftError(
+                "SCHEDULE_NOT_AVAILABLE",
+                "Этот график недоступен вам на выбранной точке",
+                403,
+            )
+        chosen = next(s for s, _source in effective if s.id == requested_uuid)
+    elif len(effective) == 1:
+        chosen = effective[0][0]
+    else:
+        if require_schedule:
+            raise ShiftError(
+                "SCHEDULE_REQUIRED",
+                "Выберите график работы",
+                422,
+            )
+        return None, None, None, None
+
+    start_utc, end_utc = compute_scheduled_window(
+        started_at, ZoneInfo(org.timezone), chosen.start_time, chosen.end_time
+    )
+    return chosen.id, chosen.name, start_utc, end_utc
 
 
 async def start_shift(
@@ -245,6 +347,7 @@ async def start_shift(
     latitude: float | None = None,
     longitude: float | None = None,
     work_location_id: str | None = None,
+    work_schedule_id: str | None = None,
 ) -> Shift:
     """Start a new shift.
 
@@ -254,6 +357,8 @@ async def start_shift(
       at least one WorkLocation radius; точка определяется сервером (ближайшая зона).
     - Если гео выкл, точка берётся из `work_location_id` (обязательна при включённом
       `require_work_location`). Персональная смена точку не привязывает.
+    - Персональная смена (`organization_id is None`) графики не применяет — все
+      `scheduled_*` остаются `null` (R3 backend.md).
     """
     await _auto_finish_stale_for_user(session, user_id)
 
@@ -278,6 +383,7 @@ async def start_shift(
 
     # Organization-specific checks + точка смены
     resolved_work_location_id: uuid.UUID | None = None
+    member: OrganizationMember | None = None
     if organization_id is not None:
         resolved_work_location_id = await _resolve_org_shift_start(
             session,
@@ -287,19 +393,6 @@ async def start_shift(
             longitude,
             work_location_id,
         )
-
-    shift = Shift(
-        user_id=user_id,
-        organization_id=organization_id,
-        work_location_id=resolved_work_location_id,
-    )
-    session.add(shift)
-    await session.flush()
-
-    if organization_id is not None:
-        from src.app.models.organization import OrganizationMember
-        from src.app.services.checklist_instance import create_instances_for_shift
-
         member_result = await session.execute(
             select(OrganizationMember).where(
                 OrganizationMember.organization_id == organization_id,
@@ -307,14 +400,51 @@ async def start_shift(
             )
         )
         member = member_result.scalar_one_or_none()
-        if member is not None:
-            await create_instances_for_shift(session, shift, member)
+
+    now = datetime.now(UTC)
+    schedule_id: uuid.UUID | None = None
+    schedule_name: str | None = None
+    scheduled_start_at: datetime | None = None
+    scheduled_end_at: datetime | None = None
+    if organization_id is not None and member is not None:
+        (
+            schedule_id,
+            schedule_name,
+            scheduled_start_at,
+            scheduled_end_at,
+        ) = await _resolve_org_shift_schedule(
+            session,
+            organization_id,
+            member,
+            resolved_work_location_id,
+            work_schedule_id,
+            now,
+        )
+
+    shift = Shift(
+        user_id=user_id,
+        organization_id=organization_id,
+        work_location_id=resolved_work_location_id,
+        started_at=now,
+        work_schedule_id=schedule_id,
+        schedule_name=schedule_name,
+        scheduled_start_at=scheduled_start_at,
+        scheduled_end_at=scheduled_end_at,
+    )
+    session.add(shift)
+    await session.flush()
+
+    if organization_id is not None and member is not None:
+        from src.app.services.checklist_instance import create_instances_for_shift
+
+        await create_instances_for_shift(session, shift, member)
 
     logger.info(
         "shift_started",
         shift_id=str(shift.id),
         user_id=str(user_id),
         org_id=str(organization_id) if organization_id else None,
+        work_schedule_id=str(schedule_id) if schedule_id else None,
     )
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
@@ -421,6 +551,19 @@ def validate_checklists_filter(checklists: str | None) -> None:
         raise ShiftError(
             "INVALID_CHECKLIST_FILTER",
             "Фильтр должен быть: none, all_completed, has_incomplete, required_incomplete",
+            400,
+        )
+
+
+VALID_HAS_OVERTIME_FILTERS = {"pending", "approved", "any"}
+
+
+def validate_has_overtime_filter(has_overtime: str | None) -> None:
+    """400 INVALID_OVERTIME_FILTER для неизвестного значения `has_overtime` (work_schedules)."""
+    if has_overtime is not None and has_overtime not in VALID_HAS_OVERTIME_FILTERS:
+        raise ShiftError(
+            "INVALID_OVERTIME_FILTER",
+            "has_overtime должен быть: pending, approved, any",
             400,
         )
 
@@ -614,6 +757,7 @@ async def finish_shift(
 
     shift.status = ShiftStatus.finished
     shift.finished_at = datetime.now(UTC)
+    shift.finish_reason = ShiftFinishReason.manual
     await session.flush()
 
     logger.info("shift_finished", shift_id=str(shift_id), user_id=str(user_id))
@@ -749,6 +893,21 @@ def _checklists_filter_condition(checklists: str, summary_subq: Any) -> Any:
     return summary_subq.c.required_incomplete > 0
 
 
+def _has_overtime_condition(value: str) -> Any:
+    """EXISTS-условие по состоянию заявки на переработку смены (work_schedules).
+
+    `any` — есть заявка в любом статусе; `pending`/`approved` — есть заявка
+    именно в этом статусе."""
+    base = (
+        select(ShiftOvertimeRequest.id)
+        .where(ShiftOvertimeRequest.shift_id == Shift.id)
+        .correlate(Shift)
+    )
+    if value == "any":
+        return base.exists()
+    return base.where(ShiftOvertimeRequest.status == OvertimeRequestStatus(value)).exists()
+
+
 async def get_org_shifts(
     session: AsyncSession,
     organization_id: uuid.UUID,
@@ -758,6 +917,10 @@ async def get_org_shifts(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     checklists: str | None = None,
+    only_late: bool | None = None,
+    late_tolerance_minutes: int = 0,
+    work_schedule_id: uuid.UUID | None = None,
+    has_overtime: str | None = None,
     limit: int = 20,
     offset: int = 0,
     sort: str = "started_at",
@@ -768,6 +931,8 @@ async def get_org_shifts(
     `checklists` (checklist_reports) — фильтр по состоянию чек-листов смены, считается
     на лету по `checklist_instances` (none/all_completed/has_incomplete/required_incomplete);
     комбинируется с остальными фильтрами по И, пагинация/`total` учитывают его.
+    `only_late`/`work_schedule_id`/`has_overtime` — фильтры work_schedules (R5/R6),
+    также по И с остальными.
     """
     conditions = [Shift.organization_id == organization_id, Shift.is_deleted.is_(False)]
 
@@ -779,6 +944,17 @@ async def get_org_shifts(
         conditions.append(Shift.started_at >= ensure_utc(date_from))
     if date_to is not None:
         conditions.append(Shift.started_at <= ensure_utc(date_to))
+    if work_schedule_id is not None:
+        conditions.append(Shift.work_schedule_id == work_schedule_id)
+    if only_late:
+        late_seconds_expr = (
+            func.extract("epoch", Shift.started_at - Shift.scheduled_start_at)
+            - late_tolerance_minutes * 60
+        )
+        conditions.append(Shift.scheduled_start_at.isnot(None))
+        conditions.append(late_seconds_expr > 0)
+    if has_overtime is not None:
+        conditions.append(_has_overtime_condition(has_overtime))
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
     query = (

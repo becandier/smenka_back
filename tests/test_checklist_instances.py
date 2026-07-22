@@ -541,7 +541,11 @@ class TestAutoFinishIntegration:
         shift_row = (
             await db_session.execute(select(Shift).where(Shift.id == shift_uuid))
         ).scalar_one()
+        # work_schedules (R4): авто-финиш теперь идёт по scheduled_end_at, а не по
+        # возрасту started_at — задаём просроченное плановое окно напрямую.
         shift_row.started_at = datetime.now(UTC) - timedelta(hours=48)
+        shift_row.scheduled_start_at = datetime.now(UTC) - timedelta(hours=49)
+        shift_row.scheduled_end_at = datetime.now(UTC) - timedelta(hours=1)
         await db_session.commit()
 
         # Starting another shift triggers inline auto-finish

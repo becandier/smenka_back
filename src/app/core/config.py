@@ -43,9 +43,6 @@ class Settings(BaseSettings):
     # Сколько неверных вводов кода допускается, прежде чем код «сжигается».
     max_code_attempts: int = 5
 
-    # Shifts
-    default_auto_finish_hours: int = 16
-
     # Checklists
     # Верхняя граница числа фото на один пункт чек-листа (отдаётся клиенту как
     # max_photos_per_item, чтобы он прятал кнопку при достижении лимита).

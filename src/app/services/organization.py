@@ -1,6 +1,7 @@
 import re
 import secrets
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +42,7 @@ async def create_organization(
 
     from src.app.models.organization_settings import OrganizationSettings
 
-    settings = OrganizationSettings(organization_id=org.id, auto_finish_hours=16)
+    settings = OrganizationSettings(organization_id=org.id)
     session.add(settings)
     await session.flush()
     await session.refresh(org, ["settings"])
@@ -142,16 +143,33 @@ async def batch_get_my_roles(
     return result
 
 
+def validate_timezone(name: str) -> None:
+    """400 INVALID_TIMEZONE, если имя не резолвится через `zoneinfo` (work_schedules)."""
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise OrgError(
+            "INVALID_TIMEZONE",
+            f"Неизвестная таймзона: {name}",
+            400,
+        ) from None
+
+
 async def update_organization(
     session: AsyncSession,
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
-    name: str,
+    name: str | None = None,
+    timezone: str | None = None,
 ) -> Organization:
     org = await get_organization(session, org_id)
-    # Переименование — управляющее действие: доступно owner, admin-участнику и super_admin.
+    # Управляющее действие: доступно owner, admin-участнику и super_admin.
     await ensure_admin_or_owner(session, org, actor_id)
-    org.name = name
+    if name is not None:
+        org.name = name
+    if timezone is not None:
+        validate_timezone(timezone)
+        org.timezone = timezone
     await session.flush()
     return org
 

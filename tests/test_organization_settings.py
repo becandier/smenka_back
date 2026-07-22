@@ -40,7 +40,7 @@ async def organization(db_session: AsyncSession, verified_user: User) -> Organiz
     org = Organization(name="Test Org", owner_id=verified_user.id)
     db_session.add(org)
     await db_session.flush()
-    settings = OrganizationSettings(organization_id=org.id, auto_finish_hours=16)
+    settings = OrganizationSettings(organization_id=org.id)
     db_session.add(settings)
     await db_session.commit()
     return org
@@ -60,9 +60,13 @@ class TestGetSettings:
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["geo_check_enabled"] is False
-        assert data["auto_finish_hours"] == 16
         assert data["max_pause_minutes"] is None
         assert data["max_pauses_per_shift"] is None
+        assert data["auto_finish_by_schedule"] is True
+        assert data["require_schedule"] is False
+        assert data["late_tolerance_minutes"] == 0
+        assert data["overtime_request_days"] == 7
+        assert "auto_finish_hours" not in data
 
     async def test_admin_can_get_settings(
         self,
@@ -130,7 +134,7 @@ class TestUpdateSettings:
         data = resp.json()["data"]
         assert data["max_pause_minutes"] == 30
         assert data["max_pauses_per_shift"] == 3
-        assert data["auto_finish_hours"] == 16  # unchanged
+        assert data["auto_finish_by_schedule"] is True  # unchanged
 
     async def test_admin_can_update(
         self,
@@ -157,7 +161,7 @@ class TestUpdateSettings:
         data = resp.json()["data"]
         assert data["max_pause_minutes"] == 15
 
-    async def test_set_auto_finish_hours_to_null(
+    async def test_disable_auto_finish_by_schedule(
         self,
         client: AsyncClient,
         auth_headers: dict,
@@ -166,32 +170,100 @@ class TestUpdateSettings:
         resp = await client.patch(
             f"/api/v1/organizations/{organization.id}/settings",
             headers=auth_headers,
-            json={"auto_finish_hours": None},
+            json={"auto_finish_by_schedule": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["auto_finish_by_schedule"] is False
+
+    async def test_set_late_tolerance_and_overtime_request_days(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"late_tolerance_minutes": 15, "overtime_request_days": 14},
         )
         assert resp.status_code == 200
         data = resp.json()["data"]
-        assert data["auto_finish_hours"] is None
+        assert data["late_tolerance_minutes"] == 15
+        assert data["overtime_request_days"] == 14
 
-    async def test_set_auto_finish_hours_back_from_null(
+    async def test_late_tolerance_out_of_range_rejected(
         self,
         client: AsyncClient,
         auth_headers: dict,
         organization: Organization,
     ):
-        # disable
-        await client.patch(
-            f"/api/v1/organizations/{organization.id}/settings",
-            headers=auth_headers,
-            json={"auto_finish_hours": None},
-        )
-        # re-enable
         resp = await client.patch(
             f"/api/v1/organizations/{organization.id}/settings",
             headers=auth_headers,
-            json={"auto_finish_hours": 24},
+            json={"late_tolerance_minutes": 121},
+        )
+        assert resp.status_code == 422
+
+    async def test_cannot_require_schedule_without_schedules(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"require_schedule": True},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "SCHEDULE_REQUIRED_NO_SCHEDULES"
+
+    async def test_can_require_schedule_with_active_schedule(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        create_resp = await client.post(
+            f"/api/v1/organizations/{organization.id}/work-schedules",
+            headers=auth_headers,
+            json={"name": "Дневная", "start_time": "09:00", "end_time": "18:00"},
+        )
+        assert create_resp.status_code == 201
+
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"require_schedule": True},
         )
         assert resp.status_code == 200
-        assert resp.json()["data"]["auto_finish_hours"] == 24
+        assert resp.json()["data"]["require_schedule"] is True
+
+    async def test_cannot_require_schedule_with_only_archived_schedule(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        create_resp = await client.post(
+            f"/api/v1/organizations/{organization.id}/work-schedules",
+            headers=auth_headers,
+            json={"name": "Дневная", "start_time": "09:00", "end_time": "18:00"},
+        )
+        schedule_id = create_resp.json()["data"]["id"]
+        await client.patch(
+            f"/api/v1/organizations/{organization.id}/work-schedules/{schedule_id}",
+            headers=auth_headers,
+            json={"is_archived": True},
+        )
+
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"require_schedule": True},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "SCHEDULE_REQUIRED_NO_SCHEDULES"
 
     async def test_employee_cannot_update(
         self,
