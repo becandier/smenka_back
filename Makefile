@@ -1,6 +1,6 @@
 .PHONY: help up down restart build rebuild setup sync hooks logs logs-api logs-worker logs-db ps \
        shell dbshell redis-cli migrate rollback migration migration-check db-current \
-       test test-cov lint lint-fix typecheck check clean
+       test-db test test-cov lint lint-fix typecheck check clean
 
 COMPOSE = docker compose
 API     = $(COMPOSE) exec api
@@ -89,10 +89,18 @@ db-current:  ## Показать текущую ревизию БД
 	$(ALEMBIC) current
 
 # ─── Тесты ───────────────────────────────────────────────────
-test:  ## Запустить тесты
+# conftest.py коннектится в "<POSTGRES_DB>_test" (см. tests/conftest.py), а образ
+# postgres на первом init создаёт только основную POSTGRES_DB — "smenka_test"
+# сама не появляется. Создаём её идемпотентно перед каждым прогоном тестов.
+test-db:  ## Создать тестовую БД (идемпотентно, требуется для make test)
+	@$(COMPOSE) exec db psql -U $(DB_USER) -d $(DB_NAME) -tAc \
+		"SELECT 1 FROM pg_database WHERE datname = '$(DB_NAME)_test'" | grep -q 1 || \
+		$(COMPOSE) exec db psql -U $(DB_USER) -d $(DB_NAME) -c "CREATE DATABASE $(DB_NAME)_test"
+
+test: test-db  ## Запустить тесты
 	$(API) python -m pytest tests/ -v
 
-test-cov:  ## Тесты с покрытием
+test-cov: test-db  ## Тесты с покрытием
 	$(API) python -m pytest tests/ -v --cov=app --cov-report=term-missing
 
 # ─── Качество кода ───────────────────────────────────────────

@@ -32,3 +32,13 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)" || exit 1
 CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Только для локальной разработки (docker-compose.yml → api: target: dev).
+# CI (ci.yml) ставит dev-зависимости сам через `uv sync --extra dev` на раннере,
+# в Docker не собирается вовсе. release.yml и docker-compose.prod.yml используют
+# target: app — эта стадия НЕ собирается ни при сборке прод-образа, ни в CI/release,
+# поэтому ruff/mypy/pytest никогда не попадают в то, что уезжает в ghcr.io.
+FROM app AS dev
+USER root
+RUN uv pip install --system --no-cache ".[dev]"
+USER appuser
