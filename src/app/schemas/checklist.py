@@ -92,6 +92,39 @@ class RoleAssignmentRequest(BaseModel):
     )
 
 
+class TemplateLocationAssignmentRequest(BaseModel):
+    location_ids: list[str] = Field(
+        description=(
+            "UUIDы рабочих точек. Передавайте полный список — PUT-семантика "
+            "(замена). Пустой список снимает все привязки (шаблон снова "
+            "действует на всех точках)."
+        ),
+    )
+
+
+class LocationTemplateAssignmentRequest(BaseModel):
+    template_ids: list[str] = Field(
+        description=(
+            "UUIDы шаблонов чек-листов. Передавайте полный список — "
+            "PUT-семантика (замена набора шаблонов у точки)."
+        ),
+    )
+
+
+class LocationTemplateResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    is_required: bool
+    is_archived: bool = Field(
+        description="Архивные включаются в выдачу — админ видит, что привязка существует",
+    )
+
+
+class LocationTemplatesResponse(BaseModel):
+    items: list[LocationTemplateResponse]
+
+
 class OverrideItem(BaseModel):
     template_id: str = Field(description="UUID шаблона")
     type: str = Field(description="add — добавить поверх роли, remove — исключить")
@@ -114,6 +147,9 @@ class AssignmentResponse(BaseModel):
     role_ids: list[str] = Field(description="Роли, которым назначен шаблон")
     personal_add: list[MemberInfo] = Field(description="Сотрудники с личным add")
     personal_remove: list[MemberInfo] = Field(description="Сотрудники с личным remove")
+    location_ids: list[str] = Field(
+        description="Точки, к которым привязан шаблон. Пустой список = действует на всех точках",
+    )
 
 
 class EffectiveTemplateResponse(BaseModel):
@@ -122,6 +158,9 @@ class EffectiveTemplateResponse(BaseModel):
     type: str
     is_required: bool
     source: str = Field(description="role | personal_add")
+    location_ids: list[str] = Field(
+        description="Точки, к которым привязан шаблон. Пустой список = действует на всех точках",
+    )
 
 
 class EffectiveTemplatesResponse(BaseModel):

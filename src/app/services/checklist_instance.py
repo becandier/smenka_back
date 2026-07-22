@@ -21,6 +21,7 @@ from src.app.models.organization import OrganizationMember
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
 from src.app.services.checklist_assignment import _compute_effective
+from src.app.services.checklist_location import get_location_ids_for_templates, matches_location
 from src.app.services.checklist_template import ChecklistError
 
 logger = get_logger(__name__)
@@ -41,6 +42,21 @@ async def create_instances_for_shift(
         shift.organization_id,
         member,
     )
+    if not effective_pairs:
+        return []
+
+    # Фильтр по точке смены (checklist_work_location, backend.md
+    # matches_location): применяется единообразно ко всем каналам, включая
+    # personal_add. Шаблон без привязок проходит всегда; пустая таблица
+    # привязок → фильтр всегда True → нулевое изменение поведения на проде.
+    location_ids_by_template = await get_location_ids_for_templates(
+        session, [t.id for t, _ in effective_pairs]
+    )
+    effective_pairs = [
+        (template, source)
+        for template, source in effective_pairs
+        if matches_location(location_ids_by_template.get(template.id), shift.work_location_id)
+    ]
     if not effective_pairs:
         return []
 

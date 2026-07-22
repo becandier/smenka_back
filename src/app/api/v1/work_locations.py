@@ -6,6 +6,11 @@ from fastapi import APIRouter, Request
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.checklist import (
+    LocationTemplateAssignmentRequest,
+    LocationTemplateResponse,
+    LocationTemplatesResponse,
+)
 from src.app.schemas.work_location import (
     WorkLocationCreate,
     WorkLocationListResponse,
@@ -13,6 +18,7 @@ from src.app.schemas.work_location import (
     WorkLocationUpdate,
 )
 from src.app.services import audit as audit_service
+from src.app.services import checklist_location as checklist_location_service
 from src.app.services import work_location as wl_service
 from src.app.utils.request import get_client_ip
 
@@ -165,3 +171,69 @@ async def delete_location(
     )
     await session.commit()
     return ApiResponse.success({"message": "Точка удалена"})
+
+
+@router.get(
+    "/{location_id}/checklist-templates",
+    summary="Чек-листы точки",
+    description=(
+        "Шаблоны, привязанные к точке (обратный срез к PUT .../locations). "
+        "Архивные включаются в выдачу с is_archived=true — привязка видна, "
+        "даже если шаблон больше не используется. Доступно владельцу и админам."
+    ),
+)
+async def get_location_checklist_templates(
+    org_id: uuid.UUID,
+    location_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    templates = await checklist_location_service.get_location_templates(
+        session,
+        org_id,
+        location_id,
+        user.id,
+    )
+    return ApiResponse.success(
+        LocationTemplatesResponse(
+            items=[
+                LocationTemplateResponse(
+                    id=str(t.id),
+                    name=t.name,
+                    type=t.type.value,
+                    is_required=t.is_required,
+                    is_archived=t.is_archived,
+                )
+                for t in templates
+            ],
+        ).model_dump(mode="json")
+    )
+
+
+@router.put(
+    "/{location_id}/checklist-templates",
+    summary="Задать чек-листы точки",
+    description=(
+        "PUT-семантика: передайте полный список шаблонов, которые должны быть "
+        "привязаны к точке (замена). Пишет в ту же таблицу связей, что и "
+        "PUT .../checklist-templates/{template_id}/locations, с другой стороны. "
+        "Доступно владельцу и админам."
+    ),
+)
+async def set_location_checklist_templates(
+    org_id: uuid.UUID,
+    location_id: uuid.UUID,
+    body: LocationTemplateAssignmentRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    template_uuids = [uuid.UUID(tpl_id) for tpl_id in body.template_ids]
+    result_ids = await checklist_location_service.set_location_templates(
+        session,
+        org_id,
+        location_id,
+        template_uuids,
+        user.id,
+    )
+    await session.commit()
+    return ApiResponse.success({"template_ids": [str(tpl_id) for tpl_id in result_ids]})

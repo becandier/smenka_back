@@ -6,6 +6,20 @@
 
 ---
 
+## Фича — Привязка чек-листов к рабочим точкам (`checklist_work_location`) `[x]`
+ТЗ: `../../docs/tasks/checklist_work_location/backend.md`  STATUS: `../../docs/tasks/checklist_work_location/STATUS.md`
+- [x] Модель `ChecklistTemplateLocation` (`checklist_template_locations`): many-to-many шаблон↔точка, обе стороны `ON DELETE CASCADE`, `UNIQUE(template_id, work_location_id)`
+- [x] `services/checklist_location.py`: симметричные `set_template_locations`/`set_location_templates` со стороны шаблона и точки, `get_location_only_template_ids` (новый канал «нет ролей + есть точки»), `matches_location`/`get_location_ids_for_templates`
+- [x] `_compute_effective` (checklist_assignment.py) расширен третьим источником кандидатов (location-only), фильтр по точке применяется единообразно ко всем каналам, включая `personal_add`
+- [x] `create_instances_for_shift` (checklist_instance.py) фильтрует эффективный набор по `shift.work_location_id` перед созданием снимков
+- [x] `PUT /organizations/{id}/checklist-templates/{tpl_id}/locations` + additive `location_ids` в `GET .../assignments`
+- [x] `GET/PUT /organizations/{id}/locations/{loc_id}/checklist-templates` (обратный срез, архивные включены с `is_archived=true`)
+- [x] `GET /organizations/{id}/members/{user_id}/checklists` — additive `location_ids` + опц. `work_location_id` (обратная совместимость: без параметра — без фильтра)
+- [x] Миграция `82e9e9625926` (create table, без бэкфилла — нулевое изменение поведения на проде), обратима
+- [x] 21 тест (`tests/test_checklist_locations.py`): полная матрица создания экземпляров (9), API-права/валидация/идемпотентность/каскад (7), фильтр эффективных чек-листов (2) + доп. проверки симметрии эндпоинтов и additive-полей
+
+---
+
 ## Фича — Файловое хранилище (`file_storage`) `[x]`
 ТЗ: `../docs/tasks/file_storage/backend.md`
 - [x] Модель `File` (`files`): реестр блобов (storage_key UNIQUE, bucket, category, original_filename, content_type, size_bytes, checksum_sha256, is_attached, organization_id NULL→CASCADE, owner_user_id→CASCADE), enum `FileCategory`; индексы `category`/`organization_id`/`owner_user_id`/`(is_attached, created_at)`

@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-07-02 (oauth_login — вход через Google/Apple: таблицы `oauth_identities`/`oauth_provider_settings`, `users.password_hash` стал nullable, публичные `POST /auth/oauth/{google,apple}` + `GET /auth/oauth/config`, платформенные `GET/PUT /admin/oauth-providers/...` (super_admin))
+Последнее обновление: 2026-07-21 (checklist_work_location — привязка шаблонов чек-листов к рабочим точкам: таблица `checklist_template_locations`, фильтр по точке в создании экземпляров на старте смены, `PUT .../checklist-templates/{id}/locations`, `GET/PUT .../locations/{id}/checklist-templates`, additive `location_ids` в `assignments`/`EffectiveTemplateResponse` + опциональный `work_location_id` у `GET .../members/{id}/checklists`)
 
 ---
 
@@ -27,6 +27,7 @@
 | `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position, **photo_requirement** none/optional/required, **photo_source** camera/camera_or_gallery — VARCHAR32, дефолты none/camera) |
 | `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
 | `ChecklistMemberOverride` | `checklist_member_overrides` | Личное переопределение (add/remove) |
+| `ChecklistTemplateLocation` | `checklist_template_locations` | Привязка шаблона к рабочей точке many-to-many (`template_id`/`work_location_id` → CASCADE, `UNIQUE(template_id, work_location_id)`). Шаблон с привязками действует только на них; без привязок — на любой точке (`checklist_work_location`) |
 | `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
 | `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count, **photo_requirement**/**photo_source** — снимок настроек фото на старте смены) |
 | `ChecklistItemPhoto` | `checklist_item_photos` | Фото-подтверждение пункта-экземпляра (instance_item_id→CASCADE индекс, file_id→`files.id` CASCADE **UNIQUE**, captured_at, latitude/longitude double precision nullable — антифрод-метка, position, created_at). Один файл = одна привязка |
@@ -76,7 +77,9 @@
 | POST | `/api/v1/organizations/{id}/locations` | Создать точку | Bearer |
 | GET | `/api/v1/organizations/{id}/locations` | Список точек | Bearer |
 | PATCH | `/api/v1/organizations/{id}/locations/{loc_id}` | Обновить точку | Bearer |
-| DELETE | `/api/v1/organizations/{id}/locations/{loc_id}` | Удалить точку | Bearer |
+| DELETE | `/api/v1/organizations/{id}/locations/{loc_id}` | Удалить точку (каскадно снимает привязки чек-листов) | Bearer |
+| GET | `/api/v1/organizations/{id}/locations/{loc_id}/checklist-templates` | Чек-листы точки (обратный срез; архивные включены с `is_archived=true`) | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/locations/{loc_id}/checklist-templates` | Задать чек-листы точки (PUT, замена; та же таблица связей, что и `.../locations` выше) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/settings` | Настройки организации | Bearer (owner) |
 | PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
 | GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников (обогащены identity сотрудника) | Bearer (owner/admin) |
@@ -97,12 +100,13 @@
 | DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/{item_id}` | Удалить пункт | Bearer (owner/admin) |
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/items/reorder` | Изменить порядок | Bearer (owner/admin) |
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/roles` | Назначить ролям (PUT) | Bearer (owner/admin) |
-| GET | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/assignments` | Кому назначен | Bearer (owner/admin) |
+| PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/locations` | Задать точки шаблона (PUT, замена); пустой список снимает все привязки | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/assignments` | Кому назначен (+ `location_ids`) | Bearer (owner/admin) |
 | PUT | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Личные overrides bulk (PUT) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/members/{user_id}/checklist-overrides` | Список личных overrides сотрудника | Bearer (owner/admin/self) |
 | PUT | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Upsert override (шаблон, сотрудник) | Bearer (owner/admin) |
 | DELETE | `/api/v1/organizations/{id}/checklist-templates/{tpl_id}/personal/{user_id}` | Снять override (идемпотентно) | Bearer (owner/admin) |
-| GET | `/api/v1/organizations/{id}/members/{user_id}/checklists` | Эффективные чек-листы | Bearer (owner/admin/self) |
+| GET | `/api/v1/organizations/{id}/members/{user_id}/checklists` | Эффективные чек-листы (+ `location_ids`; опц. `work_location_id` — фильтр `matches_location`) | Bearer (owner/admin/self) |
 | GET | `/api/v1/shifts/{shift_id}/checklists` | Экземпляры чек-листов смены (items_summary: total, completed, satisfied_count, photos_required_missing — один GROUP BY) | Bearer (владелец смены / owner / admin) |
 | GET | `/api/v1/shifts/{shift_id}/checklists/{instance_id}` | Детали экземпляра (+max_photos_per_item, по каждому пункту photos[] со свежими presigned URL; сбой storage → url=null без 502) | Bearer |
 | PATCH | `/api/v1/shifts/{shift_id}/checklists/{instance_id}/items/{item_id}` | Отметить пункт | Bearer (владелец смены) |
@@ -155,6 +159,35 @@
 
 > **Привязка точки к смене (`shift_work_location`).** При старте орг-смены фиксируется `shifts.work_location_id` по матрице двух настроек org (`geo_check_enabled` × `require_work_location`): **гео вкл** — точку определяет сервер (ближайшая по Haversine из зон, в радиус которых попал сотрудник; присланный клиентом `work_location_id` игнорируется; вне зон — прежний `403 GEO_CHECK_FAILED`); **гео выкл + require** — клиент обязан прислать `work_location_id` (нет → `422 WORK_LOCATION_REQUIRED`); **гео выкл + не require** — точка опциональна. Любой переданный id, не принадлежащий org (или с невалидным форматом), → `404 WORK_LOCATION_NOT_FOUND`. Точка ставится один раз на старте (паузы/возобновления её не меняют); логика — `services/shift._resolve_org_shift_start`. Персональные смены (`org_id=null`) точку не привязывают. `ShiftResponse` отдаёт additive nullable `work_location_id` + денормализованный `work_location {id, name, address}` (текущее значение точки, eager `selectinload(Shift.work_location)` во всех читающих смену запросах). Настройку `require_work_location` нельзя включить без точек (`409 WORK_LOCATION_REQUIRED_NO_LOCATIONS`); удаление последней точки гасит и `geo_check_enabled`, и `require_work_location` (симметрично). Помимо `OrganizationSettings*` (RBAC owner/admin) обе настройки `geo_check_enabled` и `require_work_location` **флэттятся в `OrganizationResponse` и `JoinResponse`** (`_org_to_response` / join, из `org.settings.* if org.settings else False`) — чтобы employee (без доступа к `/settings`) активировал обязательный выбор точки на клиенте. Разблокирует фильтр по точке в `payroll_detailed_report`.
 
+> **Привязка чек-листов к рабочим точкам (`checklist_work_location`).** Шаблон
+> чек-листа можно привязать к одной или нескольким точкам (`checklist_template_locations`,
+> many-to-many, обе стороны `ON DELETE CASCADE`). Шаблон без привязок действует
+> на любой точке (текущее поведение, не меняется); с привязками — только на них,
+> причём фильтр `matches_location` применяется **единообразно ко всем каналам
+> назначения**, включая `personal_add` (решение аналитика: точка сужает роль, а
+> не дополняет её). Появился новый канал назначения: шаблон **без единой
+> привязки к роли**, но с привязкой к точке, назначается **всем** сотрудникам
+> организации (независимо от роли или её отсутствия) — реализовано как ещё
+> один источник кандидатов внутри `_compute_effective` (`services/checklist_assignment.py`,
+> `get_location_only_template_ids`), помечается тем же `source="role"` (новый
+> enum-значение не вводилось). Фильтр по точке применяется **только** при
+> создании экземпляров на старте смены (`services/checklist_instance.create_instances_for_shift`,
+> по `shift.work_location_id`); смена без точки получает только шаблоны без
+> привязок. Симметричные CRUD-эндпоинты пишут в одну таблицу с разных сторон:
+> `PUT .../checklist-templates/{id}/locations` (со стороны шаблона) и
+> `GET/PUT .../locations/{id}/checklist-templates` (со стороны точки, GET
+> включает архивные шаблоны с `is_archived=true` — админ видит, что привязка
+> существует). `GET .../members/{id}/checklists` получил additive `location_ids`
+> на каждом элементе и опциональный query `work_location_id`: без параметра —
+> весь `by_assignment` набор без фильтра (обратная совместимость), с параметром —
+> ровно то, что сотрудник получил бы, открыв смену на этой точке (валидация
+> принадлежности точки org → `404 WORK_LOCATION_NOT_FOUND`). Удаление точки
+> каскадно снимает привязки; шаблон, оставшийся без привязок, снова действует
+> везде (принято как есть, без запрета удаления). Миграция создаёт пустую
+> таблицу без бэкфилла — нулевое изменение поведения на проде в момент выката.
+> Ошибки — `ChecklistError` (`WORK_LOCATION_NOT_FOUND`/`INVALID_LOCATION`/`INVALID_TEMPLATE`,
+> `TEMPLATE_NOT_FOUND` переиспользуется).
+
 > **CORS.** Подключён `CORSMiddleware` (`main.py`), источники — из `Settings.cors_origins` (env `CORS_ORIGINS`, CSV; пусто = выключено). Нужен браузерным клиентам: админке `smenka_admin` и веб-версии мобилки (`flutter build web`). `allow_credentials=False` — клиенты шлют JWT в заголовке `Authorization`, не в cookie (переход на httpOnly-cookie + CSRF — отдельная задача); `allow_methods`/`allow_headers=["*"]`.
 
 > **Ставки и зарплата (payroll).** История ставок — источник истины: строка `organization_member_rates` действует с `effective_from`, прошлые записи не перезаписываются (новая ставка «с даты» = POST новой строки; PATCH — только исправление опечаток). Для каждой завершённой смены берётся ставка с максимальным `effective_from <= shift.started_at`; смены без ставки → `unpaid_seconds`/`unpaid_shifts_count`/`has_missing_rate` и не входят в `gross_amount_minor`. Деньги — целые копейки: накопление точным Decimal, half-up до копейки ровно один раз на итог сотрудника; `totals.gross` = сумма округлённых итогов. Расчёты не кэшируются. `MemberResponse.current_rate` (additive nullable) — действующая ставка `max(effective_from) <= now`, заполняется **только** для owner/admin/super_admin (для employee всегда null — приватность зарплат). Owner != member (ADR-001): в payroll-отчёте не фигурирует, `my-earnings` отвечает ему 403. Ошибки: `MEMBER_NOT_FOUND`/`RATE_NOT_FOUND` (404), `RATE_EFFECTIVE_FROM_TAKEN` (409, дубль по `UNIQUE (member_id, effective_from)` — закрывает и гонку), `INVALID_DATE_RANGE` (400, согласовано с date_filters).
@@ -189,7 +222,8 @@
 | `services/organization_settings.py` | CRUD настроек организации |
 | `services/organization_role.py` | Кастомные роли организации и их назначение members (`RoleError`) |
 | `services/checklist_template.py` | Шаблоны чек-листов, пункты (+`photo_requirement`/`photo_source`), reorder, архивация (`ChecklistError`) |
-| `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides (bulk PUT), вычисление эффективных шаблонов |
+| `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides (bulk PUT), вычисление эффективных шаблонов (`_compute_effective` — роль ∪ канал «нет ролей + есть точки» ∪ personal_add − personal_remove, опц. фильтр по `work_location_id`) |
+| `services/checklist_location.py` | Привязка шаблонов к точкам (`checklist_template_locations`): симметричные `set_template_locations`/`set_location_templates`, `get_location_only_template_ids` (новый канал назначения), `matches_location`/`get_location_ids_for_templates` (переиспользуются assignment/instance) |
 | `services/checklist_override.py` | Гранулярный upsert/delete/list личных overrides (ON CONFLICT DO UPDATE) |
 | `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, привязка/отвязка фото, единый пересчёт «satisfied» (`_recompute_instance_status`), finalize, `cleanup_shift_photo_files` |
 | `services/common.py` | Общие guard-функции org-доступа (`ensure_owner/ensure_member/ensure_admin_or_owner`) со сквозной веткой super_admin (`AccessError`) |

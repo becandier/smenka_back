@@ -1,8 +1,9 @@
 import uuid
+from collections.abc import Callable, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import InstrumentedAttribute, selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.checklist import (
@@ -38,6 +39,61 @@ async def _check_admin_or_owner(
         user_id,
         message="Нет прав для управления чек-листами",
     )
+
+
+async def _ensure_ids_belong_to_org(
+    session: AsyncSession,
+    *,
+    id_column: InstrumentedAttribute[uuid.UUID],
+    org_column: InstrumentedAttribute[uuid.UUID],
+    org_id: uuid.UUID,
+    ids: list[uuid.UUID],
+    error_code: str,
+    error_message: str,
+) -> None:
+    """Проверяет, что все `ids` существуют в таблице `id_column` и принадлежат
+    `org_id` (по `org_column`); иначе `ChecklistError(error_code, ..., 400)`.
+    Пустой список — не ошибка (нечего проверять), совместимо с PUT-семантикой
+    «пустой список снимает все привязки».
+
+    Общий шаг PUT-эндпоинтов замены (роли/точки шаблона, шаблоны точки,
+    личные overrides) — раньше был продублирован по каждому сервису отдельно.
+    """
+    if not ids:
+        return
+    result = await session.execute(
+        select(id_column).where(id_column.in_(ids), org_column == org_id)
+    )
+    valid_ids = {row[0] for row in result.all()}
+    if valid_ids != set(ids):
+        raise ChecklistError(error_code, error_message, 400)
+
+
+async def _replace_m2m_links[T](
+    session: AsyncSession,
+    existing_rows: Sequence[T],
+    *,
+    key_of: Callable[[T], uuid.UUID],
+    target_ids: set[uuid.UUID],
+    make_new: Callable[[uuid.UUID], T],
+) -> None:
+    """PUT-семантика (замена) для строк-связей many-to-many: удаляет строки,
+    отсутствующие в `target_ids`, добавляет недостающие, не трогает
+    совпадающие. `existing_rows` — уже отфильтрованные вызывающим кодом по
+    неизменной стороне связи (например, все строки данного `template_id`).
+
+    Общий диф-шаг `assign_template_to_roles` / `set_template_locations` /
+    `set_location_templates` — раньше был продублирован по сервисам.
+    """
+    existing = {key_of(row): row for row in existing_rows}
+    current = set(existing.keys())
+
+    for id_ in current - target_ids:
+        await session.delete(existing[id_])
+    for id_ in target_ids - current:
+        session.add(make_new(id_))
+
+    await session.flush()
 
 
 def _parse_type(raw: str) -> ChecklistType:

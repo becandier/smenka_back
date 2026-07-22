@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.organization import OrganizationMember
@@ -12,8 +12,10 @@ from src.app.schemas.checklist import (
     MemberInfo,
     MemberOverrideRequest,
     RoleAssignmentRequest,
+    TemplateLocationAssignmentRequest,
 )
 from src.app.services import checklist_assignment as assign_service
+from src.app.services import checklist_location as location_service
 
 router = APIRouter(
     prefix="/organizations/{org_id}",
@@ -54,10 +56,36 @@ async def assign_template_to_roles(
     return ApiResponse.success({"role_ids": [str(r) for r in result_ids]})
 
 
+@router.put(
+    "/checklist-templates/{template_id}/locations",
+    summary="Задать точки шаблона",
+    description="PUT-семантика: передайте полный список точек. "
+    "Отсутствующие — удаляются, новые — добавляются. Пустой список снимает "
+    "все привязки (шаблон снова действует на всех точках).",
+)
+async def assign_template_to_locations(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    body: TemplateLocationAssignmentRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    location_uuids = [uuid.UUID(loc_id) for loc_id in body.location_ids]
+    result_ids = await location_service.set_template_locations(
+        session,
+        org_id,
+        template_id,
+        location_uuids,
+        user.id,
+    )
+    await session.commit()
+    return ApiResponse.success({"location_ids": [str(loc_id) for loc_id in result_ids]})
+
+
 @router.get(
     "/checklist-templates/{template_id}/assignments",
     summary="Кому назначен шаблон",
-    description="Роли + сотрудники с личными add/remove. Доступно владельцу и админам.",
+    description="Роли + сотрудники с личными add/remove + точки. Доступно владельцу и админам.",
 )
 async def get_template_assignments(
     org_id: uuid.UUID,
@@ -65,7 +93,12 @@ async def get_template_assignments(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
-    role_ids, personal_add, personal_remove = await assign_service.get_template_assignments(
+    (
+        role_ids,
+        personal_add,
+        personal_remove,
+        location_ids,
+    ) = await assign_service.get_template_assignments(
         session,
         org_id,
         template_id,
@@ -77,6 +110,7 @@ async def get_template_assignments(
             role_ids=[str(r) for r in role_ids],
             personal_add=[_member_info(m) for m in personal_add],
             personal_remove=[_member_info(m) for m in personal_remove],
+            location_ids=[str(loc_id) for loc_id in location_ids],
         ).model_dump(mode="json")
     )
 
@@ -114,20 +148,27 @@ async def set_member_overrides(
     "/members/{user_id}/checklists",
     summary="Эффективные чек-листы сотрудника",
     description="Вычисляет итоговый набор чек-листов по формуле: "
-    "(шаблоны роли − remove) + add. "
-    "Доступно владельцу, админам и самому сотруднику.",
+    "(шаблоны роли − remove) + add, включая шаблоны без ролей, но с "
+    "привязкой к точкам. Без `work_location_id` — весь набор, без фильтра "
+    "по точке. С `work_location_id` — ровно то, что сотрудник получил бы, "
+    "открыв смену на этой точке. Доступно владельцу, админам и самому сотруднику.",
 )
 async def get_member_effective_checklists(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    work_location_id: uuid.UUID | None = Query(
+        default=None,
+        description="Точка, для которой применить фильтр matches_location",
+    ),
 ) -> ApiResponse:
-    pairs = await assign_service.get_effective_templates(
+    triples = await assign_service.get_effective_templates(
         session,
         org_id,
         user_id,
         user.id,
+        work_location_id=work_location_id,
     )
     return ApiResponse.success(
         EffectiveTemplatesResponse(
@@ -138,8 +179,9 @@ async def get_member_effective_checklists(
                     type=t.type.value,
                     is_required=t.is_required,
                     source=source,
+                    location_ids=[str(loc_id) for loc_id in location_ids],
                 )
-                for t, source in pairs
+                for t, source, location_ids in triples
             ],
         ).model_dump(mode="json")
     )
