@@ -1,6 +1,6 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-07-21 (checklist_work_location — привязка шаблонов чек-листов к рабочим точкам: таблица `checklist_template_locations`, фильтр по точке в создании экземпляров на старте смены, `PUT .../checklist-templates/{id}/locations`, `GET/PUT .../locations/{id}/checklist-templates`, additive `location_ids` в `assignments`/`EffectiveTemplateResponse` + опциональный `work_location_id` у `GET .../members/{id}/checklists`)
+Последнее обновление: 2026-07-22 (checklist_reports — управленческие отчёты по чек-листам: query-параметр `checklists` (`none`/`all_completed`/`has_incomplete`/`required_incomplete`) в `GET /organizations/{id}/shifts`, additive nullable `checklists_summary` в `ShiftResponse` (только орг-эндпоинты списка/детали смены), новый реестр `GET /organizations/{id}/checklist-instances` с фильтрами/сортировкой/пагинацией; индексы `ix_checklist_instances_template_id` и составной `ix_checklist_instances_shift_id_status`)
 
 ---
 
@@ -28,7 +28,7 @@
 | `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
 | `ChecklistMemberOverride` | `checklist_member_overrides` | Личное переопределение (add/remove) |
 | `ChecklistTemplateLocation` | `checklist_template_locations` | Привязка шаблона к рабочей точке many-to-many (`template_id`/`work_location_id` → CASCADE, `UNIQUE(template_id, work_location_id)`). Шаблон с привязками действует только на них; без привязок — на любой точке (`checklist_work_location`) |
-| `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete) |
+| `ChecklistInstance` | `checklist_instances` | Экземпляр (снимок) чек-листа в смене (status: pending/completed/incomplete). Индексы: `shift_id`, **`template_id`** (checklist_reports — основной фильтр реестра), составной **`(shift_id, status)`** (checklist_reports — агрегаты сводки/фильтры) |
 | `ChecklistInstanceItem` | `checklist_instance_items` | Заполненный пункт (is_completed, comment, completed_at, change_count, **photo_requirement**/**photo_source** — снимок настроек фото на старте смены) |
 | `ChecklistItemPhoto` | `checklist_item_photos` | Фото-подтверждение пункта-экземпляра (instance_item_id→CASCADE индекс, file_id→`files.id` CASCADE **UNIQUE**, captured_at, latitude/longitude double precision nullable — антифрод-метка, position, created_at). Один файл = одна привязка |
 | `AuditLog` | `audit_logs` | Append-only журнал чувствительных действий (organization_id NULL→CASCADE, actor_user_id NULL→SET NULL, action, resource_type, resource_id, summary jsonb, ip_address, created_at). Системные авто-действия Celery — `actor_user_id = null`. Индексы `(organization_id, created_at DESC)`, `(actor_user_id)`, `(action)` |
@@ -82,8 +82,9 @@
 | PUT | `/api/v1/organizations/{id}/locations/{loc_id}/checklist-templates` | Задать чек-листы точки (PUT, замена; та же таблица связей, что и `.../locations` выше) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/settings` | Настройки организации | Bearer (owner) |
 | PATCH | `/api/v1/organizations/{id}/settings` | Обновить настройки | Bearer (owner) |
-| GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников (обогащены identity сотрудника) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/shifts` | Смены сотрудников (обогащены identity сотрудника; опц. `checklists` — фильтр по состоянию чек-листов, checklist_reports) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/shifts/{shift_id}` | Деталь смены сотрудника (кликабельная карточка) | Bearer (owner/admin) |
+| GET | `/api/v1/organizations/{id}/checklist-instances` | Реестр экземпляров чек-листов организации (фильтры user_id/template_id/type/status/state/is_required/work_location_id/период, сортировка, пагинация; checklist_reports) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/stats` | Статистика организации: пресет `period` ЛИБО диапазон `date_from`/`date_to` | Bearer (owner/admin) |
 | POST | `/api/v1/organizations/{id}/roles` | Создать кастомную роль | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/roles` | Список ролей | Bearer (member) |
@@ -153,6 +154,42 @@
 
 > **База знаний (knowledge_base).** Дерево разделов/страниц org с бесконечной вложенностью (`knowledge_nodes`, self-ref `parent_id`); контент страницы — массив блоков в JSONB (BLOCK SCHEMA `schema_version=1`: heading/paragraph/bulleted_list/numbered_list/quote/callout/divider/image/file/video(youtube)/table; `span` = inline rich-text). Только организационный режим. **ACL** (`knowledge_node_access`): правило `allow`/`deny` на роль или конкретного member; эффективный доступ employee к узлу считается обходом вверх по `parent_id` с приоритетом категорий — (1) персональное правило (member_user_id), (2) ролевое (role_id кастомной роли), (3) `all_members` на узле/предке, (4) deny по умолчанию; персональное всегда сильнее ролевого, внутри категории ближайший узел перебивает дальний (`services/knowledge._resolve_employee`, индекс ACL грузится одним проходом — без N+1). owner/admin/super_admin игнорируют ACL (полный доступ). Employee без эффективного allow видит узел как несуществующий (`404 KNOWLEDGE_NODE_NOT_FOUND`, не 403); дерево для employee отдаёт доступные узлы + разделы-предки как навигационные контейнеры (поле `all_members` опускается). **Файлы** грузятся через `POST /api/v1/files` (категория `knowledge_base`, admin/owner, 50 MB, image/*+pdf+OOXML docx/xlsx/pptx; OOXML — только без макросов: `vbaProject.bin`/`macroEnabled` в контейнере или битый архив → 415 `UNSUPPORTED_FILE_TYPE`; generic zip и легаси doc/xls/ppt запрещены) и привязываются к странице **через её `content`** (блоки image/file): на PATCH сервер диффит множества `file_id` в одной транзакции — новые валидирует (`knowledge_base`, та же org, не привязан к другой странице → иначе `400 KNOWLEDGE_FILE_INVALID`) и ставит `is_attached=true` + строку `knowledge_node_files` (`UNIQUE(file_id)` — один файл = одна страница, гонка двух страниц ловится конфликтом UNIQUE), исчезнувшие — `is_attached=false` + `delete_file` (объект S3 + строка `files`); добавления идут до удалений (необратимый S3-delete не теряется при откате). На чтении страницы блоки image/file обогащаются свежим presigned `url`/`url_expires_at` (батч-подпись, при сбое storage — `url=null` без 502; в хранимом `content` только `file_id`). Перемещение (`parent_id`) проверяет цикл подъёмом по предкам (`400 KNOWLEDGE_NODE_CYCLE`), чужой parent → `404`. **Privacy-критично:** `delete_node` (M5) собирает `file_id` всего поддерева и удаляет объекты S3 + строки `files` ДО каскадного `ON DELETE CASCADE` (иначе `cleanup_orphan_files` их не подберёт — они `is_attached=true`); при hard-delete org объекты S3 останутся — массовая чистка бакета вынесена в **общий DevOps-долг с `checklist_photos`**. Ошибки — `KnowledgeError` (`KNOWLEDGE_NODE_NOT_FOUND`/`KNOWLEDGE_NODE_CYCLE`/`KNOWLEDGE_FILE_INVALID`) + переиспользуемые `FORBIDDEN`/`ROLE_NOT_FOUND`/`MEMBER_NOT_FOUND`/`VALIDATION_ERROR`/`ORG_NOT_FOUND`.
 
+> **Управленческие отчёты по чек-листам (`checklist_reports`).** Новых таблиц/колонок
+> нет — оба инструмента считают состояние **на лету** по существующим
+> `checklist_instances`/`checklist_instance_items` (флаг
+> `shifts.has_incomplete_required_checklists` для этого не годится — он
+> проставляется только на завершении смены, поэтому для активных/паузных смен
+> всегда `false`). **(1)** `GET /organizations/{id}/shifts` получил query
+> `checklists` (`none`/`all_completed`/`has_incomplete`/`required_incomplete`,
+> невалидное значение → `400 INVALID_CHECKLIST_FILTER`) — фильтрация делается
+> `OUTER JOIN` со сгруппированным по `shift_id` подзапросом ДО пагинации
+> (`services/shift._checklists_summary_subquery`/`_checklists_filter_condition`),
+> поэтому `total`/пагинация уже учитывают фильтр; комбинируется с
+> `user_id`/`status`/`date_from`/`date_to` по И. **(2)** `ShiftResponse` получил
+> additive nullable `checklists_summary` (`total`/`completed`/`required_total`/
+> `required_incomplete`) — заполняется ТОЛЬКО в орг-эндпоинтах списка/детали смены
+> одним агрегирующим GROUP BY на страницу
+> (`services/checklist_instance.get_checklists_summary_for_shifts`, без N+1); в
+> персональных эндпоинтах (`GET /shifts`, старт/пауза/финиш) остаётся `null`.
+> **(3)** Новый реестр `GET /organizations/{id}/checklist-instances` — плоский
+> список экземпляров чек-листов организации (только смены `is_deleted=false`,
+> персональные смены никогда не попадают — структурно исключены `INNER JOIN` на
+> `checklist_instances`) с фильтрами `user_id`/`template_id`/`type`/`status`/
+> `state`/`is_required`/`work_location_id`/`date_from`/`date_to`, сортировкой
+> (`shift_started_at` default/`completed_at`/`created_at`) и пагинацией.
+> `state` (`completed`/`not_completed`) — агрегированный алиас над `status`;
+> если передан `status`, `state` игнорируется. Строится одним join-запросом
+> `checklist_instances → shifts → users → work_locations` (LEFT JOIN — снимок
+> остаётся читаемым, даже если пользователь/точка позже исчезли) + отдельным
+> агрегирующим запросом `items_summary`/`photos_count` по id-шникам страницы
+> (`services/checklist_instance.list_org_checklist_instances`, переиспользует
+> тот же подзапрос-хелпер, что и `GET /shifts/{id}/checklists`). `template_id`
+> может быть `null` (шаблон удалён, `ON DELETE SET NULL`) — `name`/`type`
+> экземпляра — снимок, строка остаётся читаемой. Права — owner/admin (тот же
+> `ensure_admin_or_owner`, что у списка смен); деталь экземпляра переиспользует
+> существующий `GET /shifts/{shift_id}/checklists/{instance_id}`, отдельного
+> эндпоинта детали в реестре нет. Read-only (экспорт/редактирование — вне scope).
+
 > **Сквозной доступ super_admin.** Все org-эндпоинты (`members`, `settings`, `locations`, `roles`, `checklist-*`, `shifts`, `stats`) пускают `super_admin`, даже если он не состоит в организации. Проверки прав вынесены в `services/common.py` (`ensure_owner` / `ensure_member` / `ensure_admin_or_owner`), и в каждой добавлена ветка super_admin. `GET /shifts` и `GET /organizations/{id}/shifts` дополнительно принимают `sort` (`started_at`/`finished_at`) и `order` (`asc`/`desc`).
 
 > **Видимость владельца смены (orgrouted enrichment).** `ShiftResponse` несёт 4 nullable-поля `user_name` / `user_email` / `role` / `custom_role_name` (`default=None`). Они вычисляются на чтении (`services/shift.build_org_shift_identities`: имя/почта из `users`, роль/кастомная роль из `organization_members` — два batch-запроса без N+1, `custom_role` через `selectinload`) и наполняются ТОЛЬКО в орг-контексте: `GET /organizations/{id}/shifts` (список) и `GET /organizations/{id}/shifts/{shift_id}` (деталь). В персональном `GET /shifts` остаются `null` (сериализатор `_shift_to_response` без `identity`). Исключённый из org сотрудник: имя/почта сохраняются, `role`/`custom_role_name` = `null`. Деталь чужой org-смены строго проверяет `shift.organization_id == org_id` → иначе `404 SHIFT_NOT_FOUND` (персональные/чужие смены не раскрываются). Схема БД не меняется — денормализация в `shifts` отвергнута.
@@ -216,7 +253,7 @@
 | `services/oauth_tokens.py` | Верификация id-токенов Google/Apple: JWKS-fetch с TTL-кэшем (форс-рефетч при неизвестном kid), RS256-decode, проверка iss/aud/exp/email_verified → `OAuthClaims` |
 | `services/oauth_provider_settings.py` | CRUD/чтение `oauth_provider_settings` (5 валидных комбинаций provider×client_type), `require_provider_setting` (kill-switch/не настроено → `OAUTH_PROVIDER_NOT_CONFIGURED`) |
 | `services/oauth.py` | Бизнес-логика входа: поиск по `sub`/автолинк по email/регистрация, выдача токенов, `get_oauth_config` для публичного эндпоинта |
-| `services/shift.py` | Lifecycle смен, статистика, автозавершение |
+| `services/shift.py` | Lifecycle смен, статистика, автозавершение; **checklist_reports:** `validate_checklists_filter`, фильтр `checklists` в `get_org_shifts` (`_checklists_summary_subquery`/`_checklists_filter_condition`, join до пагинации) |
 | `services/organization.py` | CRUD организаций, инвайты, участники |
 | `services/work_location.py` | CRUD рабочих точек |
 | `services/organization_settings.py` | CRUD настроек организации |
@@ -225,7 +262,7 @@
 | `services/checklist_assignment.py` | Назначение шаблонов ролям, личные overrides (bulk PUT), вычисление эффективных шаблонов (`_compute_effective` — роль ∪ канал «нет ролей + есть точки» ∪ personal_add − personal_remove, опц. фильтр по `work_location_id`) |
 | `services/checklist_location.py` | Привязка шаблонов к точкам (`checklist_template_locations`): симметричные `set_template_locations`/`set_location_templates`, `get_location_only_template_ids` (новый канал назначения), `matches_location`/`get_location_ids_for_templates` (переиспользуются assignment/instance) |
 | `services/checklist_override.py` | Гранулярный upsert/delete/list личных overrides (ON CONFLICT DO UPDATE) |
-| `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, привязка/отвязка фото, единый пересчёт «satisfied» (`_recompute_instance_status`), finalize, `cleanup_shift_photo_files` |
+| `services/checklist_instance.py` | Создание снимков в смене, заполнение пунктов, привязка/отвязка фото, единый пересчёт «satisfied» (`_recompute_instance_status`), finalize, `cleanup_shift_photo_files`; **checklist_reports:** `get_checklists_summary_for_shifts` (сводка для `ShiftResponse`, без N+1), `list_org_checklist_instances` (реестр организации с фильтрами/сортировкой/пагинацией) |
 | `services/common.py` | Общие guard-функции org-доступа (`ensure_owner/ensure_member/ensure_admin_or_owner`) со сквозной веткой super_admin (`AccessError`) |
 | `services/payroll.py` | История ставок участников (CRUD, `PayrollError`), действующие ставки batch-запросом (DISTINCT ON), расчёт payroll/my-earnings «на лету» (+штрафы: `include_penalties`, `net`), суточная разбивка (`_build_breakdown`, посуточное округление) + экспорт `.xlsx` (`export_org_payroll`/`_build_payroll_xlsx`) |
 | `services/penalty.py` | Штрафы и шаблоны (`PenaltyError`): CRUD шаблонов, назначение со снимком из шаблона/кастом, список/деталь/правка/снятие (soft-delete), `my-penalties`, агрегаты для payroll (`aggregate_penalties_by_user`/`aggregate_member_penalties`) |
