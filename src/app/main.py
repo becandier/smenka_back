@@ -22,8 +22,10 @@ from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
 from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
+from src.app.services.employee_test import TestError
 from src.app.services.file_storage import FileError
 from src.app.services.knowledge import KnowledgeError
+from src.app.services.notification import NotificationError
 from src.app.services.organization import OrgError
 from src.app.services.organization_role import RoleError
 from src.app.services.overtime import OvertimeError
@@ -183,6 +185,26 @@ app = FastAPI(
         {
             "name": "overtime-requests",
             "description": "Заявки на переработку: подача сотрудником, согласование owner/admin.",
+        },
+        {
+            "name": "notifications",
+            "description": (
+                "Внутриапповый центр уведомлений (pull-модель): лента, счётчик "
+                "непрочитанных, отметка прочитанным."
+            ),
+        },
+        {
+            "name": "test-templates",
+            "description": (
+                "Тестирование сотрудников: шаблоны тестов с вопросами/вариантами, "
+                "импорт/валидация, назначение сотрудникам, реестр результатов."
+            ),
+        },
+        {
+            "name": "my-tests",
+            "description": (
+                "Прохождение назначенных тестов сотрудником: попытки, сдача, результаты."
+            ),
         },
         {
             "name": "admin",
@@ -390,6 +412,22 @@ async def work_schedule_error_handler(request: Request, exc: WorkScheduleError) 
 
 @app.exception_handler(OvertimeError)
 async def overtime_error_handler(request: Request, exc: OvertimeError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(NotificationError)
+async def notification_error_handler(request: Request, exc: NotificationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(TestError)
+async def test_error_handler(request: Request, exc: TestError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
