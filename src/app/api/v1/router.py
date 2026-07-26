@@ -6,8 +6,11 @@ from src.app.api.v1.checklist_assignments import router as checklist_assignments
 from src.app.api.v1.checklist_instances import router as checklist_instances_router
 from src.app.api.v1.checklist_overrides import router as checklist_overrides_router
 from src.app.api.v1.checklist_templates import router as checklist_templates_router
+from src.app.api.v1.employee_tests import router as employee_tests_router
 from src.app.api.v1.files import router as files_router
 from src.app.api.v1.knowledge import router as knowledge_router
+from src.app.api.v1.my_tests import router as my_tests_router
+from src.app.api.v1.notifications import router as notifications_router
 from src.app.api.v1.organization_roles import router as organization_roles_router
 from src.app.api.v1.organizations import router as organizations_router
 from src.app.api.v1.overtime import router as overtime_router
@@ -35,4 +38,7 @@ router.include_router(work_schedules_router)
 router.include_router(overtime_router)
 router.include_router(files_router)
 router.include_router(knowledge_router)
+router.include_router(notifications_router)
+router.include_router(employee_tests_router)
+router.include_router(my_tests_router)
 router.include_router(admin_router)

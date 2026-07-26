@@ -6,6 +6,35 @@
 
 ---
 
+## Фича — Тестирование сотрудников (`employee_tests`) `[~]`
+ТЗ: `../../docs/tasks/employee_tests/backend.md`  STATUS: `../../docs/tasks/employee_tests/STATUS.md`
+- [x] 7 таблиц (`test_templates`→`test_questions`→`test_question_options`, `test_assignments`, `test_attempts`+`test_attempt_questions`+`test_attempt_options`) — паттерн «шаблон → снимок», как у чек-листов
+- [x] Инварианты шаблона (`services/employee_test.validate_template_payload`, единый код `422 TEST_TEMPLATE_INVALID`): ≥1 вопрос, у каждого ≥2 варианта, `single_choice` — ровно один верный, `multiple_choice` — минимум один, `points≥1`, `0≤pass_threshold_percent≤100`, `max_attempts≥1`
+- [x] CRUD шаблонов + `POST .../test-templates/validate` (сухая проверка тела — тот же формат, что и импорт из `import-format.md`), архивация
+- [x] Назначение — upsert по `UNIQUE(template_id, member_id)` (повторное обновляет только `due_at`, не сбрасывает результаты) + уведомление `test_assigned` в той же транзакции (зависимость от фичи `notifications`)
+- [x] Прохождение сотрудником: старт попытки (guard'ы `TEST_TEMPLATE_ARCHIVED`/`TEST_ALREADY_PASSED`/`TEST_ATTEMPTS_EXHAUSTED`, идемпотентный возврат уже открытой попытки, `SELECT ... FOR UPDATE` от гонки параллельного старта), сдача (`TEST_ATTEMPT_ALREADY_SUBMITTED` на повтор)
+- [x] Снимок порога зачёта в попытке (`test_attempts.pass_threshold_percent`, ADR-003) — правка порога в шаблоне после сдачи не двигает `passed` уже сданной попытки
+- [x] Грейдинг all-or-nothing (`compute_awarded`) + денормализация `test_assignments` (`attempts_used`/`best_percent`/`passed` sticky/`status`) после каждой сдачи
+- [x] Реестр для админки (`GET .../test-templates/{id}/assignments`, `GET .../test-assignments`) + `TestAssignmentOut.last_attempt_id` — контракт-фикс аналитика: без него admin-трек не мог открыть разбор попытки из реестра (пробел зафиксирован в `STATUS.md` на ревью admin-трека)
+- [x] `GET .../test-attempts/{id}` — разбор попытки для админа (вопросы-снимки, выбор сотрудника, верные ответы, баллы)
+- [x] Миграция `9632b96364fd` (зависит от `6686fd74797c` — notifications), обратима — проверено `upgrade`/`downgrade` локально
+- [x] 51 тест (`tests/test_employee_tests.py`): инварианты шаблона, импорт/валидация, назначение+уведомление+upsert, старт/лимит попыток/`already_passed`/`in_progress`, грейдинг single/multiple all-or-nothing+порог, денорм статусов, снимок не зависит от правки шаблона, изоляция org/member/user, `last_attempt_id` (null до сдачи, указывает на последнюю сданную попытку при нескольких)
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
+## Фича — Центр уведомлений (`notifications`) `[~]`
+ТЗ: `../../docs/tasks/notifications/backend.md`  STATUS: `../../docs/tasks/notifications/STATUS.md`
+- [x] Таблица `notifications` (получатель — `User`, не `OrganizationMember`; `organization_id` nullable — контекст события; `type` VARCHAR(48) без CHECK — новый тип будущей фичи не требует миграции схемы), индексы `(user_id, created_at DESC)`/`(user_id, is_read)`
+- [x] Сервисный слой без публичного эндпоинта создания — `create_notification`/`bulk_create_notifications` (без `commit`, вызывается производителем события в его транзакции)
+- [x] `GET /notifications` (лента, `unread=true`), `GET /notifications/unread-count`, `POST /notifications/{id}/read` (идемпотентно), `POST /notifications/read-all`
+- [x] Изоляция по `user_id`: чужое уведомление → `404 NOTIFICATION_NOT_FOUND` (существование не раскрывается)
+- [x] Миграция `6686fd74797c`, обратима — проверено `upgrade`/`downgrade` локально
+- [x] 15 тестов (`tests/test_notifications.py`): лента (сортировка/пагинация/unread-фильтр/изоляция/payload roundtrip), счётчик, read (идемпотентность/404/чужое), read-all (только свои непрочитанные)
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Имя участника в организации (`member_display_name`) `[~]`
 ТЗ: `../../docs/tasks/member_display_name/backend.md`  STATUS: `../../docs/tasks/member_display_name/STATUS.md`
 - [x] Колонка `organization_members.display_name` (VARCHAR(100) NULL, без уникальности/индекса) — имя участника внутри ЭТОЙ организации, не трогает `users.name`; owner не member (ADR-001) ⇒ поля у владельца нет

@@ -13,6 +13,18 @@ from src.app.models.checklist import (
     PhotoRequirement,
     PhotoSource,
 )
+from src.app.models.employee_test import (
+    TestAssignment,
+    TestAssignmentStatus,
+    TestAttempt,
+    TestAttemptOption,
+    TestAttemptQuestion,
+    TestAttemptStatus,
+    TestQuestion,
+    TestQuestionOption,
+    TestQuestionType,
+    TestTemplate,
+)
 from src.app.models.file import File, FileCategory
 from src.app.models.knowledge import (
     KnowledgeAccessEffect,
@@ -23,6 +35,7 @@ from src.app.models.knowledge import (
     KnowledgeSubjectType,
 )
 from src.app.models.member_rate import OrganizationMemberRate, RateType
+from src.app.models.notification import Notification, NotificationType
 from src.app.models.oauth import (
     OAuthClientType,
     OAuthIdentity,
@@ -70,6 +83,8 @@ __all__ = [
     "KnowledgeNodeKind",
     "KnowledgeSubjectType",
     "MemberRole",
+    "Notification",
+    "NotificationType",
     "OAuthClientType",
     "OAuthIdentity",
     "OAuthProvider",
@@ -93,6 +108,16 @@ __all__ = [
     "ShiftFinishReason",
     "ShiftOvertimeRequest",
     "ShiftStatus",
+    "TestAssignment",
+    "TestAssignmentStatus",
+    "TestAttempt",
+    "TestAttemptOption",
+    "TestAttemptQuestion",
+    "TestAttemptStatus",
+    "TestQuestion",
+    "TestQuestionOption",
+    "TestQuestionType",
+    "TestTemplate",
     "User",
     "VerificationCode",
     "WorkLocation",
