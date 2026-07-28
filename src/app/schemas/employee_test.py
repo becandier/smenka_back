@@ -218,6 +218,7 @@ class MyTestTemplateSummary(BaseModel):
     question_count: int
     max_attempts: int
     pass_threshold_percent: int
+    shuffle_questions: bool
 
 
 class MyOrgSummary(BaseModel):
@@ -238,6 +239,9 @@ class MyTestAssignmentOut(BaseModel):
 
 class MyTestAssignmentListResponse(BaseModel):
     items: list[MyTestAssignmentOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class MyAttemptSummary(BaseModel):

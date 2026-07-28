@@ -670,21 +670,40 @@ async def list_my_assignments(
     *,
     organization_id: uuid.UUID | None = None,
     status: str | None = None,
-) -> list[TestAssignment]:
-    query = (
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[TestAssignment], int]:
+    """Мои назначения (по всем моим организациям либо одной). Пагинировано:
+    возвращает (страница, total). Сортировка стабильна — `created_at DESC, id DESC`
+    (вторичный ключ гарантирует детерминированный порядок при равных `created_at`,
+    чтобы страницы не перемешивались)."""
+    conditions = [OrganizationMember.user_id == user_id]
+    if organization_id is not None:
+        conditions.append(TestTemplate.organization_id == organization_id)
+    if status is not None:
+        conditions.append(TestAssignment.status == _parse_assignment_status(status))
+
+    total = (
+        await session.execute(
+            select(func.count())
+            .select_from(TestAssignment)
+            .join(OrganizationMember, TestAssignment.member_id == OrganizationMember.id)
+            .join(TestTemplate, TestAssignment.template_id == TestTemplate.id)
+            .where(*conditions)
+        )
+    ).scalar_one()
+
+    result = await session.execute(
         select(TestAssignment)
         .join(OrganizationMember, TestAssignment.member_id == OrganizationMember.id)
         .join(TestTemplate, TestAssignment.template_id == TestTemplate.id)
-        .where(OrganizationMember.user_id == user_id)
+        .where(*conditions)
         .options(selectinload(TestAssignment.template))
-        .order_by(TestAssignment.created_at.desc())
+        .order_by(TestAssignment.created_at.desc(), TestAssignment.id.desc())
+        .limit(limit)
+        .offset(offset)
     )
-    if organization_id is not None:
-        query = query.where(TestTemplate.organization_id == organization_id)
-    if status is not None:
-        query = query.where(TestAssignment.status == _parse_assignment_status(status))
-    result = await session.execute(query)
-    return list(result.scalars().all())
+    return list(result.scalars().all()), total
 
 
 async def get_my_assignment_detail(
