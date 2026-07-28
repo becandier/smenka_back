@@ -115,6 +115,32 @@ def _option_id(fill_question: dict[str, Any], text: str) -> str:
     raise AssertionError(f"option {text!r} not found")
 
 
+async def _submit_first_correct(
+    client: AsyncClient, headers: dict[str, str], assignment_id: str
+) -> None:
+    """Стартует попытку и сдаёт только первый вопрос верно (50% при пороге 50 →
+    статус назначения `passed`). Для наполнения реестра разными статусами."""
+    fill = _data(
+        await client.post(
+            f"/api/v1/my/test-assignments/{assignment_id}/attempts", headers=headers
+        )
+    )
+    fire_q = next(q for q in fill["questions"] if q["text"] == "Что делать при пожаре?")
+    resp = await client.post(
+        f"/api/v1/my/test-attempts/{fill['id']}/submit",
+        headers=headers,
+        json={
+            "answers": [
+                {
+                    "attempt_question_id": fire_q["id"],
+                    "selected_option_ids": [_option_id(fire_q, "Вызвать 101")],
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
 # --- Fixtures --------------------------------------------------------------------
 @pytest.fixture
 async def owner(db_session: AsyncSession) -> User:
@@ -1241,3 +1267,165 @@ class TestAttemptLifecycle:
             headers=employee_headers,
         )
         assert resp.status_code == 403
+
+
+# --- Мои назначения: пагинированный реестр сотрудника -------------------------------
+class TestMyAssignmentsList:
+    """GET /my/test-assignments — пагинированный конверт {items, total, limit, offset}."""
+
+    async def test_empty_list_envelope(
+        self, client: AsyncClient, employee_headers, employee_member
+    ):
+        resp = await client.get("/api/v1/my/test-assignments", headers=employee_headers)
+        assert resp.status_code == 200
+        assert _data(resp) == {"items": [], "total": 0, "limit": 20, "offset": 0}
+
+    async def test_single_item_envelope_and_shape(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+
+        data = _data(await client.get("/api/v1/my/test-assignments", headers=employee_headers))
+        assert data["total"] == 1
+        assert data["limit"] == 20
+        assert data["offset"] == 0
+        assert len(data["items"]) == 1
+
+        item = data["items"][0]
+        assert item["status"] == "assigned"
+        assert item["attempts_used"] == 0
+        assert item["best_percent"] is None
+        assert item["passed"] is False
+        assert item["template"]["id"] == tpl["id"]
+        assert item["template"]["question_count"] == 2
+        assert item["template"]["max_attempts"] == TWO_QUESTION_BODY["max_attempts"]
+        assert item["template"]["pass_threshold_percent"] == 50
+        assert item["template"]["shuffle_questions"] is False
+        assert item["organization"] == {"id": str(org.id), "name": "Tests Org"}
+
+    async def test_pagination_offset_limit_total_stable(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        # UNIQUE(template_id, member_id) → пять разных шаблонов на одного сотрудника.
+        for i in range(5):
+            tpl = await _create_template(
+                client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": f"Тест {i}"}
+            )
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+
+        seen: list[str] = []
+        for offset, expected_len in ((0, 2), (2, 2), (4, 1)):
+            page = _data(
+                await client.get(
+                    "/api/v1/my/test-assignments",
+                    headers=employee_headers,
+                    params={"limit": 2, "offset": offset},
+                )
+            )
+            assert page["total"] == 5  # total — не длина страницы
+            assert page["limit"] == 2
+            assert page["offset"] == offset
+            assert len(page["items"]) == expected_len
+            seen.extend(item["id"] for item in page["items"])
+
+        # Страницы не перекрываются и покрывают все назначения ровно один раз.
+        assert len(seen) == 5
+        assert len(set(seen)) == 5
+
+    async def test_offset_beyond_total_returns_empty_page(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        page = _data(
+            await client.get(
+                "/api/v1/my/test-assignments",
+                headers=employee_headers,
+                params={"limit": 20, "offset": 20},
+            )
+        )
+        assert page["total"] == 1
+        assert page["items"] == []
+
+    async def test_limit_over_max_rejected(
+        self, client: AsyncClient, employee_headers, employee_member
+    ):
+        resp = await client.get(
+            "/api/v1/my/test-assignments", headers=employee_headers, params={"limit": 51}
+        )
+        assert resp.status_code == 422
+        assert _err(resp) == "VALIDATION_ERROR"
+
+    async def test_filter_org_and_status_with_pagination(
+        self,
+        client: AsyncClient,
+        owner,
+        owner_headers,
+        employee_headers,
+        employee_user,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        # org #1: одно назначение остаётся assigned, второе доводим до passed.
+        tpl_a = await _create_template(
+            client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": "A"}
+        )
+        await _assign(client, owner_headers, org.id, tpl_a["id"], [str(employee_member.id)])
+        tpl_b = await _create_template(
+            client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": "B"}
+        )
+        assign_b = _data(
+            await _assign(client, owner_headers, org.id, tpl_b["id"], [str(employee_member.id)])
+        )["items"][0]
+        await _submit_first_correct(client, employee_headers, assign_b["id"])
+
+        # org #2 (тот же сотрудник — член двух организаций): своё assigned-назначение.
+        org2 = Organization(name="Org Two", owner_id=owner.id)
+        db_session.add(org2)
+        await db_session.commit()
+        member2 = OrganizationMember(
+            organization_id=org2.id, user_id=employee_user.id, role=MemberRole.employee
+        )
+        db_session.add(member2)
+        await db_session.commit()
+        tpl_c = await _create_template(
+            client, owner_headers, org2.id, {**TWO_QUESTION_BODY, "title": "C"}
+        )
+        await _assign(client, owner_headers, org2.id, tpl_c["id"], [str(member2.id)])
+
+        # Без фильтра — все три назначения по двум организациям.
+        all_data = _data(await client.get("/api/v1/my/test-assignments", headers=employee_headers))
+        assert all_data["total"] == 3
+
+        # Фильтр по организации сужает до её назначений.
+        org1_data = _data(
+            await client.get(
+                "/api/v1/my/test-assignments",
+                headers=employee_headers,
+                params={"organization_id": str(org.id)},
+            )
+        )
+        assert org1_data["total"] == 2
+        assert all(it["organization"]["id"] == str(org.id) for it in org1_data["items"])
+
+        # Фильтр организация + статус + пагинация вместе.
+        assigned = _data(
+            await client.get(
+                "/api/v1/my/test-assignments",
+                headers=employee_headers,
+                params={
+                    "organization_id": str(org.id),
+                    "status": "assigned",
+                    "limit": 1,
+                    "offset": 0,
+                },
+            )
+        )
+        assert assigned["total"] == 1
+        assert assigned["limit"] == 1
+        assert assigned["offset"] == 0
+        assert len(assigned["items"]) == 1
+        assert assigned["items"][0]["template"]["id"] == tpl_a["id"]
+        assert assigned["items"][0]["status"] == "assigned"

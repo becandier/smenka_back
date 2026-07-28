@@ -69,6 +69,7 @@ async def _build_my_assignment_list(
                     question_count=q_counts.get(template.id, 0),
                     max_attempts=template.max_attempts,
                     pass_threshold_percent=template.pass_threshold_percent,
+                    shuffle_questions=template.shuffle_questions,
                 ),
                 status=a.status.value,
                 attempts_used=a.attempts_used,
@@ -164,12 +165,23 @@ async def list_my_assignments(
     session: SessionDep,
     organization_id: uuid.UUID | None = Query(None),
     status: str | None = Query(None, description="assigned | in_progress | passed | failed"),
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
 ) -> ApiResponse:
-    assignments = await test_service.list_my_assignments(
-        session, user.id, organization_id=organization_id, status=status
+    assignments, total = await test_service.list_my_assignments(
+        session,
+        user.id,
+        organization_id=organization_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
     items = await _build_my_assignment_list(session, assignments)
-    return ApiResponse.success(MyTestAssignmentListResponse(items=items).model_dump(mode="json"))
+    return ApiResponse.success(
+        MyTestAssignmentListResponse(
+            items=items, total=total, limit=limit, offset=offset
+        ).model_dump(mode="json")
+    )
 
 
 @router.get(

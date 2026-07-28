@@ -198,7 +198,7 @@
 | GET | `/api/v1/organizations/{id}/test-assignments` | Реестр результатов по всей организации (фильтры `template_id`/`member_id`/`status`, пагинация, +`last_attempt_id`) | Bearer (owner/admin) |
 | DELETE | `/api/v1/organizations/{id}/test-assignments/{assignment_id}` | Снять назначение (только без сданных попыток, иначе `409`) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/test-attempts/{attempt_id}` | Разбор попытки для админа (вопросы-снимки, выбор сотрудника, верные ответы, баллы) | Bearer (owner/admin) |
-| GET | `/api/v1/my/test-assignments` | Мои назначенные тесты (по всем организациям либо одной, `organization_id`) | Bearer |
+| GET | `/api/v1/my/test-assignments` | Мои назначенные тесты (по всем организациям либо одной `organization_id`, фильтр `status`, пагинация `limit`/`offset`; конверт `{items,total,limit,offset}`, `created_at DESC`) | Bearer |
 | GET | `/api/v1/my/test-assignments/{assignment_id}` | Детали назначения + список моих попыток | Bearer |
 | POST | `/api/v1/my/test-assignments/{assignment_id}/attempts` | Начать новую попытку (снимок шаблона; открытая `in_progress` возвращается повторно) | Bearer |
 | GET | `/api/v1/my/test-attempts/{attempt_id}` | Моя попытка (`in_progress` — без `is_correct`; `submitted` — итоги + верные ответы, если `reveal_answers`) | Bearer |
