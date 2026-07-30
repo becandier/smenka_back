@@ -115,7 +115,6 @@ async def _resolve_org_shift_start(
     - гео выкл + не require: точка опциональна, при наличии — валидируется на org.
     """
     from src.app.models.organization import Organization, OrganizationMember
-    from src.app.models.work_location import WorkLocation
     from src.app.services.organization_settings import get_settings_for_org
 
     # Check org exists and not deleted
@@ -152,28 +151,17 @@ async def _resolve_org_shift_start(
                 400,
             )
 
-        locations_result = await session.execute(
-            select(WorkLocation).where(
-                WorkLocation.organization_id == organization_id,
-            )
+        from src.app.services.work_location import resolve_nearest_work_location
+
+        nearest = await resolve_nearest_work_location(
+            session, organization_id, latitude, longitude
         )
-        locations = list(locations_result.scalars().all())
-
-        from src.app.utils.geo import haversine_distance
-
-        matched = [
-            (loc, haversine_distance(latitude, longitude, loc.latitude, loc.longitude))
-            for loc in locations
-            if haversine_distance(latitude, longitude, loc.latitude, loc.longitude)
-            <= loc.radius_meters
-        ]
-        if not matched:
+        if nearest is None:
             raise ShiftError(
                 "GEO_CHECK_FAILED",
                 "Вы находитесь вне зоны рабочих точек",
                 403,
             )
-        nearest = min(matched, key=lambda pair: pair[1])[0]
         return nearest.id
 
     # Гео выкл: точка берётся из выбора сотрудника.

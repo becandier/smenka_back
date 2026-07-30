@@ -118,11 +118,27 @@ class MyScheduleItemResponse(BaseModel):
     )
 
 
+class ResolvedWorkLocationResponse(BaseModel):
+    """Точка, резолвленная сервером для `GET .../my-schedules` (явный
+    `work_location_id` либо подбор по `lat`/`lng` при геопроверке)."""
+
+    id: str
+    name: str
+
+
 class MySchedulesResponse(BaseModel):
     items: list[MyScheduleItemResponse]
     total: int
     require_schedule: bool = Field(
         description="Дублирует настройку организации — обязателен ли выбор графика"
+    )
+    resolved_work_location: ResolvedWorkLocationResponse | None = Field(
+        default=None,
+        description=(
+            "Точка, резолвленная сервером — явно переданным work_location_id либо "
+            "подбором по lat/lng при geo_check_enabled=true. null, если точка не "
+            "определена."
+        ),
     )
 
 

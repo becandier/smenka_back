@@ -21,6 +21,7 @@ from src.app.models.work_schedule import (
     WorkScheduleMemberOverride,
     WorkScheduleRole,
 )
+from src.app.services.work_location import resolve_nearest_work_location
 from src.app.services.work_schedule import (
     _compute_effective_schedules,
     compute_scheduled_window,
@@ -1002,3 +1003,225 @@ class TestMySchedules:
         item = data["items"][0]
         assert "next_start_at" in item
         assert "starts_in_minutes" in item
+        assert data["resolved_work_location"] is None
+
+
+# --- resolve_nearest_work_location: общий хелпер (work_schedules_geo_resolve) --
+
+
+class TestResolveNearestWorkLocation:
+    async def test_picks_nearest_among_matched_zones(self, db_session: AsyncSession):
+        owner = await _create_user(db_session, f"owner-{uuid.uuid4().hex[:8]}@example.com")
+        org = Organization(name="Geo Resolve Org", owner_id=owner.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        loc_a = WorkLocation(
+            organization_id=org.id,
+            name="A",
+            latitude=55.7558,
+            longitude=37.6173,
+            radius_meters=500,
+        )
+        loc_b = WorkLocation(
+            organization_id=org.id,
+            name="B",
+            latitude=55.7600,
+            longitude=37.6173,
+            radius_meters=500,
+        )
+        db_session.add_all([loc_a, loc_b])
+        await db_session.commit()
+
+        nearest = await resolve_nearest_work_location(db_session, org.id, 55.7565, 37.6173)
+        assert nearest is not None
+        assert nearest.id == loc_a.id
+
+    async def test_none_when_no_zone_matches(self, db_session: AsyncSession):
+        owner = await _create_user(db_session, f"owner-{uuid.uuid4().hex[:8]}@example.com")
+        org = Organization(name="Geo Resolve Org 2", owner_id=owner.id)
+        db_session.add(org)
+        await db_session.flush()
+        loc = WorkLocation(
+            organization_id=org.id,
+            name="A",
+            latitude=55.7558,
+            longitude=37.6173,
+            radius_meters=200,
+        )
+        db_session.add(loc)
+        await db_session.commit()
+
+        nearest = await resolve_nearest_work_location(db_session, org.id, 10.0, 10.0)
+        assert nearest is None
+
+
+# --- my-schedules: резолв точки по lat/lng (work_schedules_geo_resolve) -------
+
+
+class TestMySchedulesGeoResolve:
+    """Баг с прода: график, привязанный только к точке, никогда не показывался в
+    my-schedules при geo_check_enabled=true, потому что мобилка запрашивала этот
+    эндпоинт без work_location_id (точку знает только сервер, только на старте
+    смены). Фикс — резолв точки по lat/lng тем же Haversine-подбором."""
+
+    async def _setup_geo_org(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_headers: dict[str, str],
+        *,
+        geo_check_enabled: bool = True,
+    ) -> dict:
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="geo-employee@example.com"
+        )
+        loc_resp = await client.post(
+            f"/api/v1/organizations/{ctx['org_id']}/locations",
+            headers=super_admin_headers,
+            json={
+                "name": "Точка",
+                "latitude": 55.7558,
+                "longitude": 37.6173,
+                "radius_meters": 200,
+            },
+        )
+        assert loc_resp.status_code == 201, loc_resp.text
+        location = loc_resp.json()["data"]
+
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], name="По точке"
+        )
+        await client.put(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/locations",
+            headers=super_admin_headers,
+            json={"work_location_ids": [location["id"]]},
+        )
+
+        if geo_check_enabled:
+            settings_resp = await client.patch(
+                f"/api/v1/organizations/{ctx['org_id']}/settings",
+                headers=super_admin_headers,
+                json={"geo_check_enabled": True},
+            )
+            assert settings_resp.status_code == 200, settings_resp.text
+
+        ctx["location"] = location
+        ctx["schedule"] = schedule
+        return ctx
+
+    async def test_lat_lng_inside_zone_reveals_location_only_schedule(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Приёмка п.1: координаты внутри радиуса точки -> location-only график
+        появляется в items, точка резолвится в ответе."""
+        ctx = await self._setup_geo_org(client, db_session, super_admin_headers)
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={"lat": 55.7558, "lng": 37.6173},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["id"] == ctx["schedule"]["id"]
+        assert data["resolved_work_location"] == {
+            "id": ctx["location"]["id"],
+            "name": "Точка",
+        }
+
+    async def test_coords_outside_all_zones_is_not_error(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Приёмка п.2: координаты вне всех гео-зон -> 200, список без учёта точки
+        (НЕ GEO_CHECK_FAILED, в отличие от /shifts/start)."""
+        ctx = await self._setup_geo_org(client, db_session, super_admin_headers)
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={"lat": 10.0, "lng": 10.0},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["items"] == []
+        assert data["resolved_work_location"] is None
+
+    async def test_explicit_work_location_id_has_priority_over_lat_lng(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Приёмка п.3: явный work_location_id побеждает lat/lng, даже если
+        координаты указывают на другую/никакую зону."""
+        ctx = await self._setup_geo_org(client, db_session, super_admin_headers)
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={
+                "work_location_id": ctx["location"]["id"],
+                "lat": 10.0,
+                "lng": 10.0,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["id"] == ctx["schedule"]["id"]
+        assert data["resolved_work_location"]["id"] == ctx["location"]["id"]
+
+    async def test_geo_check_disabled_ignores_lat_lng(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Приёмка п.4: geo_check_enabled=false -> lat/lng игнорируются, поведение
+        как до фикса (location-only график не появляется без явного work_location_id)."""
+        ctx = await self._setup_geo_org(
+            client, db_session, super_admin_headers, geo_check_enabled=False
+        )
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={"lat": 55.7558, "lng": 37.6173},
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["items"] == []
+        assert data["resolved_work_location"] is None
+
+    async def test_no_coords_no_work_location_id_behaves_as_before(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Приёмка п.5: существующий вызов без lat/lng/work_location_id не ломается."""
+        ctx = await self._setup_geo_org(client, db_session, super_admin_headers)
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["items"] == []
+        assert data["resolved_work_location"] is None
+
+    async def test_out_of_range_coords_rejected_with_422(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """`lat`/`lng` валидируются тем же диапазоном, что и в POST /shifts/start
+        (`ShiftStartRequest`: lat ge=-90/le=90, lng ge=-180/le=180) — координаты вне
+        диапазона не должны тихо уходить в Haversine-подбор."""
+        ctx = await self._setup_geo_org(client, db_session, super_admin_headers)
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={"lat": 999.0, "lng": 37.6173},
+        )
+        assert resp.status_code == 422
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+            params={"lat": 55.7558, "lng": -4000.0},
+        )
+        assert resp.status_code == 422
