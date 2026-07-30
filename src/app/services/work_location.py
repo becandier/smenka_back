@@ -10,8 +10,38 @@ from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import OrgError, _check_org_access, get_organization
+from src.app.utils.geo import haversine_distance
 
 logger = get_logger(__name__)
+
+
+async def resolve_nearest_work_location(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    latitude: float,
+    longitude: float,
+) -> WorkLocation | None:
+    """Ближайшая точка организации среди совпавших по радиусу (Haversine).
+
+    Общий хелпер для `_resolve_org_shift_start` (`services/shift.py`, старт
+    org-смены при `geo_check_enabled=true`) и `get_my_schedules` (резолв
+    точки для превью графиков ДО старта смены). `None`, если ни одна зона
+    организации не совпала — вызывающая сторона решает, ошибка это или нет:
+    для старта смены — да (`GEO_CHECK_FAILED`), для `my-schedules` — нет.
+    """
+    result = await session.execute(
+        select(WorkLocation).where(WorkLocation.organization_id == org_id)
+    )
+    locations = list(result.scalars().all())
+
+    matched = []
+    for loc in locations:
+        distance = haversine_distance(latitude, longitude, loc.latitude, loc.longitude)
+        if distance <= loc.radius_meters:
+            matched.append((loc, distance))
+    if not matched:
+        return None
+    return min(matched, key=lambda pair: pair[1])[0]
 
 
 async def create_work_location(

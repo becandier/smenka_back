@@ -325,7 +325,10 @@ async def get_member_schedules(
     "/my-schedules",
     summary="Мои доступные графики",
     description="Эффективный набор графиков текущего сотрудника + плановое окно, если начать "
-    "смену прямо сейчас. Ключевой эндпоинт для экрана старта смены в мобилке. Owner (не "
+    "смену прямо сейчас. Ключевой эндпоинт для экрана старта смены в мобилке. При включённой "
+    "геопроверке точку можно резолвить по `lat`/`lng` (тем же подбором, что и `POST "
+    "/shifts/start`) — если ни одна зона не совпала, это НЕ ошибка, точка просто остаётся "
+    "неопределённой. Явный `work_location_id` имеет приоритет над `lat`/`lng`. Owner (не "
     "участник организации) получает пустой список — не трекает время.",
 )
 async def get_my_schedules(
@@ -333,10 +336,22 @@ async def get_my_schedules(
     user: CurrentUserDep,
     session: SessionDep,
     work_location_id: uuid.UUID | None = Query(default=None),
+    lat: float | None = Query(
+        default=None, ge=-90, le=90, description="Широта — резолв точки при геопроверке"
+    ),
+    lng: float | None = Query(
+        default=None, ge=-180, le=180, description="Долгота — резолв точки при геопроверке"
+    ),
 ) -> ApiResponse:
-    items, require_schedule = await ws_service.get_my_schedules(
-        session, org_id, user.id, work_location_id=work_location_id
+    result = await ws_service.get_my_schedules(
+        session,
+        org_id,
+        user.id,
+        work_location_id=work_location_id,
+        latitude=lat,
+        longitude=lng,
     )
+    resolved = result.resolved_work_location
     return ApiResponse.success(
         MySchedulesResponse(
             items=[
@@ -347,10 +362,13 @@ async def get_my_schedules(
                     "is_current": it.is_current,
                     "starts_in_minutes": it.starts_in_minutes,
                 }
-                for it in items
+                for it in result.items
             ],
-            total=len(items),
-            require_schedule=require_schedule,
+            total=len(result.items),
+            require_schedule=result.require_schedule,
+            resolved_work_location=(
+                {"id": str(resolved.id), "name": resolved.name} if resolved is not None else None
+            ),
         ).model_dump(mode="json")
     )
 

@@ -698,6 +698,22 @@ class MyScheduleItem:
     starts_in_minutes: int
 
 
+@dataclass(frozen=True)
+class MySchedulesResult:
+    """Результат `get_my_schedules`: эффективный набор графиков + резолв точки.
+
+    `resolved_work_location` заполнен, когда точка определена — явно
+    переданным `work_location_id` либо резолвом по `lat`/`lng` (см. R1
+    `work_schedules_geo_resolve/backend.md`). `None`, если точка не
+    определена (в т.ч. когда координаты не попали ни в одну зону — это НЕ
+    ошибка здесь, в отличие от старта смены).
+    """
+
+    items: list[MyScheduleItem]
+    require_schedule: bool
+    resolved_work_location: WorkLocation | None
+
+
 def _build_my_schedule_items(
     pairs: list[tuple[WorkSchedule, str]],
     tz: ZoneInfo,
@@ -729,17 +745,48 @@ async def get_my_schedules(
     user_id: uuid.UUID,
     *,
     work_location_id: uuid.UUID | None,
-) -> tuple[list[MyScheduleItem], bool]:
-    """`GET .../my-schedules`. Owner (не member) → пустой список (не трекает время)."""
+    latitude: float | None = None,
+    longitude: float | None = None,
+) -> MySchedulesResult:
+    """`GET .../my-schedules`. Owner (не member) → пустой список (не трекает время).
+
+    Резолв точки (приоритет, `work_schedules_geo_resolve/backend.md`):
+    1. `work_location_id` передан явно — используется как есть (обратная
+       совместимость с текущим контрактом и ручным режимом).
+    2. Иначе, если у организации включена геопроверка и переданы оба
+       `lat`/`lng` — резолв ближайшей точки тем же хелпером, что и старт
+       смены (`resolve_nearest_work_location`). Не найдена — НЕ ошибка
+       здесь (в отличие от `/shifts/start`): сотрудник может ещё не дойти
+       до точки, это только превью списка перед стартом. Резолв графиков
+       идёт без точки — global/role видны, location-only нет.
+    3. Иначе — без точки, как раньше.
+
+    `lat`/`lng` при выключенной геопроверке игнорируются — у таких
+    организаций точка выбирается вручную через `work_location_id`.
+    """
     from src.app.services.organization_settings import get_settings_for_org
+    from src.app.services.work_location import resolve_nearest_work_location
 
     org = await get_organization(session, org_id)
     await ensure_member(session, org, user_id)
-    if work_location_id is not None:
-        await _get_org_location(session, org_id, work_location_id)
 
     org_settings = await get_settings_for_org(session, org_id)
     require_schedule = org_settings.require_schedule if org_settings is not None else False
+    geo_check_enabled = org_settings is not None and org_settings.geo_check_enabled
+
+    resolved_location: WorkLocation | None = None
+    if work_location_id is not None:
+        resolved_location = await _get_org_location(session, org_id, work_location_id)
+    elif geo_check_enabled and latitude is not None and longitude is not None:
+        resolved_location = await resolve_nearest_work_location(
+            session, org_id, latitude, longitude
+        )
+    # effective_location_id полностью выводится из resolved_location: при явном
+    # work_location_id resolved_location.id ему тождественен, при резолве по
+    # lat/lng — это найденная точка, иначе обе стороны None.
+    effective_location_id = (
+        resolved_location.id if resolved_location is not None else work_location_id
+    )
 
     member_result = await session.execute(
         select(OrganizationMember).where(
@@ -749,12 +796,17 @@ async def get_my_schedules(
     )
     member = member_result.scalar_one_or_none()
     if member is None:
-        return [], require_schedule
+        return MySchedulesResult(
+            items=[], require_schedule=require_schedule, resolved_work_location=None
+        )
 
-    pairs = await get_effective_schedules(session, org_id, member, work_location_id)
+    pairs = await get_effective_schedules(session, org_id, member, effective_location_id)
     tz = ZoneInfo(org.timezone)
     now = datetime.now(UTC)
-    return _build_my_schedule_items(pairs, tz, now), require_schedule
+    items = _build_my_schedule_items(pairs, tz, now)
+    return MySchedulesResult(
+        items=items, require_schedule=require_schedule, resolved_work_location=resolved_location
+    )
 
 
 # --- R7: смена графика администратором ------------------------------------------
