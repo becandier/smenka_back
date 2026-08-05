@@ -97,24 +97,19 @@ class Settings(BaseSettings):
     sentry_release: str = ""  # версия образа/коммит, передаётся ENV при сборке
     sentry_traces_sample_rate: float = 0.0
 
-    # SMTP (отправка кодов подтверждения письмом — smtp_email).
-    # Пустой smtp_host = SMTP выключен (dev/CI): код возвращается в ответе и логах,
-    # письмо не шлётся. Непустой host (прод) = код уходит только письмом, в ответе null.
-    smtp_host: str = ""
-    smtp_port: int = 465  # 465 → implicit SSL; 587 → STARTTLS (см. smtp_use_ssl)
-    smtp_use_ssl: bool = True  # true = SSL (465), false = STARTTLS (587)
-    smtp_username: str = ""
-    smtp_password: str = ""
-    # From: Яндекс требует From == smtp_username, иначе отбивает письмо.
-    smtp_from: str = ""
-    smtp_from_name: str = "Smenka"
-    # Таймаут сетевых операций SMTP (сек) — чтобы зависший сервер не держал запрос.
-    smtp_timeout_seconds: int = 15
+    # Loops (отправка кодов подтверждения письмом — smtp_email, транспорт Loops).
+    # Пустой loops_api_key = отправка выключена (dev/CI): код возвращается в ответе и
+    # логах, письмо не шлётся. Непустой key (прод) = код уходит только письмом, в ответе null.
+    loops_api_key: str = ""
+    loops_transactional_id: str = ""
+    loops_api_url: str = "https://app.loops.so/api/v1/transactional"
+    # Таймаут HTTP-запроса к Loops (сек) — чтобы зависший провайдер не держал запрос.
+    loops_timeout_seconds: int = 10
 
     @property
-    def smtp_enabled(self) -> bool:
-        """SMTP включён, когда задан хост. Иначе dev/CI-режим (код в ответе)."""
-        return bool(self.smtp_host)
+    def email_enabled(self) -> bool:
+        """Отправка писем включена, когда задан ключ Loops. Иначе dev/CI-режим (код в ответе)."""
+        return bool(self.loops_api_key)
 
     @property
     def s3_public_endpoint(self) -> str:
