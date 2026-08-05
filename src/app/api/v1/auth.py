@@ -48,7 +48,7 @@ async def register(request: Request, body: RegisterRequest, session: SessionDep)
         body.password,
         body.name,
     )
-    # Commit до отправки письма: при сбое SMTP пользователь уже создан и сможет
+    # Commit до отправки письма: при сбое отправки пользователь уже создан и сможет
     # запросить код повторно (deliver вернёт EMAIL_SEND_FAILED).
     await session.commit()
     response_code = await email_service.deliver_verification_code(body.email, code)

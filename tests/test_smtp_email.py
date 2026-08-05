@@ -1,11 +1,13 @@
-"""Тесты отправки кодов подтверждения по SMTP (smtp_email).
+"""Тесты отправки кодов подтверждения через Loops (smtp_email, транспорт Loops).
 
-Транспорт всегда мокается — живых сетевых вызовов нет.
+HTTP-слой всегда мокается (`email_service._send_loops_request`) — живых запросов
+к Loops из тестов быть не должно.
 """
 
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
-import aiosmtplib
+import httpx
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,25 +16,28 @@ from src.app.services import auth as auth_service
 from src.app.services import email as email_service
 
 
+def _loops_response(status_code: int, body: dict[str, Any]) -> httpx.Response:
+    return httpx.Response(status_code, json=body)
+
+
 @pytest.fixture
-def smtp_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Включить SMTP (прод-режим) на время теста: непустой host + 465/SSL."""
-    monkeypatch.setattr(email_service.settings, "smtp_host", "smtp.test")
-    monkeypatch.setattr(email_service.settings, "smtp_port", 465)
-    monkeypatch.setattr(email_service.settings, "smtp_use_ssl", True)
-    monkeypatch.setattr(email_service.settings, "smtp_username", "smenka@test")
-    monkeypatch.setattr(email_service.settings, "smtp_password", "secret")
-    monkeypatch.setattr(email_service.settings, "smtp_from", "smenka@test")
-    monkeypatch.setattr(email_service.settings, "smtp_from_name", "Smenka")
+def loops_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Включить Loops (прод-режим) на время теста: непустой api key + template id."""
+    monkeypatch.setattr(email_service.settings, "loops_api_key", "test-key")
+    monkeypatch.setattr(email_service.settings, "loops_transactional_id", "tpl_test")
+    monkeypatch.setattr(
+        email_service.settings, "loops_api_url", "https://app.loops.so/api/v1/transactional"
+    )
+    monkeypatch.setattr(email_service.settings, "loops_timeout_seconds", 10)
 
 
-async def test_smtp_off_returns_code_and_does_not_send(
+async def test_loops_off_returns_code_and_does_not_send(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SMTP выключен (дефолт): код в ответе, SMTP-клиент не вызывается."""
+    """Loops выключен (дефолт): код в ответе, HTTP-запрос не уходит."""
     send_mock = AsyncMock()
-    monkeypatch.setattr(email_service.aiosmtplib, "send", send_mock)
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
 
     response = await client.post(
         "/api/v1/auth/register",
@@ -46,14 +51,14 @@ async def test_smtp_off_returns_code_and_does_not_send(
     send_mock.assert_not_awaited()
 
 
-async def test_smtp_on_sends_email_and_hides_code(
+async def test_loops_on_sends_email_and_hides_code(
     client: AsyncClient,
-    smtp_on: None,
+    loops_on: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SMTP включён: письмо отправлено, verification_code в ответе = null."""
-    send_mock = AsyncMock()
-    monkeypatch.setattr(email_service.aiosmtplib, "send", send_mock)
+    """Loops включён: запрос ушёл с правильным телом, verification_code в ответе = null."""
+    send_mock = AsyncMock(return_value=_loops_response(200, {"success": True}))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
 
     response = await client.post(
         "/api/v1/auth/register",
@@ -64,72 +69,88 @@ async def test_smtp_on_sends_email_and_hides_code(
     assert response.json()["data"]["verification_code"] is None
 
     send_mock.assert_awaited_once()
-    message = send_mock.await_args.args[0]
-    assert message["To"] == "on@example.com"
-    assert message["Subject"] == "Код подтверждения Smenka"
-    assert "smenka@test" in str(message["From"])
-    assert "Smenka" in str(message["From"])
-
-    kwargs = send_mock.await_args.kwargs
-    assert kwargs["hostname"] == "smtp.test"
-    assert kwargs["port"] == 465
-    assert kwargs["use_tls"] is True
-    assert kwargs["start_tls"] is False
+    payload = send_mock.await_args.args[0]
+    assert payload["transactionalId"] == "tpl_test"
+    assert payload["email"] == "on@example.com"
+    assert payload["dataVariables"]["code"] is not None
+    assert len(payload["dataVariables"]["code"]) == 4
+    assert payload["dataVariables"]["ttlMinutes"] == 15
 
 
-async def test_smtp_on_starttls_for_port_587(
-    client: AsyncClient,
-    smtp_on: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SMTP_USE_SSL=false → STARTTLS (587): use_tls=False, start_tls=True."""
-    monkeypatch.setattr(email_service.settings, "smtp_port", 587)
-    monkeypatch.setattr(email_service.settings, "smtp_use_ssl", False)
-    send_mock = AsyncMock()
-    monkeypatch.setattr(email_service.aiosmtplib, "send", send_mock)
-
-    response = await client.post(
-        "/api/v1/auth/register",
-        json={"email": "tls@example.com", "password": "Password1", "name": "Tls"},
-    )
-
-    assert response.status_code == 201
-    kwargs = send_mock.await_args.kwargs
-    assert kwargs["use_tls"] is False
-    assert kwargs["start_tls"] is True
-
-
-async def test_smtp_send_failure_returns_error_and_persists_user(
+async def test_loops_on_success_false_returns_error(
     client: AsyncClient,
     db_session: AsyncSession,
-    smtp_on: None,
+    loops_on: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Сбой отправки → EMAIL_SEND_FAILED, но пользователь уже создан в БД."""
-    send_mock = AsyncMock(side_effect=aiosmtplib.SMTPException("boom"))
-    monkeypatch.setattr(email_service.aiosmtplib, "send", send_mock)
+    """HTTP 200, но success != true → EMAIL_SEND_FAILED, пользователь уже создан."""
+    send_mock = AsyncMock(return_value=_loops_response(200, {"success": False}))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
 
     response = await client.post(
         "/api/v1/auth/register",
-        json={"email": "fail@example.com", "password": "Password1", "name": "Fail"},
+        json={"email": "false@example.com", "password": "Password1", "name": "False"},
     )
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
 
-    user = await auth_service.get_user_by_email(db_session, "fail@example.com")
+    user = await auth_service.get_user_by_email(db_session, "false@example.com")
     assert user is not None
     assert user.is_verified is False
 
 
-async def test_resend_code_sends_email_when_smtp_on(
+async def test_loops_on_non_2xx_returns_error(
     client: AsyncClient,
-    smtp_on: None,
+    loops_on: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """resend-code тоже шлёт письмо и прячет код в проде."""
-    send_mock = AsyncMock()
-    monkeypatch.setattr(email_service.aiosmtplib, "send", send_mock)
+    """HTTP 4xx/5xx → EMAIL_SEND_FAILED."""
+    send_mock = AsyncMock(
+        return_value=_loops_response(400, {"message": "transactionalId not found"})
+    )
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "bad@example.com", "password": "Password1", "name": "Bad"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
+
+
+async def test_loops_on_timeout_returns_error_and_persists_user(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    loops_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Таймаут/сетевая ошибка → EMAIL_SEND_FAILED, но пользователь уже создан в БД."""
+    send_mock = AsyncMock(side_effect=httpx.TimeoutException("boom"))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "timeout@example.com", "password": "Password1", "name": "Timeout"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
+
+    user = await auth_service.get_user_by_email(db_session, "timeout@example.com")
+    assert user is not None
+    assert user.is_verified is False
+
+
+async def test_resend_code_sends_email_when_loops_on(
+    client: AsyncClient,
+    loops_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resend-code тоже шлёт письмо через Loops и прячет код в проде."""
+    send_mock = AsyncMock(return_value=_loops_response(200, {"success": True}))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
 
     await client.post(
         "/api/v1/auth/register",
@@ -148,3 +169,39 @@ async def test_resend_code_sends_email_when_smtp_on(
     assert response.status_code == 200
     assert response.json()["data"]["verification_code"] is None
     assert send_mock.await_count == 2
+
+
+async def test_code_never_logged_when_loops_on(
+    client: AsyncClient,
+    loops_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ни в успехе, ни при сбое отправки код не попадает в аргументы логгера."""
+    log_info = Mock()
+    log_error = Mock()
+    monkeypatch.setattr(email_service.logger, "info", log_info)
+    monkeypatch.setattr(email_service.logger, "error", log_error)
+
+    # Успех.
+    send_mock = AsyncMock(return_value=_loops_response(200, {"success": True}))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock)
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "logsafe1@example.com", "password": "Password1", "name": "LogSafe"},
+    )
+
+    # Сбой.
+    send_mock2 = AsyncMock(return_value=_loops_response(500, {"message": "boom"}))
+    monkeypatch.setattr(email_service, "_send_loops_request", send_mock2)
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "logsafe2@example.com", "password": "Password1", "name": "LogSafe"},
+    )
+
+    all_calls = log_info.call_args_list + log_error.call_args_list
+    assert all_calls, "логгер должен был вызываться хотя бы раз"
+    for call in all_calls:
+        _, kwargs = call
+        assert "code" not in kwargs
+        for value in kwargs.values():
+            assert not (isinstance(value, str) and value.isdigit() and len(value) == 4)

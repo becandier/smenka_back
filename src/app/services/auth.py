@@ -282,9 +282,9 @@ def _generate_code() -> str:
 
 
 def _log_code(event: str, email: str, code: str) -> None:
-    """Залогировать выдачу кода. В проде (SMTP включён) код в логи не пишем —
-    он уходит письмом; в dev/CI (SMTP выключен) код логируем для отладки."""
-    if settings.smtp_enabled:
+    """Залогировать выдачу кода. В проде (отправка письмом включена) код в логи
+    не пишем — он уходит письмом; в dev/CI (выключена) код логируем для отладки."""
+    if settings.email_enabled:
         logger.info(event, email=email)
     else:
         logger.info(event, email=email, code=code)
