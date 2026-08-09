@@ -24,3 +24,8 @@ CLAUDE.md
 # Claude Code session state
 .claude/
 docker-compose.override.yml
+
+# Пароли и токены — никогда не в репозиторий
+creditinals.md
+CREDENTIALS.md
+credentials.md
