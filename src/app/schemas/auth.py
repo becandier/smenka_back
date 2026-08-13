@@ -64,12 +64,20 @@ class LoginRequest(BaseModel):
     @field_validator("login")
     @classmethod
     def _check_identifier(cls, v: str | None, info: ValidationInfo) -> str | None:
-        trimmed = v.strip() if v else None
-        trimmed = trimmed or None
+        trimmed = (v or "").strip() or None
         email = info.data.get("email")
         if bool(trimmed) == bool(email):
             raise ValueError("Укажите login или email — ровно одно из полей")
         return trimmed
+
+    @property
+    def identifier(self) -> str:
+        """`login` или `email` — какое бы поле ни было заполнено. Всегда `str`:
+        `_check_identifier` уже гарантирует ровно одно из двух полей."""
+        ident = self.login or self.email
+        if ident is None:  # pragma: no cover — недостижимо, см. _check_identifier
+            raise ValueError("login или email обязателен")
+        return ident
 
 
 class TokenResponse(BaseModel):

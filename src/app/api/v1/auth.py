@@ -117,15 +117,9 @@ async def resend_code(
 )
 @limiter.limit(settings.login_rate_limit)
 async def login(request: Request, body: LoginRequest, session: SessionDep) -> ApiResponse:
-    ident = body.login or body.email
-    if ident is None:
-        # Недостижимо: LoginRequest._check_identifier уже гарантирует ровно одно
-        # из полей заполненным (422 иначе) — explicit raise вместо assert,
-        # т.к. assert в src запрещён линтером (вырезается флагом `python -O`).
-        raise ValueError("login или email обязателен")
     access_token, refresh_token = await auth_service.login(
         session,
-        ident,
+        body.identifier,
         body.password,
     )
     await session.commit()

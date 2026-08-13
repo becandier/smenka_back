@@ -20,6 +20,7 @@ from src.app.core.security import generate_password, hash_password
 from src.app.models.organization import MemberRole, OrganizationMember
 from src.app.models.user import RefreshToken, User
 from src.app.services import lockout
+from src.app.services.auth import get_user_by_email
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import (
     OrgError,
@@ -27,7 +28,7 @@ from src.app.services.organization import (
     get_organization,
     normalize_display_name,
 )
-from src.app.services.organization_role import _get_role
+from src.app.services.organization_role import get_role
 
 logger = get_logger(__name__)
 
@@ -47,8 +48,7 @@ async def _ensure_login_free(
 
 
 async def _ensure_email_free(session: AsyncSession, email: str) -> None:
-    result = await session.execute(select(User.id).where(User.email == email))
-    if result.scalar_one_or_none() is not None:
+    if await get_user_by_email(session, email) is not None:
         raise OrgError("EMAIL_TAKEN", "Email уже занят", 409)
 
 
@@ -101,7 +101,7 @@ async def create_member(
 
     role_obj = None
     if role_id is not None:
-        role_obj = await _get_role(session, org_id, role_id)
+        role_obj = await get_role(session, org_id, role_id)
 
     plain_password = password or generate_password()
 
@@ -138,7 +138,11 @@ async def create_member(
     )
     session.add(member)
     await session.flush()
-    await session.refresh(member, ["user", "custom_role"])
+    # Прямое присваивание вместо session.refresh(member, ["user", "custom_role"]):
+    # оба объекта уже есть в памяти (только что созданы/получены выше) — refresh
+    # добавил бы лишний round-trip в БД за тем, что уже известно.
+    member.user = user
+    member.custom_role = role_obj
 
     logger.info(
         "member_created_by_org",
@@ -190,34 +194,23 @@ async def reset_password(
     return member, plain_password
 
 
-async def update_member_login(
-    session: AsyncSession,
-    org_id: uuid.UUID,
-    actor_id: uuid.UUID,
-    target_user_id: uuid.UUID,
-    new_login: str,
-) -> OrganizationMember:
-    """Сменить логин сотруднику, учётку которого завела эта организация."""
-    org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, actor_id)
-    return await apply_login_update(session, org_id, target_user_id, new_login)
-
-
 async def apply_login_update(
     session: AsyncSession,
-    org_id: uuid.UUID,
-    target_user_id: uuid.UUID,
+    member: OrganizationMember,
     new_login: str,
 ) -> OrganizationMember:
-    """Применить смену логина БЕЗ проверки прав — вызывающий код уже её сделал.
+    """Сменить логин уже загруженному участнику. Прав НЕ проверяет и НЕ фетчит
+    `member` заново — вызывающий код (`PATCH .../members/{user_id}`) авторизует
+    и загружает участника один раз на весь partial-запрос (см.
+    `organization.apply_display_name_update` — тот же мотив).
 
-    Нужен для `PATCH .../members/{user_id}` (см. `organization.apply_display_name_update`
-    — тот же мотив: единая авторизация на весь partial-запрос вместо повторной
-    на каждое поле).
+    Разрешено только для учётки, которую завела ЭТА организация
+    (`_ensure_managed_by_org`) — это правило владения проверяется здесь, а не
+    в эндпоинте, т.к. оно специфично для admin_created_accounts, а не общее
+    для org-ресурсов.
     """
-    member = await get_member(session, org_id, target_user_id)
     user = member.user
-    _ensure_managed_by_org(user, org_id)
+    _ensure_managed_by_org(user, member.organization_id)
 
     await _ensure_login_free(session, new_login, exclude_user_id=user.id)
     user.login = new_login
@@ -226,7 +219,7 @@ async def apply_login_update(
     except IntegrityError as exc:
         raise OrgError("LOGIN_TAKEN", "Логин уже занят", 409) from exc
 
-    logger.info("member_login_updated", org_id=str(org_id), user_id=str(user.id))
+    logger.info("member_login_updated", org_id=str(member.organization_id), user_id=str(user.id))
     return member
 
 
@@ -234,5 +227,4 @@ __all__ = [
     "apply_login_update",
     "create_member",
     "reset_password",
-    "update_member_login",
 ]

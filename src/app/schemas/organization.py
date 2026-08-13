@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.app.core.security import validate_login_format
+from src.app.core.security import validate_login_format, validate_required_text
 from src.app.schemas.organization_role import RoleResponse
 from src.app.schemas.payroll import CurrentRateResponse
 
@@ -31,13 +31,7 @@ class OrganizationUpdate(BaseModel):
     def _normalize_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        # Trim по краям применяем ДО проверок: пустое после trim и >255 символов → 422.
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("Название не может быть пустым")
-        if len(stripped) > 255:
-            raise ValueError("Название не может превышать 255 символов")
-        return stripped
+        return validate_required_text(value, noun="Название")
 
 
 class OrganizationResponse(BaseModel):

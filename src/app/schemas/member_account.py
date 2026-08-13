@@ -8,7 +8,11 @@ from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
-from src.app.core.security import validate_login_format, validate_password_strength
+from src.app.core.security import (
+    validate_login_format,
+    validate_password_strength,
+    validate_required_text,
+)
 from src.app.schemas.organization import MemberResponse
 
 
@@ -41,12 +45,7 @@ class MemberCreateRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def _normalize_name(cls, v: str) -> str:
-        stripped = v.strip()
-        if not stripped:
-            raise ValueError("Имя не может быть пустым")
-        if len(stripped) > 255:
-            raise ValueError("Имя не может превышать 255 символов")
-        return stripped
+        return validate_required_text(v, noun="Имя")
 
     @field_validator("login")
     @classmethod

@@ -174,26 +174,40 @@ async def resend_code(session: AsyncSession, email: str) -> str:
 async def _find_user_by_ident(session: AsyncSession, normalized_ident: str) -> User | None:
     """Найти пользователя по логину или email (admin_created_accounts).
 
-    Порядок: сначала `lower(login)`, затем — если не найдено — `lower(email)`.
+    Приоритет: `lower(login)`, затем — если нет совпадения — `lower(email)`.
     Email исторически уникален регистрозависимо (см. backend.md), поэтому при
     поиске без учёта регистра теоретически может найтись больше одной записи —
     в этом случае вход отклоняется (не гадаем, какой аккаунт имелся в виду).
-    """
-    login_result = await session.execute(
-        select(User).where(func.lower(User.login) == normalized_ident)
-    )
-    user = login_result.scalar_one_or_none()
-    if user is not None:
-        return user
 
-    email_result = await session.execute(
-        select(User).where(func.lower(User.email) == normalized_ident)
+    Один запрос вместо двух последовательных (login, потом email) — на
+    каждый логин без совпадения по login (большинство существующих учёток,
+    у них login не задан) старая версия делала два round-trip'а подряд;
+    `login` и `email` уникальны на платформе, поэтому кандидатов не может
+    быть много — приоритизация и disambiguation после fetch дешевле в Python.
+    """
+    result = await session.execute(
+        select(User).where(
+            (func.lower(User.login) == normalized_ident)
+            | (func.lower(User.email) == normalized_ident)
+        )
     )
-    users = list(email_result.scalars().all())
-    if len(users) > 1:
+    candidates = list(result.scalars().all())
+
+    login_match = next(
+        (u for u in candidates if u.login is not None and u.login.lower() == normalized_ident),
+        None,
+    )
+    if login_match is not None:
+        # uq_users_login_lower — не более одного совпадения по login.
+        return login_match
+
+    email_matches = [
+        u for u in candidates if u.email is not None and u.email.lower() == normalized_ident
+    ]
+    if len(email_matches) > 1:
         logger.warning("login_ambiguous_email_match", ident=normalized_ident)
         return None
-    return users[0] if users else None
+    return email_matches[0] if email_matches else None
 
 
 async def login(

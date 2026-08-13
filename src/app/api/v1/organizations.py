@@ -590,23 +590,18 @@ async def update_member(
 ) -> ApiResponse:
     from src.app.services.common import ensure_admin_or_owner
 
-    # Права проверяем сразу, независимо от того, какие ключи переданы: тело
-    # может быть пустым partial-запросом (ни display_name, ни login), тогда ни
-    # одна из веток ниже не вызовет сервис с собственной проверкой прав —
-    # авторизация не должна зависеть от содержимого тела.
+    # Единая точка авторизации + загрузки участника на весь partial-запрос:
+    # тело может менять и display_name, и login одновременно (или ни одного —
+    # пустой body), поэтому и права, и сам участник достаются один раз, а не
+    # по разу на каждое поле (apply_* ниже работают с уже готовым `member`).
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    member = await org_service.get_member(session, org_id, member_user_id)
 
-    member: OrganizationMember | None = None
-
-    # apply_* (не update_member_display_name/update_member_login) — права уже
-    # проверены один раз выше; повторные org+ensure_admin_or_owner на каждое
-    # поле partial-тела были бы лишним round-trip'ом в БД.
     if "display_name" in body.model_fields_set:
         member, old_value, new_value = await org_service.apply_display_name_update(
             session,
-            org_id,
-            member_user_id,
+            member,
             body.display_name,
         )
         await audit_service.record(
@@ -627,8 +622,7 @@ async def update_member(
     if body.login is not None:
         member = await member_account_service.apply_login_update(
             session,
-            org_id,
-            member_user_id,
+            member,
             body.login,
         )
         await audit_service.record(
@@ -641,11 +635,6 @@ async def update_member(
             summary={"user_id": str(member_user_id), "new_login": member.user.login},
             ip_address=get_client_ip(request),
         )
-
-    if member is None:
-        # Пустое тело (ни display_name, ни login) — права уже проверены выше,
-        # достаём участника только для формирования ответа.
-        member = await org_service.get_member(session, org_id, member_user_id)
 
     await session.commit()
 

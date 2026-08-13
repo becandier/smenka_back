@@ -424,49 +424,26 @@ def normalize_display_name(raw: str | None) -> str | None:
     return stripped
 
 
-async def update_member_display_name(
-    session: AsyncSession,
-    org_id: uuid.UUID,
-    member_user_id: uuid.UUID,
-    raw_display_name: str | None,
-    requester_id: uuid.UUID,
-) -> tuple[OrganizationMember, str | None, str | None]:
-    """Задать/сбросить `display_name` участника. Возвращает (member, old, new) для аудита.
-
-    Права — тот же хелпер, что и у прочих управляющих операций над участниками:
-    owner, admin-участник организации или super_admin. Сотрудник (в т.ч. себе)
-    получает `FORBIDDEN` (403) — это управленческий атрибут, не самообслуживание.
-    """
-    org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
-    return await apply_display_name_update(session, org_id, member_user_id, raw_display_name)
-
-
 async def apply_display_name_update(
     session: AsyncSession,
-    org_id: uuid.UUID,
-    member_user_id: uuid.UUID,
+    member: OrganizationMember,
     raw_display_name: str | None,
 ) -> tuple[OrganizationMember, str | None, str | None]:
-    """Применить смену `display_name` БЕЗ проверки прав — вызывающий код уже её сделал.
+    """Задать/сбросить `display_name` уже загруженного участника. Возвращает (member, old, new).
 
-    Нужен для `PATCH .../members/{user_id}` (admin_created_accounts): эндпоинт
-    авторизует один раз в начале для всего partial-запроса (тело может менять
-    и `display_name`, и `login`) и не должен повторно ходить в БД за
-    org+правами на каждое поле. `update_member_display_name` выше остаётся
-    самодостаточной публичной функцией (с собственной проверкой) для любого
-    другого вызывающего кода.
+    Прав НЕ проверяет и НЕ фетчит `member` заново — вызывающий код
+    (`PATCH .../members/{user_id}`, admin_created_accounts) авторизует и
+    загружает участника один раз в начале на весь partial-запрос (тело может
+    менять и `display_name`, и `login`), а не по разу на каждое поле.
     """
-    member = await get_member(session, org_id, member_user_id)
-
     new_value = normalize_display_name(raw_display_name)
     old_value = member.display_name
     member.display_name = new_value
     await session.flush()
     logger.info(
         "member_display_name_updated",
-        org_id=str(org_id),
-        user_id=str(member_user_id),
+        org_id=str(member.organization_id),
+        user_id=str(member.user_id),
     )
     return member, old_value, new_value
 

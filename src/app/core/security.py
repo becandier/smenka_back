@@ -61,6 +61,19 @@ def validate_login_format(raw: str) -> str:
     return trimmed
 
 
+def validate_required_text(raw: str, *, noun: str, max_length: int = 255) -> str:
+    """Trim + непустое + лимит длины для обязательных строковых полей (имя
+    организации, имя сотрудника и т.п.). `noun` — существительное для текста
+    ошибки («Название», «Имя»). Raises ValueError — рассчитано на вызов из
+    Pydantic field_validator."""
+    stripped = raw.strip()
+    if not stripped:
+        raise ValueError(f"{noun} не может быть пустым")
+    if len(stripped) > max_length:
+        raise ValueError(f"{noun} не может превышать {max_length} символов")
+    return stripped
+
+
 def generate_password(length: int = GENERATED_PASSWORD_LENGTH) -> str:
     """Пароль по умолчанию для учётки, заведённой админом организации
     (admin_created_accounts). Без визуально неоднозначных символов; гарантированно
