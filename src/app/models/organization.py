@@ -57,7 +57,14 @@ class Organization(Base):
         default=lambda: datetime.now(UTC),
     )
 
-    owner: Mapped["User"] = relationship(back_populates="owned_organizations")
+    # foreign_keys обязателен с admin_created_accounts: между organizations и
+    # users теперь два пути FK (owner_id и обратный users.created_by_org_id) —
+    # без явного указания SQLAlchemy не может определить join однозначно
+    # (AmbiguousForeignKeysError).
+    owner: Mapped["User"] = relationship(
+        back_populates="owned_organizations",
+        foreign_keys=[owner_id],
+    )
     members: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="organization",
         cascade="all, delete-orphan",

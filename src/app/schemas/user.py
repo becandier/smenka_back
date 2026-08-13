@@ -5,7 +5,12 @@ from pydantic import BaseModel, EmailStr, Field
 
 class UserResponse(BaseModel):
     id: str = Field(description="UUID пользователя")
-    email: EmailStr = Field(description="Email")
+    email: EmailStr | None = Field(
+        default=None,
+        description="Email; null — учётка заведена админом организации только с "
+        "логином (admin_created_accounts)",
+    )
+    login: str | None = Field(default=None, description="Логин для входа (admin_created_accounts)")
     phone: str | None = Field(default=None, description="Телефон")
     name: str = Field(description="Имя")
     is_verified: bool = Field(description="Email подтверждён")

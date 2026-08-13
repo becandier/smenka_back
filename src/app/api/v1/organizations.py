@@ -12,13 +12,19 @@ from src.app.models.user import UserRole
 from src.app.schemas.audit import AuditLogEntry, AuditLogListResponse
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import OrgChecklistInstanceListResponse
+from src.app.schemas.member_account import (
+    MemberCreateRequest,
+    MemberCreateResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
+)
 from src.app.schemas.organization import (
     InviteCodeResponse,
     JoinResponse,
-    MemberDisplayNameUpdate,
     MemberListResponse,
     MemberResponse,
     MemberRoleUpdate,
+    MemberUpdateRequest,
     OrganizationCreate,
     OrganizationListResponse,
     OrganizationResponse,
@@ -32,6 +38,7 @@ from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse
 from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
+from src.app.services import member_account as member_account_service
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import overtime as overtime_service
@@ -98,7 +105,12 @@ def _member_to_response(
         organization_id=str(member.organization_id),
         user_id=str(member.user_id),
         user_name=member.user.name,
-        user_email=member.user.email,
+        # user_email остаётся строкой в существующем контракте (обратная
+        # совместимость мобильных билдов) — "" вместо null для admin-created
+        # учёток без почты (admin_created_accounts).
+        user_email=member.user.email_display,
+        user_login=member.user.login,
+        password_managed=member.user.created_by_org_id == member.organization_id,
         display_name=member.display_name,
         role=member.role.value,
         custom_role=custom_role,
@@ -328,6 +340,66 @@ async def join_organization(
     )
 
 
+@router.post(
+    "/{org_id}/members",
+    status_code=201,
+    summary="Завести сотрудника (admin_created_accounts)",
+    description=(
+        "Заводит сотрудника целиком со стороны организации: имя, опциональные "
+        "login/email (хотя бы одно обязательно), пароль (не передан — сервер "
+        "генерирует). Учётка сразу is_verified — письмо не отправляется. "
+        "Пароль возвращается один раз в ответе и нигде больше не сохраняется. "
+        "Доступно владельцу (Owner) и admin-участнику; роль admin при создании "
+        "может назначить только владелец."
+    ),
+)
+async def create_member(
+    org_id: uuid.UUID,
+    body: MemberCreateRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+    request: Request,
+) -> ApiResponse:
+    role_uuid = uuid.UUID(body.role_id) if body.role_id else None
+    member, plain_password = await member_account_service.create_member(
+        session,
+        org_id,
+        user.id,
+        actor_is_super_admin=user.role == UserRole.super_admin,
+        name=body.name,
+        login=body.login,
+        email=body.email,
+        phone=body.phone,
+        password=body.password,
+        role=body.role,
+        role_id=role_uuid,
+        display_name=body.display_name,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.member_create,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        # Открытый пароль в аудит не пишем — только факт наличия login/email.
+        summary={
+            "role": member.role.value,
+            "login": member.user.login,
+            "has_email": member.user.email is not None,
+        },
+        ip_address=get_client_ip(request),
+    )
+    await session.commit()
+    return ApiResponse.success(
+        MemberCreateResponse(
+            member=MemberResponse(**_member_to_response(member)),
+            login=member.user.login,
+            password=plain_password,
+        ).model_dump()
+    )
+
+
 @router.get(
     "/{org_id}/members",
     summary="Список участников",
@@ -402,6 +474,54 @@ async def remove_member(
     return ApiResponse.success({"message": "Участник удалён"})
 
 
+@router.post(
+    "/{org_id}/members/{member_user_id}/reset-password",
+    summary="Сбросить пароль сотруднику (admin_created_accounts)",
+    description=(
+        "Сбрасывает пароль сотруднику, учётку которого завела ЭТА организация "
+        "(users.created_by_org_id == org_id) — иначе 403 "
+        "PASSWORD_RESET_NOT_ALLOWED (сотрудник с личной учёткой, пришедший по "
+        "инвайту, под это правило не попадает). password не передан/null — "
+        "сервер генерирует. Отзывает все refresh-токены пользователя. Доступно "
+        "владельцу (Owner) и admin-участнику."
+    ),
+)
+async def reset_member_password(
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    body: ResetPasswordRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+    request: Request,
+) -> ApiResponse:
+    member, plain_password = await member_account_service.reset_password(
+        session,
+        org_id,
+        user.id,
+        member_user_id,
+        body.password,
+    )
+    await audit_service.record(
+        session,
+        action=AuditAction.member_password_reset,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        # Открытый пароль в аудит не пишем.
+        summary={"login": member.user.login},
+        ip_address=get_client_ip(request),
+    )
+    await session.commit()
+    return ApiResponse.success(
+        ResetPasswordResponse(
+            user_id=str(member.user_id),
+            login=member.user.login,
+            password=plain_password,
+        ).model_dump()
+    )
+
+
 @router.patch(
     "/{org_id}/members/{member_user_id}/role",
     summary="Изменить роль участника",
@@ -446,45 +566,76 @@ async def update_member_role(
 
 @router.patch(
     "/{org_id}/members/{member_user_id}",
-    summary="Задать/сбросить имя участника в организации",
+    summary="Обновить участника (имя в организации, логин)",
     description=(
-        "Устанавливает или сбрасывает display_name — имя, которым участник "
-        "отображается только в этой организации. Настоящее User.name не "
-        "меняется и остаётся доступным как user_name во всех орг-ответах. "
-        "null или пустая строка сбрасывают на настоящее имя. Доступно "
-        "владельцу (Owner), admin-участнику и super_admin; сотрудник (в т.ч. "
-        "себе) получает 403 — это управленческий атрибут (member_display_name)."
+        "Partial-обновление: правятся только переданные ключи. `display_name` — "
+        "имя, которым участник отображается только в этой организации "
+        "(настоящее User.name не меняется); null/пустая строка сбрасывают на "
+        "него, ключ отсутствует — не менять. `login` — логин для входа "
+        "(admin_created_accounts): меняется ТОЛЬКО для учёток, заведённых ЭТОЙ "
+        "организацией (users.created_by_org_id == org_id), иначе 403 "
+        "PASSWORD_RESET_NOT_ALLOWED; занят другим пользователем → 409 "
+        "LOGIN_TAKEN; ключ отсутствует/null — не менять. Доступно владельцу "
+        "(Owner), admin-участнику и super_admin; сотрудник (в т.ч. себе) "
+        "получает 403 — это управленческий атрибут."
     ),
 )
-async def update_member_display_name(
+async def update_member(
     org_id: uuid.UUID,
     member_user_id: uuid.UUID,
-    body: MemberDisplayNameUpdate,
+    body: MemberUpdateRequest,
     user: CurrentUserDep,
     session: SessionDep,
     request: Request,
 ) -> ApiResponse:
-    member, old_value, new_value = await org_service.update_member_display_name(
-        session,
-        org_id,
-        member_user_id,
-        body.display_name,
-        user.id,
-    )
-    await audit_service.record(
-        session,
-        action=AuditAction.member_display_name_update,
-        resource_type=AuditResource.member,
-        organization_id=org_id,
-        actor_user_id=user.id,
-        resource_id=member.id,
-        summary={
-            "user_id": str(member_user_id),
-            "old_display_name": old_value,
-            "new_display_name": new_value,
-        },
-        ip_address=get_client_ip(request),
-    )
+    from src.app.services.common import ensure_admin_or_owner
+
+    # Единая точка авторизации + загрузки участника на весь partial-запрос:
+    # тело может менять и display_name, и login одновременно (или ни одного —
+    # пустой body), поэтому и права, и сам участник достаются один раз, а не
+    # по разу на каждое поле (apply_* ниже работают с уже готовым `member`).
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, user.id)
+    member = await org_service.get_member(session, org_id, member_user_id)
+
+    if "display_name" in body.model_fields_set:
+        member, old_value, new_value = await org_service.apply_display_name_update(
+            session,
+            member,
+            body.display_name,
+        )
+        await audit_service.record(
+            session,
+            action=AuditAction.member_display_name_update,
+            resource_type=AuditResource.member,
+            organization_id=org_id,
+            actor_user_id=user.id,
+            resource_id=member.id,
+            summary={
+                "user_id": str(member_user_id),
+                "old_display_name": old_value,
+                "new_display_name": new_value,
+            },
+            ip_address=get_client_ip(request),
+        )
+
+    if body.login is not None:
+        member = await member_account_service.apply_login_update(
+            session,
+            member,
+            body.login,
+        )
+        await audit_service.record(
+            session,
+            action=AuditAction.member_login_update,
+            resource_type=AuditResource.member,
+            organization_id=org_id,
+            actor_user_id=user.id,
+            resource_id=member.id,
+            summary={"user_id": str(member_user_id), "new_login": member.user.login},
+            ip_address=get_client_ip(request),
+        )
+
     await session.commit()
 
     # Эндпоинт доступен только owner/admin/super_admin — ставку показываем всегда

@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.config import get_settings
@@ -171,38 +171,79 @@ async def resend_code(session: AsyncSession, email: str) -> str:
     return code
 
 
+async def _find_user_by_ident(session: AsyncSession, normalized_ident: str) -> User | None:
+    """Найти пользователя по логину или email (admin_created_accounts).
+
+    Приоритет: `lower(login)`, затем — если нет совпадения — `lower(email)`.
+    Email исторически уникален регистрозависимо (см. backend.md), поэтому при
+    поиске без учёта регистра теоретически может найтись больше одной записи —
+    в этом случае вход отклоняется (не гадаем, какой аккаунт имелся в виду).
+
+    Один запрос вместо двух последовательных (login, потом email) — на
+    каждый логин без совпадения по login (большинство существующих учёток,
+    у них login не задан) старая версия делала два round-trip'а подряд;
+    `login` и `email` уникальны на платформе, поэтому кандидатов не может
+    быть много — приоритизация и disambiguation после fetch дешевле в Python.
+    """
+    result = await session.execute(
+        select(User).where(
+            (func.lower(User.login) == normalized_ident)
+            | (func.lower(User.email) == normalized_ident)
+        )
+    )
+    candidates = list(result.scalars().all())
+
+    login_match = next(
+        (u for u in candidates if u.login is not None and u.login.lower() == normalized_ident),
+        None,
+    )
+    if login_match is not None:
+        # uq_users_login_lower — не более одного совпадения по login.
+        return login_match
+
+    email_matches = [
+        u for u in candidates if u.email is not None and u.email.lower() == normalized_ident
+    ]
+    if len(email_matches) > 1:
+        logger.warning("login_ambiguous_email_match", ident=normalized_ident)
+        return None
+    return email_matches[0] if email_matches else None
+
+
 async def login(
     session: AsyncSession,
-    email: str,
+    ident: str,
     password: str,
 ) -> tuple[str, str]:
-    """Authenticate user. Returns (access_token, refresh_token)."""
+    """Authenticate user by login or email. Returns (access_token, refresh_token)."""
+    normalized = ident.strip().lower()
+
     # Блокировка проверяется до пароля и одинаково для существующего и
-    # несуществующего email — чтобы lockout не стал enumeration-оракулом.
-    if await lockout.is_locked(email):
+    # несуществующего идентификатора — чтобы lockout не стал enumeration-оракулом.
+    if await lockout.is_locked(normalized):
         raise AuthError(
             "ACCOUNT_LOCKED",
             "Аккаунт временно заблокирован после серии неудачных входов",
             423,
         )
 
-    user = await get_user_by_email(session, email)
+    user = await _find_user_by_ident(session, normalized)
     # password_hash is None для OAuth-only пользователей (нет пароля — нечего сверять).
     if (
         user is None
         or user.password_hash is None
         or not verify_password(password, user.password_hash)
     ):
-        await lockout.register_failure(email)
-        raise AuthError("INVALID_CREDENTIALS", "Неверный email или пароль", 401)
+        await lockout.register_failure(normalized)
+        raise AuthError("INVALID_CREDENTIALS", "Неверный логин или пароль", 401)
 
     if not user.is_verified:
         raise AuthError("NOT_VERIFIED", "Email не подтверждён", 403)
 
-    await lockout.reset(email)
+    await lockout.reset(normalized)
     access_token = create_access_token(str(user.id))
     refresh_token = await _create_refresh_token_db(session, user.id)
-    logger.info("user_logged_in", user_id=str(user.id), email=email)
+    logger.info("user_logged_in", user_id=str(user.id))
     return access_token, refresh_token
 
 

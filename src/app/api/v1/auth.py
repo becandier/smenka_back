@@ -109,7 +109,9 @@ async def resend_code(
     "/login",
     summary="Вход",
     description=(
-        "Аутентификация по email и паролю. Возвращает пару access_token + refresh_token. "
+        "Аутентификация по логину или email + паролю. Возвращает пару "
+        "access_token + refresh_token. Ровно одно из полей login/email должно "
+        "быть заполнено (обратная совместимость: старые билды шлют только email). "
         "Email должен быть подтверждён."
     ),
 )
@@ -117,7 +119,7 @@ async def resend_code(
 async def login(request: Request, body: LoginRequest, session: SessionDep) -> ApiResponse:
     access_token, refresh_token = await auth_service.login(
         session,
-        body.email,
+        body.identifier,
         body.password,
     )
     await session.commit()

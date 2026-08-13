@@ -34,7 +34,7 @@ async def _check_admin_or_owner(
     )
 
 
-async def _get_role(
+async def get_role(
     session: AsyncSession,
     org_id: uuid.UUID,
     role_id: uuid.UUID,
@@ -105,7 +105,7 @@ async def update_role(
 ) -> OrganizationRole:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
-    role = await _get_role(session, org_id, role_id)
+    role = await get_role(session, org_id, role_id)
 
     if role.name == name:
         return role
@@ -139,7 +139,7 @@ async def delete_role(
 ) -> None:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
-    role = await _get_role(session, org_id, role_id)
+    role = await get_role(session, org_id, role_id)
     await session.delete(role)
     await session.flush()
     logger.info(
@@ -160,7 +160,7 @@ async def assign_role_to_member(
     await _check_admin_or_owner(session, org, requester_id)
 
     if role_id is not None:
-        await _get_role(session, org_id, role_id)
+        await get_role(session, org_id, role_id)
 
     result = await session.execute(
         select(OrganizationMember)

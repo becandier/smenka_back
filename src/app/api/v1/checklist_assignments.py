@@ -27,7 +27,8 @@ def _member_info(member: OrganizationMember) -> MemberInfo:
     return MemberInfo(
         user_id=str(member.user_id),
         user_name=member.user.name,
-        user_email=member.user.email,
+        # "" вместо null — admin-created учётка без email (admin_created_accounts).
+        user_email=member.user.email_display,
     )
 
 

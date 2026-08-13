@@ -3,7 +3,18 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -22,13 +33,44 @@ class UserRole(enum.StrEnum):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        # Пользователь всегда идентифицируем хотя бы одним способом
+        # (admin_created_accounts: email стал nullable для учёток без почты,
+        # заведённых админом организации — но login тогда обязателен).
+        CheckConstraint(
+            "email IS NOT NULL OR login IS NOT NULL",
+            name="ck_users_email_or_login",
+        ),
+        # Уникальность login — глобальная по платформе, без учёта регистра;
+        # частичный индекс — NULL-логины (обычный саморегистрационный путь) не
+        # участвуют в уникальности.
+        Index(
+            "uq_users_login_lower",
+            text("lower(login)"),
+            unique=True,
+            postgresql_where=text("login IS NOT NULL"),
+        ),
+        # Не unique (email остаётся регистрозависимо уникальным — вне scope
+        # admin_created_accounts, см. комментарий у email ниже): только ускоряет
+        # `func.lower(User.email) == ...` в `services/auth._find_user_by_ident`
+        # (email-фолбэк входа) — без него это full scan на каждый логин по email,
+        # т.к. `ix_users_email` — обычный btree на самой колонке, lower() под
+        # него не попадает.
+        Index("ix_users_email_lower", text("lower(email)")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
-    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # nullable с admin_created_accounts: учётка, заведённая админом организации,
+    # может не иметь email вообще (идентификатор — только login). unique(email)
+    # сохраняется — в PostgreSQL несколько NULL допустимы.
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    # Логин для входа (admin_created_accounts). Хранится как ввёл админ,
+    # сравнение — по lower() (см. uq_users_login_lower выше и services/auth._find_user_by_ident).
+    login: Mapped[str | None] = mapped_column(String(32), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # NULL для OAuth-only пользователей (вход только через Google/Apple, без пароля).
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -39,10 +81,40 @@ class User(Base):
         default=UserRole.user,
         server_default="user",
     )
+    # Заполняется только для учёток, созданных админом организации через
+    # admin_created_accounts — ключевое поле для прав на пароль/логин
+    # (services/member_account: сброс пароля и смена логина разрешены только
+    # если created_by_org_id совпадает с текущей организацией).
+    created_by_org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        # use_alter=True — организации ссылаются на users.id (owner_id), а
+        # теперь users ссылается на organizations.id: без use_alter это
+        # циклическая зависимость, которую `Base.metadata.create_all`/`drop_all`
+        # (тесты) не может топологически отсортировать
+        # (`sqlalchemy.exc.CircularDependencyError`). Alembic саму миграцию не
+        # затрагивает — там FK создаётся явным `op.create_foreign_key` уже
+        # после обеих таблиц.
+        ForeignKey(
+            "organizations.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_users_created_by_org_id_organizations",
+        ),
+        nullable=True,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
     )
+
+    @property
+    def email_display(self) -> str:
+        """`email` для контрактов, где поле типа `str` не nullable (обратная
+        совместимость мобильных билдов) — `""` вместо `None`, если email не
+        задан (admin_created_accounts). Единая точка вместо `user.email or ""`,
+        повторённого по всем org-ответам с сотрудником."""
+        return self.email or ""
 
     refresh_tokens: Mapped[list["RefreshToken"]] = relationship(
         back_populates="user",
@@ -56,9 +128,12 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    # foreign_keys обязателен с admin_created_accounts: см. комментарий у
+    # Organization.owner (два пути FK между organizations и users).
     owned_organizations: Mapped[list["Organization"]] = relationship(
         back_populates="owner",
         cascade="all, delete-orphan",
+        foreign_keys="Organization.owner_id",
     )
     memberships: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="user",

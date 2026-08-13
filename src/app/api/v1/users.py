@@ -17,6 +17,7 @@ async def get_me(user: CurrentUserDep) -> ApiResponse:
         UserResponse(
             id=str(user.id),
             email=user.email,
+            login=user.login,
             phone=user.phone,
             name=user.name,
             is_verified=user.is_verified,
@@ -49,6 +50,7 @@ async def update_me(
         UserResponse(
             id=str(user.id),
             email=user.email,
+            login=user.login,
             phone=user.phone,
             name=user.name,
             is_verified=user.is_verified,

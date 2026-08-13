@@ -32,7 +32,8 @@ def _row_to_response(row: overtime_service.OrgOvertimeRow) -> dict[str, Any]:
             "id": str(user.id) if user is not None else str(row.shift.user_id),
             "user_name": user.name if user is not None else "Unknown",
             "display_name": row.display_name,
-            "email": user.email if user is not None else "",
+            # "" вместо null — admin-created учётка без email (admin_created_accounts).
+            "email": user.email_display if user is not None else "",
         },
         "shift": {
             "started_at": row.shift.started_at,

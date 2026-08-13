@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field
 
 class AdminUserResponse(BaseModel):
     id: str = Field(description="UUID пользователя")
-    email: str
+    email: str | None = Field(
+        default=None,
+        description="Email; null — учётка без почты (admin_created_accounts)",
+    )
+    login: str | None = Field(default=None, description="Логин для входа (admin_created_accounts)")
     name: str
     phone: str | None = None
     is_verified: bool

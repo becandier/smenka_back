@@ -31,6 +31,7 @@ def _user_to_response(user: User) -> dict[str, Any]:
     return AdminUserResponse(
         id=str(user.id),
         email=user.email,
+        login=user.login,
         name=user.name,
         phone=user.phone,
         is_verified=user.is_verified,
@@ -55,13 +56,13 @@ def _oauth_setting_to_response(setting: OAuthProviderSetting | dict[str, Any]) -
 @router.get(
     "/users",
     summary="Список пользователей (super_admin)",
-    description="Все пользователи платформы с поиском (email/имя), фильтрами role и "
+    description="Все пользователи платформы с поиском (email/имя/логин), фильтрами role и "
     "is_verified, сортировкой и пагинацией.",
 )
 async def list_users(
     user: SuperAdminDep,
     session: SessionDep,
-    search: str | None = Query(None, description="Поиск по email или имени"),
+    search: str | None = Query(None, description="Поиск по email, имени или логину"),
     role: str | None = Query(None, description="Фильтр по роли: super_admin, user"),
     is_verified: bool | None = Query(None, description="Фильтр по верификации"),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
@@ -105,6 +106,7 @@ async def get_user(
         AdminUserDetailResponse(
             id=str(target.id),
             email=target.email,
+            login=target.login,
             name=target.name,
             phone=target.phone,
             is_verified=target.is_verified,
