@@ -258,6 +258,34 @@ async def get_members(
     return list(result.scalars().all())
 
 
+async def get_member(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+) -> OrganizationMember:
+    """Единичный участник с загруженными user/custom_role, MEMBER_NOT_FOUND если нет.
+
+    Не проверяет права доступа сама — вызывающий код обязан это сделать
+    (см. `PATCH /organizations/{org_id}/members/{member_user_id}` в `api/v1/organizations.py`,
+    где авторизация выполняется один раз в начале эндпоинта, до всех веток).
+    """
+    result = await session.execute(
+        select(OrganizationMember)
+        .options(
+            selectinload(OrganizationMember.user),
+            selectinload(OrganizationMember.custom_role),
+        )
+        .where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == member_user_id,
+        )
+    )
+    member = result.scalar_one_or_none()
+    if member is None:
+        raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+    return member
+
+
 async def remove_member(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -411,21 +439,25 @@ async def update_member_display_name(
     """
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    return await apply_display_name_update(session, org_id, member_user_id, raw_display_name)
 
-    result = await session.execute(
-        select(OrganizationMember)
-        .options(
-            selectinload(OrganizationMember.user),
-            selectinload(OrganizationMember.custom_role),
-        )
-        .where(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.user_id == member_user_id,
-        )
-    )
-    member = result.scalar_one_or_none()
-    if member is None:
-        raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+
+async def apply_display_name_update(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    raw_display_name: str | None,
+) -> tuple[OrganizationMember, str | None, str | None]:
+    """Применить смену `display_name` БЕЗ проверки прав — вызывающий код уже её сделал.
+
+    Нужен для `PATCH .../members/{user_id}` (admin_created_accounts): эндпоинт
+    авторизует один раз в начале для всего partial-запроса (тело может менять
+    и `display_name`, и `login`) и не должен повторно ходить в БД за
+    org+правами на каждое поле. `update_member_display_name` выше остаётся
+    самодостаточной публичной функцией (с собственной проверкой) для любого
+    другого вызывающего кода.
+    """
+    member = await get_member(session, org_id, member_user_id)
 
     new_value = normalize_display_name(raw_display_name)
     old_value = member.display_name

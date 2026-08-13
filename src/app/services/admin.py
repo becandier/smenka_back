@@ -60,7 +60,9 @@ async def list_users(
     conditions: list[ColumnElement[bool]] = []
     if search:
         pattern = f"%{search}%"
-        conditions.append(User.email.ilike(pattern) | User.name.ilike(pattern))
+        conditions.append(
+            User.email.ilike(pattern) | User.name.ilike(pattern) | User.login.ilike(pattern)
+        )
     if role is not None:
         try:
             conditions.append(User.role == UserRole(role))

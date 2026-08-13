@@ -20,6 +20,14 @@ class AuditAction(enum.StrEnum):
     member_remove = "member.remove"
     member_role_update = "member.role_update"
     member_display_name_update = "member.display_name_update"
+    member_create = "member.create"
+    member_password_reset = "member.password_reset"  # noqa: S105 — код действия, не пароль
+    # Не из явного списка ТЗ admin_created_accounts (там перечислены только
+    # member.create/member.password_reset) — добавлено по аналогии с
+    # member.role_update/member.display_name_update, чтобы смена логина через
+    # PATCH .../members/{id} тоже попадала в аудит организации, а не терялась
+    # под чужим по смыслу action'ом.
+    member_login_update = "member.login_update"
     settings_update = "settings.update"
     location_create = "location.create"
     location_update = "location.update"

@@ -1,6 +1,6 @@
-import re
+from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from src.app.core.security import validate_password_strength
 
 
 class RegisterRequest(BaseModel):
@@ -11,16 +11,7 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        if len(v) < 8:
-            msg = "Пароль должен быть не менее 8 символов"
-            raise ValueError(msg)
-        if not re.search(r"[a-zA-Zа-яА-ЯёЁ]", v):
-            msg = "Пароль должен содержать хотя бы одну букву"
-            raise ValueError(msg)
-        if not re.search(r"\d", v):
-            msg = "Пароль должен содержать хотя бы одну цифру"
-            raise ValueError(msg)
-        return v
+        return validate_password_strength(v)
 
 
 class RegisterResponse(BaseModel):
@@ -48,8 +39,37 @@ class ResendCodeResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr = Field(description="Email", examples=["user@example.com"])
+    """Вход по логину или email (admin_created_accounts).
+
+    Обратная совместимость: старые мобильные билды шлют только `email` — это
+    продолжает работать без изменений. Новые клиенты шлют `login`, куда
+    пользователь может ввести и логин, и email (без проверки формата — просто
+    строка, которую ищем сначала среди login, потом среди email). Ровно одно
+    из полей должно быть заполнено.
+    """
+
+    email: EmailStr | None = Field(
+        default=None,
+        description="Email (устаревшее поле, сохранено для обратной совместимости)",
+        examples=["user@example.com"],
+    )
+    login: str | None = Field(
+        default=None,
+        validate_default=True,
+        description="Логин или email — новые клиенты шлют идентификатор сюда",
+        examples=["ivanov"],
+    )
     password: str = Field(description="Пароль")
+
+    @field_validator("login")
+    @classmethod
+    def _check_identifier(cls, v: str | None, info: ValidationInfo) -> str | None:
+        trimmed = v.strip() if v else None
+        trimmed = trimmed or None
+        email = info.data.get("email")
+        if bool(trimmed) == bool(email):
+            raise ValueError("Укажите login или email — ровно одно из полей")
+        return trimmed
 
 
 class TokenResponse(BaseModel):

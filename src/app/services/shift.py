@@ -812,7 +812,8 @@ async def get_org_stats(
                 {
                     "user_id": str(uid),
                     "user_name": user.name if user else "Unknown",
-                    "user_email": user.email if user else "",
+                    # "" вместо null — admin-created учётка без email (admin_created_accounts).
+                    "user_email": user.email_display if user else "",
                     "display_name": display_name_map.get(uid),
                     "shift_count": user_count,
                     "total_worked_seconds": user_total,
