@@ -6,6 +6,23 @@
 
 ---
 
+## Фича — Ручной учёт времени и начисления (`manual_time_entry`) `[~]`
+ТЗ: `../../docs/tasks/manual_time_entry/backend.md`  STATUS: `../../docs/tasks/manual_time_entry/STATUS.md`
+- [x] `shifts` — 6 nullable-колонок ручного ввода (`created_by_user_id`/`edited_by_user_id`/`edited_at`/`manual_note`/`deleted_by_user_id`/`deleted_at`, FK→`users.id` ON DELETE SET NULL); задействована существующая заготовка `is_deleted` (`fines`)
+- [x] Новая таблица `payroll_adjustments` (знаковое ручное начисление/удержание, `amount_minor != 0` — CHECK), без шаблонов, симметрично `penalties`
+- [x] Ручные смены (`services/manual_shift.py`, `api/v1/manual_shifts.py`): `POST/PATCH/DELETE .../shifts[/{id}]` + `POST .../shifts/{id}/restore` — создание задним числом, правка (в т.ч. завершение зависшей active/paused через `finished_at`), soft-delete, восстановление (идемпотентно для уже неудалённой); валидации интервала (≤48ч, не в будущем)/пересечений (R2, `SHIFT_OVERLAP`)/пауз (R3)
+- [x] Ручные начисления (`services/adjustment.py`, `api/v1/adjustments.py`): `POST/GET/PATCH/DELETE .../adjustments[/{id}]` + `GET .../my-adjustments`
+- [x] Права: только `org_owner`/`org_admin`, **super_admin намеренно исключён** (`services/common.ensure_admin_or_owner(..., allow_super_admin=False)` — единственная фича с явным исключением сквозного платформенного доступа)
+- [x] Прозрачность для сотрудника (R7): каждая операция пишет `audit_logs` (7 новых `AuditAction` + `AuditResource.adjustment`) и уведомление (`NotificationType.shift_manual_changed`/`payroll_adjustment_changed`) в той же транзакции
+- [x] `ShiftResponse` +7 additive-полей (`is_manual`/`is_edited`/`manual_note`/`edited_at`/`is_deleted` — везде, включая персональный `GET /shifts`; `edited_by_name`/`created_by_name` — только орг-контекст, `build_manual_actor_names` без N+1); `GET .../shifts` +`include_deleted`/`only_manual` (A5)
+- [x] Payroll — additive `adjustment_amount_minor`/`adjustments_count`, `net = gross − penalty + adjustment`, query `include_adjustments` (default true), колонка в XLSX
+- [x] Побочный фикс моделей: `Shift.user`/`User.shifts` relationship потребовал явный `foreign_keys` (3 новых FK shifts→users сделали связь неоднозначной для SQLAlchemy)
+- [x] Миграция `c6d7e8f90013`, обратима — проверено `upgrade`/`downgrade` локально
+- [x] 69 тестов (`tests/test_manual_shifts.py`, `tests/test_adjustments.py`): пересечения (вкл. касание границами и активного соседа), завершение через PATCH, валидации пауз, создание на owner (404), employee/super_admin (403), payroll с ручной сменой + знаковыми начислениями (плюс/минус, вместе со штрафом), сотрудник только с начислением в items, soft-delete → исчезновение из payroll/списков/реестра чек-листов, restore с конфликтом
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Тестирование сотрудников (`employee_tests`) `[~]`
 ТЗ: `../../docs/tasks/employee_tests/backend.md`  STATUS: `../../docs/tasks/employee_tests/STATUS.md`
 - [x] 7 таблиц (`test_templates`→`test_questions`→`test_question_options`, `test_assignments`, `test_attempts`+`test_attempt_questions`+`test_attempt_options`) — паттерн «шаблон → снимок», как у чек-листов

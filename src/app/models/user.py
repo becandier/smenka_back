@@ -124,9 +124,13 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    # foreign_keys обязателен с manual_time_entry: shifts.created_by_user_id /
+    # edited_by_user_id / deleted_by_user_id — ещё три пути FK shifts→users
+    # (см. комментарий у Organization.owner ниже про тот же паттерн).
     shifts: Mapped[list["Shift"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+        foreign_keys="Shift.user_id",
     )
     # foreign_keys обязателен с admin_created_accounts: см. комментарий у
     # Organization.owner (два пути FK между organizations и users).

@@ -77,8 +77,15 @@ async def ensure_admin_or_owner(
     user_id: uuid.UUID,
     *,
     message: str = "Недостаточно прав",
+    allow_super_admin: bool = True,
 ) -> None:
-    """Допускает владельца, участника с ролью admin или super_admin."""
+    """Допускает владельца или участника с ролью admin; по умолчанию — и super_admin.
+
+    `allow_super_admin=False` — для операционных инструментов организации, где
+    ТЗ фичи явно исключает платформенный доступ (manual_time_entry, R8:
+    «операционный инструмент организации», единственное явное исключение из
+    платформенного инварианта super_admin, закреплено тестами).
+    """
     if org.owner_id == user_id:
         return
     result = await session.execute(
@@ -90,6 +97,6 @@ async def ensure_admin_or_owner(
     )
     if result.scalar_one_or_none() is not None:
         return
-    if await _is_super_admin(session, user_id):
+    if allow_super_admin and await _is_super_admin(session, user_id):
         return
     raise AccessError("FORBIDDEN", message, 403)

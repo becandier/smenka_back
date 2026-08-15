@@ -189,7 +189,11 @@ async def review_overtime_request(
     result = await session.execute(
         select(ShiftOvertimeRequest)
         .join(Shift, ShiftOvertimeRequest.shift_id == Shift.id)
-        .where(ShiftOvertimeRequest.id == request_id, Shift.organization_id == org_id)
+        .where(
+            ShiftOvertimeRequest.id == request_id,
+            Shift.organization_id == org_id,
+            Shift.is_deleted.is_(False),
+        )
     )
     request = result.scalar_one_or_none()
     if request is None:

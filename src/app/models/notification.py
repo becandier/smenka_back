@@ -21,6 +21,8 @@ class NotificationType(enum.StrEnum):
     """
 
     test_assigned = "test_assigned"
+    shift_manual_changed = "shift_manual_changed"
+    payroll_adjustment_changed = "payroll_adjustment_changed"
 
 
 class Notification(Base):

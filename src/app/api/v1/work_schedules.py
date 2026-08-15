@@ -425,6 +425,19 @@ async def change_shift_schedule(
     )
     await session.commit()
     late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    # Орг-контекст (manual_time_entry): created_by_name/edited_by_name должны
+    # заполняться и здесь, как в остальных орг-эндпоинтах смен.
+    actor_names = await shift_service.build_manual_actor_names(session, [shift])
     return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+        _shift_to_response(
+            shift,
+            late_tolerance_minutes=late_tolerance,
+            overtime=overtime,
+            created_by_name=(
+                actor_names.get(shift.created_by_user_id) if shift.created_by_user_id else None
+            ),
+            edited_by_name=(
+                actor_names.get(shift.edited_by_user_id) if shift.edited_by_user_id else None
+            ),
+        )
     )

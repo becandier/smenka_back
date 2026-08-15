@@ -1,3 +1,4 @@
+from src.app.models.adjustment import PayrollAdjustment
 from src.app.models.audit_log import AuditAction, AuditLog, AuditResource
 from src.app.models.checklist import (
     ChecklistInstance,
@@ -98,6 +99,7 @@ __all__ = [
     "OverrideType",
     "OvertimeRequestStatus",
     "Pause",
+    "PayrollAdjustment",
     "Penalty",
     "PhotoRequirement",
     "PhotoSource",
