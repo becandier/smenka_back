@@ -132,8 +132,15 @@ class PayrollItemResponse(BaseModel):
         description="Сумма активных штрафов сотрудника за период, в копейках",
     )
     penalties_count: int = Field(default=0, description="Число активных штрафов за период")
+    adjustment_amount_minor: int = Field(
+        default=0,
+        description="Знаковая сумма активных ручных начислений сотрудника за период, в копейках "
+        "(manual_time_entry)",
+    )
+    adjustments_count: int = Field(default=0, description="Число активных ручных начислений")
     net_amount_minor: int = Field(
-        description="К выплате: gross_amount_minor − penalty_amount_minor (может быть < 0)",
+        description="К выплате: gross_amount_minor − penalty_amount_minor + "
+        "adjustment_amount_minor (может быть < 0)",
     )
     planned_seconds: int = Field(
         default=0,
@@ -168,6 +175,12 @@ class PayrollTotalsResponse(BaseModel):
         description="Сумма штрафов по всем сотрудникам, в копейках",
     )
     penalties_count: int = Field(default=0, description="Суммарное число активных штрафов")
+    adjustment_amount_minor: int = Field(
+        default=0, description="Сумма знаковых ручных начислений по всем сотрудникам, в копейках"
+    )
+    adjustments_count: int = Field(
+        default=0, description="Суммарное число активных ручных начислений"
+    )
     net_amount_minor: int = Field(
         description="Сумма «к выплате» по всем сотрудникам (может быть < 0)",
     )
@@ -250,8 +263,15 @@ class MyEarningsResponse(BaseModel):
         description="Сумма своих активных штрафов за период, в копейках",
     )
     penalties_count: int = Field(default=0, description="Число своих активных штрафов за период")
+    adjustment_amount_minor: int = Field(
+        default=0, description="Сумма своих знаковых ручных начислений за период, в копейках"
+    )
+    adjustments_count: int = Field(
+        default=0, description="Число своих активных ручных начислений за период"
+    )
     net_amount_minor: int = Field(
-        description="К выплате: gross_amount_minor − penalty_amount_minor (может быть < 0)",
+        description="К выплате: gross_amount_minor − penalty_amount_minor + "
+        "adjustment_amount_minor (может быть < 0)",
     )
     current_rate: CurrentRateResponse | None = Field(
         default=None,

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from src.app.api.v1.adjustments import router as adjustments_router
 from src.app.api.v1.admin import router as admin_router
 from src.app.api.v1.auth import router as auth_router
 from src.app.api.v1.checklist_assignments import router as checklist_assignments_router
@@ -9,6 +10,7 @@ from src.app.api.v1.checklist_templates import router as checklist_templates_rou
 from src.app.api.v1.employee_tests import router as employee_tests_router
 from src.app.api.v1.files import router as files_router
 from src.app.api.v1.knowledge import router as knowledge_router
+from src.app.api.v1.manual_shifts import router as manual_shifts_router
 from src.app.api.v1.my_tests import router as my_tests_router
 from src.app.api.v1.notifications import router as notifications_router
 from src.app.api.v1.organization_roles import router as organization_roles_router
@@ -29,6 +31,8 @@ router.include_router(organizations_router)
 router.include_router(organization_roles_router)
 router.include_router(payroll_router)
 router.include_router(penalties_router)
+router.include_router(manual_shifts_router)
+router.include_router(adjustments_router)
 router.include_router(checklist_templates_router)
 router.include_router(checklist_assignments_router)
 router.include_router(checklist_overrides_router)

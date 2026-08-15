@@ -109,8 +109,35 @@ class Shift(Base):
         Enum(ShiftFinishReason),
         nullable=True,
     )
+    # --- manual_time_entry: ручной ввод/правка/удаление смены администратором ---
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    edited_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    manual_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
-    user: Mapped["User"] = relationship(back_populates="shifts")
+    # foreign_keys обязателен с manual_time_entry: между shifts и users теперь
+    # четыре пути FK (user_id + created_by/edited_by/deleted_by_user_id).
+    user: Mapped["User"] = relationship(back_populates="shifts", foreign_keys=[user_id])
     organization: Mapped["Organization | None"] = relationship()
     work_location: Mapped["WorkLocation | None"] = relationship()
     pauses: Mapped[list["Pause"]] = relationship(

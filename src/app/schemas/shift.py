@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -121,6 +122,37 @@ class ShiftResponse(BaseModel):
     overtime: OvertimeInfo | None = Field(
         default=None, description="Последняя заявка на переработку по смене; null — заявки нет"
     )
+    is_manual: bool = Field(
+        default=False,
+        description="true — смена заведена админом (created_by_user_id IS NOT NULL), а не "
+        "начата сотрудником (manual_time_entry)",
+    )
+    is_edited: bool = Field(
+        default=False,
+        description="true — смену когда-либо правил админ (edited_at IS NOT NULL)",
+    )
+    manual_note: str | None = Field(
+        default=None,
+        description="Комментарий/причина последней ручной операции; null — не задан",
+    )
+    edited_at: datetime | None = Field(
+        default=None, description="Момент последней ручной правки; null — не правилась"
+    )
+    edited_by_name: str | None = Field(
+        default=None,
+        description="Имя админа, последним правившего смену. Заполнено только в "
+        "орг-эндпоинтах; в персональных — всегда null",
+    )
+    created_by_name: str | None = Field(
+        default=None,
+        description="Имя админа, создавшего смену вручную. Заполнено только в "
+        "орг-эндпоинтах; в персональных — всегда null",
+    )
+    is_deleted: bool = Field(
+        default=False,
+        description="true — смена удалена (soft-delete). В обычных выборках всегда false; "
+        "возможно true только при include_deleted=true и в ответе DELETE",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -181,3 +213,54 @@ class ShiftStartRequest(BaseModel):
         "SCHEDULE_NOT_AVAILABLE). Если не передан — сервер подставляет автоматически "
         "(1 доступный) или требует выбора (require_schedule=true и >1/0 доступных)",
     )
+
+
+# --- manual_time_entry: ручной ввод/правка/удаление смены администратором ---
+class ManualPauseInput(BaseModel):
+    """Пауза в ручном вводе — обе границы обязательны (незакрытых пауз не бывает)."""
+
+    started_at: datetime = Field(description="Начало паузы (UTC)")
+    finished_at: datetime = Field(description="Конец паузы (UTC)")
+
+
+class ManualShiftCreate(BaseModel):
+    user_id: uuid.UUID = Field(description="Сотрудник — действующий участник организации")
+    started_at: datetime = Field(description="Начало смены (UTC)")
+    finished_at: datetime = Field(
+        description="Конец смены (UTC) — ручная смена создаётся сразу завершённой"
+    )
+    work_location_id: uuid.UUID | None = Field(
+        default=None, description="UUID точки организации (архивные/удалённые допускаются)"
+    )
+    work_schedule_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID графика организации — снимок планового окна вычисляется той же "
+        "логикой, что и PATCH .../shifts/{id}/schedule",
+    )
+    pauses: list[ManualPauseInput] = Field(
+        default_factory=list, description="Паузы смены (опционально, по умолчанию пусто)"
+    )
+    note: str | None = Field(
+        default=None, max_length=500, description="Комментарий/причина ручного ввода"
+    )
+
+
+class ManualShiftUpdate(BaseModel):
+    """Правка смены вручную. Все поля опциональны — применяются только переданные."""
+
+    started_at: datetime | None = Field(default=None)
+    finished_at: datetime | None = Field(
+        default=None,
+        description="Для active/paused смены передача завершает её задним числом "
+        "(status=finished, finish_reason=manual)",
+    )
+    work_location_id: uuid.UUID | None = Field(default=None, description="null снимает точку")
+    pauses: list[ManualPauseInput] | None = Field(
+        default=None,
+        description="Полная замена списка пауз смены. Не передан — паузы не трогаются",
+    )
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ShiftDeletedResponse(BaseModel):
+    deleted: bool = Field(description="Смена удалена (soft-delete)")

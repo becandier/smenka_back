@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -910,6 +910,8 @@ async def get_org_shifts(
     late_tolerance_minutes: int = 0,
     work_schedule_id: uuid.UUID | None = None,
     has_overtime: str | None = None,
+    include_deleted: bool = False,
+    only_manual: bool = False,
     limit: int = 20,
     offset: int = 0,
     sort: str = "started_at",
@@ -921,9 +923,16 @@ async def get_org_shifts(
     на лету по `checklist_instances` (none/all_completed/has_incomplete/required_incomplete);
     комбинируется с остальными фильтрами по И, пагинация/`total` учитывают его.
     `only_late`/`work_schedule_id`/`has_overtime` — фильтры work_schedules (R5/R6),
-    также по И с остальными.
+    также по И с остальными. `include_deleted`/`only_manual` — фильтры
+    manual_time_entry (A5): `include_deleted` показывает и soft-deleted смены,
+    `only_manual` — только заведённые/правленые вручную (created_by_user_id
+    IS NOT NULL OR edited_at IS NOT NULL). Поведение по умолчанию не меняется.
     """
-    conditions = [Shift.organization_id == organization_id, Shift.is_deleted.is_(False)]
+    conditions = [Shift.organization_id == organization_id]
+    if not include_deleted:
+        conditions.append(Shift.is_deleted.is_(False))
+    if only_manual:
+        conditions.append(or_(Shift.created_by_user_id.isnot(None), Shift.edited_at.isnot(None)))
 
     if user_id is not None:
         conditions.append(Shift.user_id == user_id)
@@ -1068,3 +1077,28 @@ async def build_org_shift_identities(
             custom_role_name=custom_role_name,
         )
     return identities
+
+
+async def build_manual_actor_names(
+    session: AsyncSession,
+    shifts: list[Shift],
+) -> dict[uuid.UUID, str]:
+    """user_id админа (создавшего/правившего смену) → его User.name, без N+1.
+
+    Собирает объединённое множество `created_by_user_id`/`edited_by_user_id` по
+    странице смен (manual_time_entry) — используется ТОЛЬКО в орг-эндпоинтах
+    для `ShiftResponse.created_by_name`/`edited_by_name`; в персональном
+    контексте эти поля остаются `null`, и этот батч не вызывается.
+    """
+    from src.app.models.user import User
+
+    actor_ids = {
+        uid
+        for s in shifts
+        for uid in (s.created_by_user_id, s.edited_by_user_id)
+        if uid is not None
+    }
+    if not actor_ids:
+        return {}
+    result = await session.execute(select(User.id, User.name).where(User.id.in_(actor_ids)))
+    return dict(result.tuples().all())

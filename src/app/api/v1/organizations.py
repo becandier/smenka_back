@@ -741,6 +741,16 @@ async def list_org_shifts(
     has_overtime: str | None = Query(
         None, description="Фильтр по заявке на переработку: pending, approved, any"
     ),
+    include_deleted: bool = Query(
+        False,
+        description="Показывать и удалённые смены (soft-delete). "
+        "Только owner/admin (manual_time_entry)",
+    ),
+    only_manual: bool = Query(
+        False,
+        description="Только смены, заведённые или правленые вручную "
+        "(created_by_user_id IS NOT NULL OR edited_at IS NOT NULL, manual_time_entry)",
+    ),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
@@ -785,12 +795,15 @@ async def list_org_shifts(
         late_tolerance_minutes=late_tolerance,
         work_schedule_id=work_schedule_id,
         has_overtime=has_overtime,
+        include_deleted=include_deleted,
+        only_manual=only_manual,
         limit=limit,
         offset=offset,
         sort=sort,
         order=order,
     )
     identities = await shift_service.build_org_shift_identities(session, org_id, shifts)
+    actor_names = await shift_service.build_manual_actor_names(session, shifts)
     summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
         session, [s.id for s in shifts]
     )
@@ -806,6 +819,12 @@ async def list_org_shifts(
                     summaries.get(s.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
                     late_tolerance_minutes=late_tolerance,
                     overtime=overtime_map.get(s.id),
+                    created_by_name=(
+                        actor_names.get(s.created_by_user_id) if s.created_by_user_id else None
+                    ),
+                    edited_by_name=(
+                        actor_names.get(s.edited_by_user_id) if s.edited_by_user_id else None
+                    ),
                 )
                 for s in shifts
             ],
@@ -839,6 +858,7 @@ async def get_org_shift(
 
     shift = await shift_service.get_org_shift_detail(session, org_id, shift_id)
     identities = await shift_service.build_org_shift_identities(session, org_id, [shift])
+    actor_names = await shift_service.build_manual_actor_names(session, [shift])
     summaries = await checklist_instance_service.get_checklists_summary_for_shifts(
         session, [shift.id]
     )
@@ -851,6 +871,12 @@ async def get_org_shift(
             summaries.get(shift.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
             late_tolerance_minutes=late_tolerance,
             overtime=overtime_map.get(shift.id),
+            created_by_name=(
+                actor_names.get(shift.created_by_user_id) if shift.created_by_user_id else None
+            ),
+            edited_by_name=(
+                actor_names.get(shift.edited_by_user_id) if shift.edited_by_user_id else None
+            ),
         )
     )
 

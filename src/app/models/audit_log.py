@@ -38,6 +38,14 @@ class AuditAction(enum.StrEnum):
     pause_auto_finish = "pause.auto_finish"
     overtime_request = "overtime.request"
     overtime_review = "overtime.review"
+    # --- manual_time_entry: ручной ввод/правка смен + ручные начисления ---
+    shift_manual_create = "shift.manual_create"
+    shift_manual_update = "shift.manual_update"
+    shift_delete = "shift.delete"
+    shift_restore = "shift.restore"
+    adjustment_create = "adjustment.create"
+    adjustment_update = "adjustment.update"
+    adjustment_delete = "adjustment.delete"
 
 
 class AuditResource(enum.StrEnum):
@@ -50,6 +58,7 @@ class AuditResource(enum.StrEnum):
     shift = "shift"
     pause = "pause"
     overtime = "overtime"
+    adjustment = "adjustment"
 
 
 class AuditLog(Base):

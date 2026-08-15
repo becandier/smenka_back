@@ -52,6 +52,8 @@ def _shift_to_response(
     *,
     late_tolerance_minutes: int = 0,
     overtime: ShiftOvertimeRequest | None = None,
+    created_by_name: str | None = None,
+    edited_by_name: str | None = None,
 ) -> dict[str, Any]:
     """Сериализовать смену.
 
@@ -61,6 +63,9 @@ def _shift_to_response(
     ТОЛЬКО в орг-эндпоинтах смен (checklist_reports); в персональном контексте
     остаётся `null`. `late_tolerance_minutes`/`overtime` — ингредиенты для R5/R6
     (work_schedules), передаются вызывающим кодом (батч без N+1 в списках).
+    `is_manual`/`is_edited`/`manual_note`/`edited_at`/`is_deleted` (manual_time_entry)
+    читаются прямо со смены — видны и в персональном, и в орг-контексте (R7).
+    `created_by_name`/`edited_by_name` — имя админа, только орг-контекст.
     """
     work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
@@ -115,6 +120,13 @@ def _shift_to_response(
         late_seconds=compute_late_seconds(shift, late_tolerance_minutes),
         finish_reason=shift.finish_reason.value if shift.finish_reason else None,
         overtime=_overtime_payload(overtime),
+        is_manual=shift.created_by_user_id is not None,
+        is_edited=shift.edited_at is not None,
+        manual_note=shift.manual_note,
+        edited_at=shift.edited_at,
+        edited_by_name=edited_by_name,
+        created_by_name=created_by_name,
+        is_deleted=shift.is_deleted,
     ).model_dump(mode="json")
 
 
