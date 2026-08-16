@@ -979,6 +979,23 @@ async def get_org_shifts(
     return shifts, total
 
 
+async def get_own_shift_detail(
+    session: AsyncSession,
+    shift_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> Shift:
+    """Деталь СВОЕЙ смены сотрудника по id (shift_self_detail).
+
+    Работает и для персональной смены (`organization_id=null`), и для
+    орг-смены, где `user_id` — её владелец (`shift.user_id == user_id`).
+    Чужая, несуществующая или soft-deleted смена — `SHIFT_NOT_FOUND`
+    (не раскрывает существование чужих/удалённых смен), симметрично
+    `get_org_shift_detail`. Переиспользует ту же выборку, что и одиночные
+    эндпоинты жизненного цикла (`pause`/`resume`/`finish`).
+    """
+    return await _get_shift_with_pauses(session, shift_id, user_id)
+
+
 async def get_org_shift_detail(
     session: AsyncSession,
     organization_id: uuid.UUID,
