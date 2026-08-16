@@ -842,7 +842,9 @@ async def list_org_shifts(
         "Деталь конкретной смены сотрудника организации для обзора владельцем "
         "(Owner) или админом. Делает карточку списка кликабельной. Содержит имя/"
         "почту/роль сотрудника и полный список пауз. Чек-листы смены — отдельным "
-        "запросом `GET /shifts/{shift_id}/checklists`."
+        "запросом `GET /shifts/{shift_id}/checklists`. Удалённую смену (soft-delete) "
+        "отдаёт только с `include_deleted=true` (manual_time_entry, A5) — без "
+        "параметра `404 SHIFT_NOT_FOUND`, как для отсутствующей."
     ),
 )
 async def get_org_shift(
@@ -850,13 +852,21 @@ async def get_org_shift(
     shift_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    include_deleted: bool = Query(
+        False,
+        description="Отдать деталь и для удалённой смены (soft-delete). "
+        "Без параметра удалённая смена трактуется как отсутствующая "
+        "(404 SHIFT_NOT_FOUND). Только owner/admin (manual_time_entry)",
+    ),
 ) -> ApiResponse:
     from src.app.services.work_location import _check_admin_or_owner
 
     org = await org_service.get_organization(session, org_id)
     await _check_admin_or_owner(session, org, user.id)
 
-    shift = await shift_service.get_org_shift_detail(session, org_id, shift_id)
+    shift = await shift_service.get_org_shift_detail(
+        session, org_id, shift_id, include_deleted=include_deleted
+    )
     identities = await shift_service.build_org_shift_identities(session, org_id, [shift])
     actor_names = await shift_service.build_manual_actor_names(session, [shift])
     summaries = await checklist_instance_service.get_checklists_summary_for_shifts(

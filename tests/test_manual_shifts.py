@@ -1009,6 +1009,60 @@ async def test_soft_deleted_shift_excluded_from_checklist_registry(
     assert post["total"] == 0
 
 
+# --- A5: деталь удалённой смены (include_deleted) --------------------------------
+async def test_detail_deleted_shift_404_without_include_deleted(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
+    """Баг пост-ревью: деталь удалённой смены недоступна без параметра — так и
+    должно оставаться (симметрично списку, поведение по умолчанию не меняется)."""
+    shift = await _make_shift(
+        db_session, verified_user.id, org.id, BASE, BASE + timedelta(hours=8)
+    )
+    await client.delete(f"/api/v1/organizations/{org.id}/shifts/{shift.id}", headers=owner_headers)
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/shifts/{shift.id}", headers=owner_headers
+    )
+    assert resp.status_code == 404
+    assert _err(resp) == "SHIFT_NOT_FOUND"
+
+
+async def test_detail_deleted_shift_with_include_deleted_returns_shift(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
+    """Фикс: `include_deleted=true` открывает деталь soft-deleted смены — иначе
+    карточка «Восстановить» из списка (`include_deleted=true`) ведёт в 404."""
+    shift = await _make_shift(
+        db_session, verified_user.id, org.id, BASE, BASE + timedelta(hours=8)
+    )
+    await client.delete(f"/api/v1/organizations/{org.id}/shifts/{shift.id}", headers=owner_headers)
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/shifts/{shift.id}?include_deleted=true",
+        headers=owner_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = _data(resp)
+    assert data["id"] == str(shift.id)
+    assert data["is_deleted"] is True
+
+
+async def test_detail_include_deleted_does_not_affect_non_deleted_shift(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
+    """`include_deleted=true` не должен ломать обычную (неудалённую) смену."""
+    shift = await _make_shift(
+        db_session, verified_user.id, org.id, BASE, BASE + timedelta(hours=8)
+    )
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/shifts/{shift.id}?include_deleted=true",
+        headers=owner_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert _data(resp)["is_deleted"] is False
+
+
 # --- A4: восстановить удалённую смену --------------------------------------------
 async def test_restore_deleted_shift(
     client, owner_headers, db_session, org, employee_member, verified_user
