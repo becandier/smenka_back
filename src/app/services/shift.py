@@ -272,11 +272,13 @@ async def _resolve_org_shift_schedule(
     requested_schedule_id: str | None,
     started_at: datetime,
 ) -> tuple[uuid.UUID | None, str | None, datetime | None, datetime | None]:
-    """R3: резолв графика при старте org-смены.
+    """R3 + S2 (`schedule_window_enforcement/backend.md`): резолв графика и допуска
+    к старту при старте org-смены.
 
     Возвращает `(work_schedule_id, schedule_name, scheduled_start_at, scheduled_end_at)` —
     `(None, None, None, None)`, если смена стартует без графика.
     """
+    from src.app.models.work_schedule import WorkSchedule
     from src.app.services.organization import get_organization
     from src.app.services.organization_settings import get_settings_for_org
     from src.app.services.work_schedule import (
@@ -284,13 +286,25 @@ async def _resolve_org_shift_schedule(
         _get_schedule,
         compute_scheduled_window,
         get_effective_schedules,
+        is_schedule_startable,
     )
 
     org = await get_organization(session, organization_id)
     org_settings = await get_settings_for_org(session, organization_id)
     require_schedule = org_settings.require_schedule if org_settings is not None else False
+    early_start_minutes = org_settings.early_start_minutes if org_settings is not None else 0
 
     effective = await get_effective_schedules(session, organization_id, member, work_location_id)
+    tz = ZoneInfo(org.timezone)
+
+    def _window(schedule: WorkSchedule) -> tuple[datetime, datetime, bool]:
+        """S1: плановое окно (R2) + допуск к старту от `started_at` — единый
+        источник истины что для явного выбора, что для автоподбора."""
+        start_utc, end_utc = compute_scheduled_window(
+            started_at, tz, schedule.start_time, schedule.end_time
+        )
+        startable = is_schedule_startable(started_at, start_utc, early_start_minutes)
+        return start_utc, end_utc, startable
 
     if requested_schedule_id is not None:
         try:
@@ -303,28 +317,57 @@ async def _resolve_org_shift_schedule(
         except WorkScheduleError as exc:
             raise ShiftError(exc.code, exc.message, exc.status_code) from None
 
-        effective_ids = {s.id for s, _source in effective}
-        if requested_uuid not in effective_ids:
+        chosen = next((s for s, _source in effective if s.id == requested_uuid), None)
+        if chosen is None:
             raise ShiftError(
                 "SCHEDULE_NOT_AVAILABLE",
                 "Этот график недоступен вам на выбранной точке",
                 403,
             )
-        chosen = next(s for s, _source in effective if s.id == requested_uuid)
-    elif len(effective) == 1:
-        chosen = effective[0][0]
-    else:
-        if require_schedule:
+        start_utc, end_utc, startable = _window(chosen)
+        if not startable:
+            raise ShiftError(
+                "SCHEDULE_WINDOW_CLOSED",
+                f"График «{chosen.name}» сейчас не действует",
+                422,
+            )
+        return chosen.id, chosen.name, start_utc, end_utc
+
+    # Автоподбор: окно+допуск нужны для всех доступных графиков сразу — считаем
+    # каждый один раз и переиспользуем найденную тройку без повторных пересчётов.
+    startable_schedules: list[tuple[WorkSchedule, datetime, datetime]] = []
+    for schedule, _source in effective:
+        start_utc, end_utc, startable = _window(schedule)
+        if startable:
+            startable_schedules.append((schedule, start_utc, end_utc))
+
+    if require_schedule:
+        if not effective:
             raise ShiftError(
                 "SCHEDULE_REQUIRED",
                 "Выберите график работы",
                 422,
             )
+        if not startable_schedules:
+            raise ShiftError(
+                "SCHEDULE_WINDOW_CLOSED",
+                "Сейчас нет действующего графика — смену можно начать только в "
+                "рабочее время графика",
+                422,
+            )
+        if len(startable_schedules) > 1:
+            raise ShiftError(
+                "SCHEDULE_REQUIRED",
+                "Выберите график работы",
+                422,
+            )
+    elif len(startable_schedules) != 1:
+        # startable пуст или их несколько, require_schedule=false — смена стартует
+        # без графика (S2.5): раньше единственный эффективный график подставлялся
+        # всегда, в т.ч. завтрашним окном — теперь вне окна графика не даётся.
         return None, None, None, None
 
-    start_utc, end_utc = compute_scheduled_window(
-        started_at, ZoneInfo(org.timezone), chosen.start_time, chosen.end_time
-    )
+    chosen, start_utc, end_utc = startable_schedules[0]
     return chosen.id, chosen.name, start_utc, end_utc
 
 

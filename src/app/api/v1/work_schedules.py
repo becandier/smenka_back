@@ -360,11 +360,13 @@ async def get_my_schedules(
                     "next_end_at": it.next_end_at,
                     "is_current": it.is_current,
                     "starts_in_minutes": it.starts_in_minutes,
+                    "can_start_now": it.can_start_now,
                 }
                 for it in result.items
             ],
             total=len(result.items),
             require_schedule=result.require_schedule,
+            early_start_minutes=result.early_start_minutes,
             resolved_work_location=(
                 {"id": str(resolved.id), "name": resolved.name} if resolved is not None else None
             ),

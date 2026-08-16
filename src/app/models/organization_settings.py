@@ -54,5 +54,11 @@ class OrganizationSettings(Base):
         default=7,
         server_default="7",
     )
+    # --- schedule_window_enforcement ---
+    early_start_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+    )
 
     organization: Mapped["Organization"] = relationship(back_populates="settings")

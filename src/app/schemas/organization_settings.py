@@ -29,6 +29,10 @@ class OrganizationSettingsResponse(BaseModel):
     overtime_request_days: int = Field(
         description="Срок подачи заявки на переработку в днях (1–90) после завершения смены"
     )
+    early_start_minutes: int = Field(
+        description="За сколько минут до планового начала графика разрешено начать смену "
+        "(0–240); 0 — строго не раньше начала (schedule_window_enforcement)"
+    )
 
     model_config = {"from_attributes": True}
 
@@ -61,4 +65,11 @@ class OrganizationSettingsUpdate(BaseModel):
     )
     overtime_request_days: int | None = Field(
         default=None, ge=1, le=90, description="Срок подачи заявки на переработку в днях (1–90)"
+    )
+    early_start_minutes: int | None = Field(
+        default=None,
+        ge=0,
+        le=240,
+        description="За сколько минут до планового начала графика разрешено начать смену "
+        "(0–240)",
     )

@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.core.security import hash_password
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
+from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Shift
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
@@ -21,11 +23,13 @@ from src.app.models.work_schedule import (
     WorkScheduleMemberOverride,
     WorkScheduleRole,
 )
+from src.app.services.shift import ShiftError, _resolve_org_shift_schedule
 from src.app.services.work_location import resolve_nearest_work_location
 from src.app.services.work_schedule import (
     _compute_effective_schedules,
     compute_scheduled_window,
     get_effective_schedules,
+    is_schedule_startable,
 )
 
 # --- Хелперы -----------------------------------------------------------------
@@ -77,6 +81,32 @@ async def _create_schedule(
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["data"]
+
+
+def _relative_window(start_offset: timedelta, end_offset: timedelta) -> tuple[str, str]:
+    """HH:MM/HH:MM для графика со смещёнными от текущего момента (Europe/Moscow)
+    границами — общий примитив для окон, детерминированных относительно `now`
+    независимо от времени суток, в которое реально выполняется набор тестов."""
+    now_local = datetime.now(UTC).astimezone(ZoneInfo("Europe/Moscow"))
+    start = (now_local + start_offset).time()
+    end = (now_local + end_offset).time()
+    return start.strftime("%H:%M"), end.strftime("%H:%M")
+
+
+def _wide_open_window(*, margin_minutes: int = 180) -> tuple[str, str]:
+    """График, гарантированно стартуемый (`can_start_now`) в момент вызова
+    (schedule_window_enforcement сделал старт условным на окно, старые тесты с
+    фиксированным `09:00-18:00` стали времязависимыми)."""
+    return _relative_window(timedelta(minutes=-margin_minutes), timedelta(minutes=margin_minutes))
+
+
+def _closed_window(*, offset_hours: int = 10, duration_minutes: int = 20) -> tuple[str, str]:
+    """График, гарантированно НЕ действующий в момент вызова — окно смещено на
+    `offset_hours` от текущего времени, вне зависимости от того, когда реально
+    выполняется тест."""
+    return _relative_window(
+        timedelta(hours=offset_hours), timedelta(hours=offset_hours, minutes=duration_minutes)
+    )
 
 
 # --- R2: расчёт планового окна (unit, без БД) --------------------------------
@@ -682,7 +712,10 @@ class TestStartShiftWithSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        schedule = await _create_schedule(client, super_admin_headers, ctx["org_id"])
+        start_hhmm, end_hhmm = _wide_open_window()
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], start_time=start_hhmm, end_time=end_hhmm
+        )
 
         resp = await client.post(
             "/api/v1/shifts/start",
@@ -716,8 +749,23 @@ class TestStartShiftWithSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        await _create_schedule(client, super_admin_headers, ctx["org_id"], name="A")
-        await _create_schedule(client, super_admin_headers, ctx["org_id"], name="B")
+        start_hhmm, end_hhmm = _wide_open_window()
+        await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
+            start_time=start_hhmm,
+            end_time=end_hhmm,
+        )
+        await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="B",
+            start_time=start_hhmm,
+            end_time=end_hhmm,
+        )
         await client.patch(
             f"/api/v1/organizations/{ctx['org_id']}/settings",
             headers=super_admin_headers,
@@ -736,7 +784,15 @@ class TestStartShiftWithSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        schedule_a = await _create_schedule(client, super_admin_headers, ctx["org_id"], name="A")
+        start_hhmm, end_hhmm = _wide_open_window()
+        schedule_a = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
+            start_time=start_hhmm,
+            end_time=end_hhmm,
+        )
         await _create_schedule(client, super_admin_headers, ctx["org_id"], name="B")
 
         resp = await client.post(
@@ -827,6 +883,251 @@ class TestStartShiftWithSchedule:
         assert data["scheduled_start_at"] is None
 
 
+# --- S1/S2: запрет старта вне окна графика (schedule_window_enforcement) -------
+
+
+class TestScheduleStartableRule:
+    """S1 (`is_schedule_startable`), unit — без БД, как `TestComputeScheduledWindow`.
+
+    Кейсы из приёмки backend.md: график 21:48–21:52, MSK (UTC+3, без перехода на
+    летнее время)."""
+
+    TZ_MSK = ZoneInfo("Europe/Moscow")
+
+    def test_within_window_early_zero_startable(self):
+        # старт в 21:50 при графике 21:48-21:52, early=0 -> ok
+        started = datetime(2026, 7, 20, 18, 50, tzinfo=UTC)  # 21:50 MSK
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(21, 48), time(21, 52))
+        assert start == datetime(2026, 7, 20, 18, 48, tzinfo=UTC)
+        assert is_schedule_startable(started, start, 0) is True
+
+    def test_after_window_end_rolls_to_tomorrow_not_startable(self):
+        # старт в 21:53 (окно уже закрылось) -> R2 отдаёт завтрашнее окно -> не стартуем
+        started = datetime(2026, 7, 20, 18, 53, tzinfo=UTC)  # 21:53 MSK
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(21, 48), time(21, 52))
+        assert start == datetime(2026, 7, 21, 18, 48, tzinfo=UTC)  # завтра
+        assert is_schedule_startable(started, start, 0) is False
+
+    def test_before_window_start_early_zero_not_startable(self):
+        # старт в 21:40 (график ещё не начался), early=0 -> не стартуем
+        started = datetime(2026, 7, 20, 18, 40, tzinfo=UTC)  # 21:40 MSK
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(21, 48), time(21, 52))
+        assert start == datetime(2026, 7, 20, 18, 48, tzinfo=UTC)  # сегодняшнее, ещё не началось
+        assert is_schedule_startable(started, start, 0) is False
+
+    def test_before_window_start_early_fifteen_startable(self):
+        # тот же старт в 21:40, early=15 -> ok, окно остаётся сегодняшним
+        started = datetime(2026, 7, 20, 18, 40, tzinfo=UTC)  # 21:40 MSK
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(21, 48), time(21, 52))
+        assert start == datetime(2026, 7, 20, 18, 48, tzinfo=UTC)
+        assert is_schedule_startable(started, start, 15) is True
+
+    def test_night_schedule_after_midnight_startable(self):
+        # график 22:00-06:00, старт 01:30 -> ok (окно вчера 22:00 - сегодня 06:00)
+        started = datetime(2026, 7, 20, 22, 30, tzinfo=UTC)  # 01:30 MSK (21-го)
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(22, 0), time(6, 0))
+        assert start == datetime(2026, 7, 20, 19, 0, tzinfo=UTC)  # вчера 22:00 MSK
+        assert is_schedule_startable(started, start, 0) is True
+
+    def test_night_schedule_after_end_early_zero_not_startable(self):
+        # график 22:00-06:00, старт 07:00 при early=0 -> не стартуем
+        started = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)  # 07:00 MSK (21-го)
+        start, _end = compute_scheduled_window(started, self.TZ_MSK, time(22, 0), time(6, 0))
+        assert start == datetime(2026, 7, 21, 19, 0, tzinfo=UTC)  # сегодня 22:00 MSK (ещё впереди)
+        assert is_schedule_startable(started, start, 0) is False
+
+
+class TestResolveOrgShiftScheduleWindowEnforcement:
+    """S2 (`services/shift.py::_resolve_org_shift_schedule`) — напрямую на уровне
+    сервиса с контролируемым `started_at`, в отличие от API `/shifts/start`, где
+    момент всегда `datetime.now(UTC)` и невозможно детерминированно попасть в узкое
+    окно (4 минуты) или вне его."""
+
+    async def _make_org_member(
+        self,
+        db_session: AsyncSession,
+        *,
+        require_schedule: bool = False,
+        early_start_minutes: int = 0,
+    ) -> tuple[Organization, OrganizationMember]:
+        owner = await _create_user(db_session, f"owner-{uuid.uuid4().hex[:8]}@example.com")
+        org = Organization(name="Window Enforcement Org", owner_id=owner.id)
+        db_session.add(org)
+        await db_session.flush()
+        db_session.add(
+            OrganizationSettings(
+                organization_id=org.id,
+                require_schedule=require_schedule,
+                early_start_minutes=early_start_minutes,
+            )
+        )
+        user = await _create_user(db_session, f"member-{uuid.uuid4().hex[:8]}@example.com")
+        member = OrganizationMember(
+            organization_id=org.id, user_id=user.id, role=MemberRole.employee
+        )
+        db_session.add(member)
+        await db_session.commit()
+        return org, member
+
+    async def test_explicit_schedule_outside_window_returns_window_closed(
+        self, db_session: AsyncSession
+    ):
+        """Явный `work_schedule_id`, доступный сотруднику, но сейчас не действующий ->
+        422 SCHEDULE_WINDOW_CLOSED, а не 403 SCHEDULE_NOT_AVAILABLE."""
+        org, member = await self._make_org_member(db_session)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 53, tzinfo=UTC)  # 21:53 MSK — окно уже закрылось
+        with pytest.raises(ShiftError) as exc_info:
+            await _resolve_org_shift_schedule(
+                db_session, org.id, member, None, str(schedule.id), started_at
+            )
+        assert exc_info.value.code == "SCHEDULE_WINDOW_CLOSED"
+        assert exc_info.value.status_code == 422
+        assert "Ночная" in exc_info.value.message
+
+    async def test_explicit_schedule_within_window_ok(self, db_session: AsyncSession):
+        org, member = await self._make_org_member(db_session)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 50, tzinfo=UTC)  # 21:50 MSK — внутри окна
+        result = await _resolve_org_shift_schedule(
+            db_session, org.id, member, None, str(schedule.id), started_at
+        )
+        assert result[0] == schedule.id
+        assert result[2] == datetime(2026, 7, 20, 18, 48, tzinfo=UTC)
+        assert result[3] == datetime(2026, 7, 20, 18, 52, tzinfo=UTC)
+
+    async def test_auto_pick_two_startable_requires_choice(self, db_session: AsyncSession):
+        """Два стартуемых графика без явного id -> SCHEDULE_REQUIRED (выбор сужается
+        до стартуемых, но их всё ещё больше одного)."""
+        org, member = await self._make_org_member(db_session, require_schedule=True)
+        schedule_a = WorkSchedule(
+            organization_id=org.id, name="A", start_time=time(9, 0), end_time=time(18, 0)
+        )
+        schedule_b = WorkSchedule(
+            organization_id=org.id, name="B", start_time=time(9, 0), end_time=time(18, 0)
+        )
+        db_session.add_all([schedule_a, schedule_b])
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 10, 0, tzinfo=UTC)  # 13:00 MSK — внутри обоих окон
+        with pytest.raises(ShiftError) as exc_info:
+            await _resolve_org_shift_schedule(db_session, org.id, member, None, None, started_at)
+        assert exc_info.value.code == "SCHEDULE_REQUIRED"
+
+    async def test_auto_pick_one_startable_one_closed_selects_startable(
+        self, db_session: AsyncSession
+    ):
+        """Один стартуемый + один закрытый -> без ошибки выбирается стартуемый."""
+        org, member = await self._make_org_member(db_session, require_schedule=True)
+        startable_schedule = WorkSchedule(
+            organization_id=org.id, name="Дневная", start_time=time(9, 0), end_time=time(18, 0)
+        )
+        closed_schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add_all([startable_schedule, closed_schedule])
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 10, 0, tzinfo=UTC)  # 13:00 MSK
+        result = await _resolve_org_shift_schedule(
+            db_session, org.id, member, None, None, started_at
+        )
+        assert result[0] == startable_schedule.id
+
+    async def test_auto_pick_zero_startable_require_true_window_closed(
+        self, db_session: AsyncSession
+    ):
+        org, member = await self._make_org_member(db_session, require_schedule=True)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 40, tzinfo=UTC)  # 21:40 MSK, ещё не началось
+        with pytest.raises(ShiftError) as exc_info:
+            await _resolve_org_shift_schedule(db_session, org.id, member, None, None, started_at)
+        assert exc_info.value.code == "SCHEDULE_WINDOW_CLOSED"
+
+    async def test_night_schedule_after_end_require_true_window_closed(
+        self, db_session: AsyncSession
+    ):
+        org, member = await self._make_org_member(db_session, require_schedule=True)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(22, 0), end_time=time(6, 0)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)  # 07:00 MSK (21-го), early=0
+        with pytest.raises(ShiftError) as exc_info:
+            await _resolve_org_shift_schedule(db_session, org.id, member, None, None, started_at)
+        assert exc_info.value.code == "SCHEDULE_WINDOW_CLOSED"
+
+    async def test_auto_pick_zero_startable_require_false_starts_without_schedule(
+        self, db_session: AsyncSession
+    ):
+        """require_schedule=false, единственный график вне окна -> смена без графика
+        (scheduled_* = null), а не привязка к завтрашнему/чужому окну (изменение
+        поведения против work_schedules)."""
+        org, member = await self._make_org_member(db_session, require_schedule=False)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 40, tzinfo=UTC)  # 21:40 MSK
+        result = await _resolve_org_shift_schedule(
+            db_session, org.id, member, None, None, started_at
+        )
+        assert result == (None, None, None, None)
+
+    async def test_early_start_minutes_allows_start_before_window_with_todays_window(
+        self, db_session: AsyncSession
+    ):
+        """early_start_minutes=15: старт в 21:40 при графике 21:48-21:52 -> ok, окно
+        записывается сегодняшнее (21:48-21:52), а не завтрашнее."""
+        org, member = await self._make_org_member(db_session, early_start_minutes=15)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 40, tzinfo=UTC)  # 21:40 MSK
+        result = await _resolve_org_shift_schedule(
+            db_session, org.id, member, None, None, started_at
+        )
+        assert result[0] == schedule.id
+        assert result[2] == datetime(2026, 7, 20, 18, 48, tzinfo=UTC)  # сегодняшнее окно
+        assert result[3] == datetime(2026, 7, 20, 18, 52, tzinfo=UTC)
+
+    async def test_night_schedule_startable_after_midnight(self, db_session: AsyncSession):
+        org, member = await self._make_org_member(db_session)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(22, 0), end_time=time(6, 0)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 22, 30, tzinfo=UTC)  # 01:30 MSK (21-го)
+        result = await _resolve_org_shift_schedule(
+            db_session, org.id, member, None, None, started_at
+        )
+        assert result[0] == schedule.id
+
+
 # --- R7: смена графика администратором ----------------------------------------
 
 
@@ -835,7 +1136,15 @@ class TestChangeShiftSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        schedule_a = await _create_schedule(client, super_admin_headers, ctx["org_id"], name="A")
+        open_start, open_end = _wide_open_window()
+        schedule_a = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
+            start_time=open_start,
+            end_time=open_end,
+        )
         schedule_b = await _create_schedule(
             client,
             super_admin_headers,
@@ -868,7 +1177,10 @@ class TestChangeShiftSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        schedule = await _create_schedule(client, super_admin_headers, ctx["org_id"])
+        open_start, open_end = _wide_open_window()
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], start_time=open_start, end_time=open_end
+        )
 
         start_resp = await client.post(
             "/api/v1/shifts/start",
@@ -893,7 +1205,15 @@ class TestChangeShiftSchedule:
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_member_org(client, db_session, super_admin_headers)
-        schedule_a = await _create_schedule(client, super_admin_headers, ctx["org_id"], name="A")
+        open_start, open_end = _wide_open_window()
+        schedule_a = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="A",
+            start_time=open_start,
+            end_time=open_end,
+        )
         schedule_b = await _create_schedule(
             client,
             super_admin_headers,
@@ -1013,10 +1333,71 @@ class TestMySchedules:
         data = resp.json()["data"]
         assert data["total"] == 1
         assert data["require_schedule"] is False
+        assert data["early_start_minutes"] == 0
         item = data["items"][0]
         assert "next_start_at" in item
         assert "starts_in_minutes" in item
+        assert "can_start_now" in item
         assert data["resolved_work_location"] is None
+
+
+# --- my-schedules: can_start_now + early_start_minutes (schedule_window_enforcement)
+
+
+class TestMySchedulesCanStartNow:
+    async def test_startable_schedule_sorted_first_with_can_start_now_true(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(client, db_session, super_admin_headers)
+        open_start, open_end = _wide_open_window()
+        closed_start, closed_end = _closed_window()
+        await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="Закрыт",
+            start_time=closed_start,
+            end_time=closed_end,
+        )
+        await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            name="Открыт",
+            start_time=open_start,
+            end_time=open_end,
+        )
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+        )
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["total"] == 2
+        # Стартуемый сейчас — первым, независимо от порядка создания.
+        assert data["items"][0]["name"] == "Открыт"
+        assert data["items"][0]["can_start_now"] is True
+        assert data["items"][1]["name"] == "Закрыт"
+        assert data["items"][1]["can_start_now"] is False
+
+    async def test_early_start_minutes_passthrough_from_settings(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(client, db_session, super_admin_headers)
+        settings_resp = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"early_start_minutes": 200},
+        )
+        assert settings_resp.status_code == 200
+
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules",
+            headers=ctx["member_headers"],
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["early_start_minutes"] == 200
 
 
 # --- resolve_nearest_work_location: общий хелпер (work_schedules_geo_resolve) --

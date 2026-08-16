@@ -66,6 +66,7 @@ class TestGetSettings:
         assert data["require_schedule"] is False
         assert data["late_tolerance_minutes"] == 0
         assert data["overtime_request_days"] == 7
+        assert data["early_start_minutes"] == 0
         assert "auto_finish_hours" not in data
 
     async def test_admin_can_get_settings(
@@ -201,6 +202,49 @@ class TestUpdateSettings:
             f"/api/v1/organizations/{organization.id}/settings",
             headers=auth_headers,
             json={"late_tolerance_minutes": 121},
+        )
+        assert resp.status_code == 422
+
+    async def test_set_early_start_minutes_boundaries(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        """schedule_window_enforcement: диапазон 0–240, обе границы допустимы."""
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"early_start_minutes": 0},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["early_start_minutes"] == 0
+
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"early_start_minutes": 240},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["early_start_minutes"] == 240
+
+    async def test_early_start_minutes_out_of_range_rejected(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        organization: Organization,
+    ):
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"early_start_minutes": -1},
+        )
+        assert resp.status_code == 422
+
+        resp = await client.patch(
+            f"/api/v1/organizations/{organization.id}/settings",
+            headers=auth_headers,
+            json={"early_start_minutes": 241},
         )
         assert resp.status_code == 422
 

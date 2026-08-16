@@ -1,6 +1,32 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-08-16 (unified_soft_delete — единый мягкий delete вместо
+Последнее обновление: 2026-08-16 (schedule_window_enforcement — запрет старта смены вне
+окна графика): фикс бага с прода (график 21:48–21:52, старт в 21:53 создавал смену с
+плановым окном на завтра и висел активной ~сутки) — `_resolve_org_shift_schedule` (R3,
+`work_schedules`) проверял только **наличие** графика, не **время**. Новое правило S1
+(`services/work_schedule.is_schedule_startable`, единственный источник истины): график
+«стартуем сейчас», если `now >= next_start_at - early_start_minutes`; верхняя граница
+(`now <= next_end_at`) гарантирована построением R2. `organization_settings` получил
+`early_start_minutes INT NOT NULL DEFAULT 0` (0–240) — допуск на ранний старт, настройка
+организации. `_resolve_org_shift_schedule` (S2) теперь считает окно+допуск для каждого
+доступного графика один раз от `started_at` и фильтрует по стартуемости: явный
+`work_schedule_id` вне окна → `422 SCHEDULE_WINDOW_CLOSED` (не `SCHEDULE_NOT_AVAILABLE` —
+график доступен сотруднику, просто сейчас не действует); автоподбор без явного id —
+`require_schedule=true` и стартуемых нет → `SCHEDULE_WINDOW_CLOSED`, стартуемый ровно
+один → выбирается он, больше одного → `SCHEDULE_REQUIRED` (как раньше, но выбор сузился
+до стартуемых); `require_schedule=false` и стартуемый не ровно один → смена стартует
+**без графика** (`scheduled_*` = null) — изменение поведения: раньше единственный
+эффективный график подставлялся всегда, в т.ч. окном на сутки вперёд, теперь вне окна
+графика не даётся вовсе. `GET .../my-schedules` (S3) получил `can_start_now` (S1 на
+момент ответа, на каждый item) и `early_start_minutes` (дублирует настройку — мобилка
+пересчитывает `can_start_now` локально по таймеру); сортировка `items`: `can_start_now`
+desc → `is_current` desc → `abs(starts_in_minutes)` asc. `PATCH .../settings` принимает
+`early_start_minutes` (`ge=0, le=240`). Затронуты только старт смены и `my-schedules`:
+возобновление после паузы, завершение, ручной ввод (`manual_time_entry`) и смена графика
+администратором (R7) правило не проверяют — админ вправе оформить смену вне окна задним
+числом. Миграция `65aa0f57410e`. Подробности — `docs/tasks/schedule_window_enforcement/backend.md`.
+
+Предыдущее обновление: 2026-08-16 (unified_soft_delete — единый мягкий delete вместо
 is_archived/is_deleted-зоопарка): `checklist_templates`/`test_templates.is_archived`
 переименован в `is_deleted` (+ добавлены nullable `deleted_at`/`deleted_by_user_id`
 FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переименованы в
@@ -69,7 +95,7 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | `PayrollAdjustment` | `payroll_adjustments` | Ручное начисление/удержание (`manual_time_entry`): org_id→CASCADE, member_id→organization_members CASCADE, shift_id nullable→SET NULL (необязательная привязка), **amount_minor int, знаковая сумма (> 0 доплата, < 0 удержание), CHECK `!= 0`**, currency RUB, reason VARCHAR(200), comment nullable VARCHAR(500), occurred_at, created_by_user_id, is_deleted/deleted_by_user_id/deleted_at — отмена=soft-delete, created/updated_at. Индексы `(org_id,is_deleted)`, `(member_id,is_deleted)`, `(occurred_at)`. Без шаблонов (в отличие от `Penalty`) — симметрия «плюс/минус» без снимка reason/amount из справочника |
 | `OrganizationRole` | `organization_roles` | Кастомная роль организации (org_id, name) |
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius, address nullable VARCHAR512 — читаемый адрес, геокодинг в админке) |
-| `OrganizationSettings` | `organization_settings` | Настройки организации (geo, **require_work_location bool NOT NULL default false** — требовать точку при старте, лимиты пауз; **auto_finish_hours удалён** (work_schedules) — заменён на **auto_finish_by_schedule bool default true**, **require_schedule bool default false**, **late_tolerance_minutes int default 0** (0–120), **overtime_request_days int default 7** (1–90)) |
+| `OrganizationSettings` | `organization_settings` | Настройки организации (geo, **require_work_location bool NOT NULL default false** — требовать точку при старте, лимиты пауз; **auto_finish_hours удалён** (work_schedules) — заменён на **auto_finish_by_schedule bool default true**, **require_schedule bool default false**, **late_tolerance_minutes int default 0** (0–120), **overtime_request_days int default 7** (1–90), **early_start_minutes int default 0** (0–240, schedule_window_enforcement — допуск на ранний старт до планового начала графика)) |
 | `ChecklistTemplate` | `checklist_templates` | Шаблон чек-листа (org_id, name, type, is_required, is_deleted + deleted_at/deleted_by_user_id — soft-delete, `unified_soft_delete`) |
 | `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position, **photo_requirement** none/optional/required, **photo_source** camera/camera_or_gallery — VARCHAR32, дефолты none/camera) |
 | `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
@@ -153,7 +179,7 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | GET | `/api/v1/organizations/{id}/work-schedules/{schedule_id}/assignments` | Кому назначен график (роли + точки + personal_add/remove) | Bearer (owner/admin) |
 | PUT | `/api/v1/organizations/{id}/members/{user_id}/schedule-overrides` | Личные исключения графиков сотрудника (PUT, замена) | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/members/{user_id}/schedules` | Эффективный набор графиков сотрудника (R1, + `source`) | Bearer (owner/admin) |
-| GET | `/api/v1/organizations/{id}/my-schedules` | Мои доступные графики + плановое окно "сейчас" (мобилка, старт смены); owner → пустой список | Bearer (org_member) |
+| GET | `/api/v1/organizations/{id}/my-schedules` | Мои доступные графики + плановое окно "сейчас" + `can_start_now`/`early_start_minutes` (S1, schedule_window_enforcement) (мобилка, старт смены); owner → пустой список | Bearer (org_member) |
 | PATCH | `/api/v1/organizations/{id}/shifts/{shift_id}/schedule` | Сменить график у смены (R7); `scheduled_*` пересчитываются от неизменного `started_at`, `finished_at` не трогается | Bearer (owner/admin) |
 | GET | `/api/v1/organizations/{id}/overtime-requests` | Реестр заявок на переработку (фильтры status/user_ids/период, пагинация) | Bearer (owner/admin) |
 | PATCH | `/api/v1/organizations/{id}/overtime-requests/{request_id}` | Согласовать/отклонить заявку на переработку | Bearer (owner/admin) |
