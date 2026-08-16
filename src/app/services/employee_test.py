@@ -241,15 +241,15 @@ async def list_templates(
     *,
     limit: int = 20,
     offset: int = 0,
-    archived: bool | None = None,
+    include_deleted: bool = False,
 ) -> tuple[list[tuple[TestTemplate, int, int, int]], int]:
     """Возвращает [(template, question_count, total_points, assignments_count)], total."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
 
     conditions = [TestTemplate.organization_id == org_id]
-    if archived is not None:
-        conditions.append(TestTemplate.is_archived.is_(archived))
+    if not include_deleted:
+        conditions.append(TestTemplate.is_deleted.is_(False))
 
     total = (
         await session.execute(select(func.count()).select_from(TestTemplate).where(*conditions))
@@ -312,8 +312,10 @@ async def update_template(
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
     template = await _get_template(session, org_id, template_id, with_questions=True)
-    if template.is_archived:
-        raise TestError("TEST_TEMPLATE_ARCHIVED", "Операция над архивным шаблоном", 400)
+    if template.is_deleted:
+        raise TestError(
+            "TEST_TEMPLATE_DELETED", "Тест удалён — восстановите его, чтобы редактировать", 400
+        )
 
     new_threshold = fields.get("pass_threshold_percent", template.pass_threshold_percent)
     new_max_attempts = fields.get("max_attempts", template.max_attempts)
@@ -371,23 +373,55 @@ async def update_template(
     return template
 
 
-async def set_archived(
+async def delete_template(
     session: AsyncSession,
     org_id: uuid.UUID,
     template_id: uuid.UUID,
     requester_id: uuid.UUID,
-    is_archived: bool,
 ) -> TestTemplate:
+    """Мягкое удаление. Повторный вызов на уже удалённом шаблоне — 404 (шаблон
+    существует, но проверка ниже отклоняет его явно, чтобы отличать от
+    восстановления)."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
     template = await _get_template(session, org_id, template_id, with_questions=True)
-    template.is_archived = is_archived
+    if template.is_deleted:
+        raise TestError("TEST_TEMPLATE_NOT_FOUND", "Шаблон теста не найден", 404)
+
+    template.is_deleted = True
+    template.deleted_at = datetime.now(UTC)
+    template.deleted_by_user_id = requester_id
     await session.flush()
     logger.info(
-        "test_template_archived",
+        "test_template_deleted",
         org_id=str(org_id),
         template_id=str(template_id),
-        is_archived=is_archived,
+        deleted_by=str(requester_id),
+    )
+    return template
+
+
+async def restore_template(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> TestTemplate:
+    """Восстановление удалённого шаблона. На не-удалённом — 409 TEST_TEMPLATE_NOT_DELETED."""
+    org = await get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    template = await _get_template(session, org_id, template_id, with_questions=True)
+    if not template.is_deleted:
+        raise TestError("TEST_TEMPLATE_NOT_DELETED", "Шаблон теста не удалён", 409)
+
+    template.is_deleted = False
+    template.deleted_at = None
+    template.deleted_by_user_id = None
+    await session.flush()
+    logger.info(
+        "test_template_restored",
+        org_id=str(org_id),
+        template_id=str(template_id),
     )
     return template
 
@@ -431,8 +465,10 @@ async def assign_template(
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
     template = await _get_template(session, org_id, template_id)
-    if template.is_archived:
-        raise TestError("TEST_TEMPLATE_ARCHIVED", "Операция над архивным шаблоном", 400)
+    if template.is_deleted:
+        raise TestError(
+            "TEST_TEMPLATE_DELETED", "Тест удалён — восстановите его, чтобы редактировать", 400
+        )
 
     if not member_ids:
         return [], 0, 0
@@ -752,8 +788,10 @@ async def start_attempt(
 ) -> TestAttempt:
     assignment = await _get_my_assignment(session, user_id, assignment_id, with_template=True)
     template = assignment.template
-    if template.is_archived:
-        raise TestError("TEST_TEMPLATE_ARCHIVED", "Тест архивирован", 400)
+    if template.is_deleted:
+        raise TestError(
+            "TEST_TEMPLATE_DELETED", "Тест удалён — восстановите его, чтобы редактировать", 400
+        )
     if assignment.passed:
         raise TestError("TEST_ALREADY_PASSED", "Тест уже сдан успешно", 409)
     if assignment.attempts_used >= template.max_attempts:

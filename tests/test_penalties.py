@@ -301,8 +301,58 @@ async def test_delete_template_twice_404(client, owner_headers, org):
     assert _err(second) == "PENALTY_TEMPLATE_NOT_FOUND"
 
 
-async def test_template_rbac(client, owner_headers, admin_headers, auth_headers, org,
-                             admin_member, employee_member):
+async def test_template_delete_include_deleted_restore_cycle(client, owner_headers, org):
+    t = await _create_template(client, owner_headers, org.id, "Опоздание", 50000)
+
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/penalty-templates/{t['id']}", headers=owner_headers
+    )
+    hidden = _data(
+        await client.get(
+            f"/api/v1/organizations/{org.id}/penalty-templates", headers=owner_headers
+        )
+    )
+    assert hidden["items"] == []
+
+    shown = _data(
+        await client.get(
+            f"/api/v1/organizations/{org.id}/penalty-templates",
+            headers=owner_headers,
+            params={"include_deleted": "true"},
+        )
+    )
+    assert shown["items"][0]["is_deleted"] is True
+
+    restored = await client.post(
+        f"/api/v1/organizations/{org.id}/penalty-templates/{t['id']}/restore",
+        headers=owner_headers,
+    )
+    assert restored.status_code == 200
+    data = _data(restored)
+    assert data["is_deleted"] is False
+    assert data["deleted_at"] is None
+
+    listed_again = _data(
+        await client.get(
+            f"/api/v1/organizations/{org.id}/penalty-templates", headers=owner_headers
+        )
+    )
+    assert len(listed_again["items"]) == 1
+
+
+async def test_restore_template_not_deleted_409(client, owner_headers, org):
+    t = await _create_template(client, owner_headers, org.id)
+    resp = await client.post(
+        f"/api/v1/organizations/{org.id}/penalty-templates/{t['id']}/restore",
+        headers=owner_headers,
+    )
+    assert resp.status_code == 409
+    assert _err(resp) == "PENALTY_TEMPLATE_NOT_DELETED"
+
+
+async def test_template_rbac(
+    client, owner_headers, admin_headers, auth_headers, org, admin_member, employee_member
+):
     # admin (member) — можно
     resp_admin = await client.post(
         f"/api/v1/organizations/{org.id}/penalty-templates",
@@ -321,10 +371,13 @@ async def test_template_rbac(client, owner_headers, admin_headers, auth_headers,
 
 
 # --- Штрафы: создание --------------------------------------------------------
-async def test_create_custom_penalty(client, owner_headers, owner, org, employee_member,
-                                      verified_user):
+async def test_create_custom_penalty(
+    client, owner_headers, owner, org, employee_member, verified_user
+):
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
         reason="Брак",
         amount_minor=30000,
@@ -346,7 +399,9 @@ async def test_create_custom_penalty(client, owner_headers, owner, org, employee
 async def test_penalty_snapshot_from_template(client, owner_headers, org, employee_member):
     t = await _create_template(client, owner_headers, org.id, "Опоздание", 50000)
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
         template_id=t["id"],
         occurred_at="2026-06-15T08:00:00Z",
@@ -361,7 +416,9 @@ async def test_penalty_snapshot_from_template(client, owner_headers, org, employ
 async def test_penalty_override_template(client, owner_headers, org, employee_member):
     t = await _create_template(client, owner_headers, org.id, "Опоздание", 50000)
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
         template_id=t["id"],
         amount_minor=60000,
@@ -376,7 +433,9 @@ async def test_snapshot_independent_of_template_edit(client, owner_headers, org,
     t = await _create_template(client, owner_headers, org.id, "Опоздание", 50000)
     p = _data(
         await _create_penalty(
-            client, owner_headers, org.id,
+            client,
+            owner_headers,
+            org.id,
             member_id=str(employee_member.id),
             template_id=t["id"],
             occurred_at="2026-06-15T08:00:00Z",
@@ -397,14 +456,17 @@ async def test_snapshot_independent_of_template_edit(client, owner_headers, org,
     assert got["reason"] == "Опоздание"
 
 
-async def test_occurred_at_from_shift(client, owner_headers, db_session, org, employee_member,
-                                      verified_user):
+async def test_occurred_at_from_shift(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
     started = datetime(2026, 6, 10, 9, 0, tzinfo=UTC)
     shift = await _make_finished_shift(
         db_session, verified_user.id, org.id, started, datetime(2026, 6, 10, 17, 0, tzinfo=UTC)
     )
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
         reason="Опоздание",
         amount_minor=10000,
@@ -416,17 +478,23 @@ async def test_occurred_at_from_shift(client, owner_headers, db_session, org, em
     assert datetime.fromisoformat(data["occurred_at"]) == started
 
 
-async def test_occurred_at_explicit_with_shift(client, owner_headers, db_session, org,
-                                                employee_member, verified_user):
+async def test_occurred_at_explicit_with_shift(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
     shift = await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 17, 0, tzinfo=UTC),
     )
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
-        reason="X", amount_minor=10000,
+        reason="X",
+        amount_minor=10000,
         shift_id=str(shift.id),
         occurred_at="2026-06-11T00:00:00Z",
     )
@@ -436,25 +504,34 @@ async def test_occurred_at_explicit_with_shift(client, owner_headers, db_session
 
 async def test_occurred_at_required_without_shift(client, owner_headers, org, employee_member):
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
-        reason="X", amount_minor=10000,
+        reason="X",
+        amount_minor=10000,
     )
     assert resp.status_code == 422
     assert _err(resp) == "VALIDATION_ERROR"
 
 
-async def test_shift_of_another_member_404(client, owner_headers, db_session, org,
-                                           employee_member, emp2_member, emp2_user):
+async def test_shift_of_another_member_404(
+    client, owner_headers, db_session, org, employee_member, emp2_member, emp2_user
+):
     other_shift = await _make_finished_shift(
-        db_session, emp2_user.id, org.id,
+        db_session,
+        emp2_user.id,
+        org.id,
         datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 17, 0, tzinfo=UTC),
     )
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
-        reason="X", amount_minor=10000,
+        reason="X",
+        amount_minor=10000,
         shift_id=str(other_shift.id),
     )
     assert resp.status_code == 404
@@ -463,9 +540,12 @@ async def test_shift_of_another_member_404(client, owner_headers, db_session, or
 
 async def test_member_not_found(client, owner_headers, org):
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(uuid.uuid4()),
-        reason="X", amount_minor=10000,
+        reason="X",
+        amount_minor=10000,
         occurred_at="2026-06-15T08:00:00Z",
     )
     assert resp.status_code == 404
@@ -478,7 +558,9 @@ async def test_deleted_template_not_usable(client, owner_headers, org, employee_
         f"/api/v1/organizations/{org.id}/penalty-templates/{t['id']}", headers=owner_headers
     )
     resp = await _create_penalty(
-        client, owner_headers, org.id,
+        client,
+        owner_headers,
+        org.id,
         member_id=str(employee_member.id),
         template_id=t["id"],
         occurred_at="2026-06-15T08:00:00Z",
@@ -491,16 +573,35 @@ async def test_deleted_template_not_usable(client, owner_headers, org, employee_
 async def test_list_penalties_filters_and_pagination(
     client, owner_headers, org, employee_member, emp2_member
 ):
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="a", amount_minor=1000, occurred_at="2026-06-10T00:00:00Z")
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="b", amount_minor=2000, occurred_at="2026-06-20T00:00:00Z")
-    await _create_penalty(client, owner_headers, org.id, member_id=str(emp2_member.id),
-                          reason="c", amount_minor=3000, occurred_at="2026-06-15T00:00:00Z")
-
-    all_resp = await client.get(
-        f"/api/v1/organizations/{org.id}/penalties", headers=owner_headers
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="a",
+        amount_minor=1000,
+        occurred_at="2026-06-10T00:00:00Z",
     )
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="b",
+        amount_minor=2000,
+        occurred_at="2026-06-20T00:00:00Z",
+    )
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(emp2_member.id),
+        reason="c",
+        amount_minor=3000,
+        occurred_at="2026-06-15T00:00:00Z",
+    )
+
+    all_resp = await client.get(f"/api/v1/organizations/{org.id}/penalties", headers=owner_headers)
     body = _data(all_resp)
     assert body["total"] == 3
     # сортировка occurred_at DESC
@@ -534,13 +635,24 @@ async def test_list_penalties_filters_and_pagination(
 
 
 async def test_get_and_soft_delete_penalty(
-    client, owner_headers, admin_headers, db_session, org, employee_member,
-    admin_member, admin_user
+    client,
+    owner_headers,
+    admin_headers,
+    db_session,
+    org,
+    employee_member,
+    admin_member,
+    admin_user,
 ):
     p = _data(
         await _create_penalty(
-            client, owner_headers, org.id, member_id=str(employee_member.id),
-            reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z",
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            reason="X",
+            amount_minor=10000,
+            occurred_at="2026-06-15T08:00:00Z",
         )
     )
     # снимает admin (не автор-owner)
@@ -573,17 +685,91 @@ async def test_get_and_soft_delete_penalty(
     assert row.deleted_at is not None
 
 
-async def test_update_penalty(client, owner_headers, db_session, org, employee_member,
-                              verified_user):
+async def test_penalty_include_deleted_and_restore_cycle(
+    client, owner_headers, org, employee_member
+):
+    p = _data(
+        await _create_penalty(
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            reason="X",
+            amount_minor=10000,
+            occurred_at="2026-06-15T08:00:00Z",
+        )
+    )
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/penalties/{p['id']}", headers=owner_headers
+    )
+
+    hidden = _data(
+        await client.get(f"/api/v1/organizations/{org.id}/penalties", headers=owner_headers)
+    )
+    assert hidden["total"] == 0
+
+    shown = _data(
+        await client.get(
+            f"/api/v1/organizations/{org.id}/penalties",
+            headers=owner_headers,
+            params={"include_deleted": "true"},
+        )
+    )
+    assert shown["total"] == 1
+    assert shown["items"][0]["is_deleted"] is True
+
+    restored = await client.post(
+        f"/api/v1/organizations/{org.id}/penalties/{p['id']}/restore", headers=owner_headers
+    )
+    assert restored.status_code == 200
+    data = _data(restored)
+    assert data["is_deleted"] is False
+    assert data["deleted_at"] is None
+
+    listed_again = _data(
+        await client.get(f"/api/v1/organizations/{org.id}/penalties", headers=owner_headers)
+    )
+    assert listed_again["total"] == 1
+
+
+async def test_restore_penalty_not_deleted_409(client, owner_headers, org, employee_member):
+    p = _data(
+        await _create_penalty(
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            reason="X",
+            amount_minor=10000,
+            occurred_at="2026-06-15T08:00:00Z",
+        )
+    )
+    resp = await client.post(
+        f"/api/v1/organizations/{org.id}/penalties/{p['id']}/restore", headers=owner_headers
+    )
+    assert resp.status_code == 409
+    assert _err(resp) == "PENALTY_NOT_DELETED"
+
+
+async def test_update_penalty(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
     shift = await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 17, 0, tzinfo=UTC),
     )
     p = _data(
         await _create_penalty(
-            client, owner_headers, org.id, member_id=str(employee_member.id),
-            reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z",
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            reason="X",
+            amount_minor=10000,
+            occurred_at="2026-06-15T08:00:00Z",
         )
     )
     resp = await client.patch(
@@ -611,14 +797,21 @@ async def test_update_penalty_shift_other_member_404(
     client, owner_headers, db_session, org, employee_member, emp2_member, emp2_user
 ):
     other_shift = await _make_finished_shift(
-        db_session, emp2_user.id, org.id,
+        db_session,
+        emp2_user.id,
+        org.id,
         datetime(2026, 6, 10, 9, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 17, 0, tzinfo=UTC),
     )
     p = _data(
         await _create_penalty(
-            client, owner_headers, org.id, member_id=str(employee_member.id),
-            reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z",
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            reason="X",
+            amount_minor=10000,
+            occurred_at="2026-06-15T08:00:00Z",
         )
     )
     resp = await client.patch(
@@ -634,8 +827,15 @@ async def test_update_penalty_shift_other_member_404(
 async def test_my_penalties_employee_sees_own(
     client, owner_headers, auth_headers, org, employee_member
 ):
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-15T08:00:00Z",
+    )
     resp = await client.get(f"/api/v1/organizations/{org.id}/my-penalties", headers=auth_headers)
     assert resp.status_code == 200
     body = _data(resp)
@@ -653,16 +853,28 @@ async def test_my_penalties_owner_forbidden(client, owner_headers, org):
 async def test_my_penalties_isolated_between_employees(
     client, owner_headers, emp2_headers, org, employee_member, emp2_member
 ):
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-15T08:00:00Z",
+    )
     resp = await client.get(f"/api/v1/organizations/{org.id}/my-penalties", headers=emp2_headers)
     assert _data(resp)["total"] == 0
 
 
 async def test_penalty_rbac_employee_denied(client, auth_headers, org, employee_member):
     create = await _create_penalty(
-        client, auth_headers, org.id, member_id=str(employee_member.id),
-        reason="X", amount_minor=10000, occurred_at="2026-06-15T08:00:00Z",
+        client,
+        auth_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-15T08:00:00Z",
     )
     assert create.status_code == 403
     listing = await client.get(f"/api/v1/organizations/{org.id}/penalties", headers=auth_headers)
@@ -681,12 +893,21 @@ async def _payroll(client, headers, org_id, **params):
 async def test_payroll_net(client, owner_headers, db_session, org, employee_member, verified_user):
     await _make_rate(db_session, employee_member.id, 18000)  # 180₽/час
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),  # 2ч → 36000
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     resp = await _payroll(client, owner_headers, org.id)
     data = _data(resp)
     item = data["items"][0]
@@ -698,30 +919,50 @@ async def test_payroll_net(client, owner_headers, db_session, org, employee_memb
     assert data["totals"]["net_amount_minor"] == 26000
 
 
-async def test_payroll_net_negative(client, owner_headers, db_session, org, employee_member,
-                                    verified_user):
+async def test_payroll_net_negative(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
     await _make_rate(db_session, employee_member.id, 18000)
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),  # 36000
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=50000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=50000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     item = _data(await _payroll(client, owner_headers, org.id))["items"][0]
     assert item["net_amount_minor"] == -14000
 
 
-async def test_payroll_penalty_without_rate(client, owner_headers, db_session, org,
-                                            employee_member, verified_user):
+async def test_payroll_penalty_without_rate(
+    client, owner_headers, db_session, org, employee_member, verified_user
+):
     # смена есть, ставки нет → gross 0, но штраф учитывается
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=5000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=5000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     item = _data(await _payroll(client, owner_headers, org.id))["items"][0]
     assert item["gross_amount_minor"] == 0
     assert item["net_amount_minor"] == -5000
@@ -731,8 +972,15 @@ async def test_payroll_penalty_only_member_in_items(
     client, owner_headers, org, employee_member, verified_user
 ):
     # ни одной смены, только штраф → сотрудник всё равно в items
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=5000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=5000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     data = _data(await _payroll(client, owner_headers, org.id))
     item = next(i for i in data["items"] if i["user_id"] == str(verified_user.id))
     assert item["gross_amount_minor"] == 0
@@ -745,15 +993,24 @@ async def test_payroll_include_penalties_false(
 ):
     await _make_rate(db_session, employee_member.id, 18000)
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-10T12:00:00Z")
-    item = _data(
-        await _payroll(client, owner_headers, org.id, include_penalties="false")
-    )["items"][0]
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
+    item = _data(await _payroll(client, owner_headers, org.id, include_penalties="false"))[
+        "items"
+    ][0]
     assert item["penalty_amount_minor"] == 0
     assert item["penalties_count"] == 0
     assert item["net_amount_minor"] == 36000
@@ -762,8 +1019,15 @@ async def test_payroll_include_penalties_false(
 async def test_payroll_include_penalties_false_drops_penalty_only_member(
     client, owner_headers, org, employee_member, verified_user
 ):
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=5000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=5000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     data = _data(await _payroll(client, owner_headers, org.id, include_penalties="false"))
     assert all(i["user_id"] != str(verified_user.id) for i in data["items"])
 
@@ -773,17 +1037,29 @@ async def test_payroll_penalty_period_filter(
 ):
     await _make_rate(db_session, employee_member.id, 18000)
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
     # штраф вне периода
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-07-01T00:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-07-01T00:00:00Z",
+    )
     item = _data(
         await _payroll(
-            client, owner_headers, org.id,
-            date_from="2026-06-01T00:00:00Z", date_to="2026-06-30T23:59:59Z",
+            client,
+            owner_headers,
+            org.id,
+            date_from="2026-06-01T00:00:00Z",
+            date_to="2026-06-30T23:59:59Z",
         )
     )["items"][0]
     assert item["penalty_amount_minor"] == 0
@@ -795,15 +1071,22 @@ async def test_my_earnings_includes_penalty(
 ):
     await _make_rate(db_session, employee_member.id, 18000)
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-10T12:00:00Z")
-    resp = await client.get(
-        f"/api/v1/organizations/{org.id}/my-earnings", headers=auth_headers
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-10T12:00:00Z",
     )
+    resp = await client.get(f"/api/v1/organizations/{org.id}/my-earnings", headers=auth_headers)
     data = _data(resp)
     assert data["gross_amount_minor"] == 36000
     assert data["penalty_amount_minor"] == 10000
@@ -816,12 +1099,21 @@ async def test_payroll_export_penalty_columns(
 ):
     await _make_rate(db_session, employee_member.id, 18000)
     await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=10000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=10000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     resp = await client.get(
         f"/api/v1/organizations/{org.id}/payroll/export", headers=owner_headers
     )
@@ -845,7 +1137,9 @@ async def test_soft_deleted_shift_excluded_everywhere(
 ):
     await _make_rate(db_session, employee_member.id, 18000)
     shift = await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
@@ -882,14 +1176,14 @@ async def test_soft_deleted_shift_excluded_from_admin_user_detail(
     client, super_admin_headers, db_session, org, employee_member, verified_user
 ):
     shift = await _make_finished_shift(
-        db_session, verified_user.id, org.id,
+        db_session,
+        verified_user.id,
+        org.id,
         datetime(2026, 6, 10, 10, 0, tzinfo=UTC),
         datetime(2026, 6, 10, 12, 0, tzinfo=UTC),
     )
     pre = _data(
-        await client.get(
-            f"/api/v1/admin/users/{verified_user.id}", headers=super_admin_headers
-        )
+        await client.get(f"/api/v1/admin/users/{verified_user.id}", headers=super_admin_headers)
     )
     assert pre["shifts_count"] == 1
 
@@ -897,9 +1191,7 @@ async def test_soft_deleted_shift_excluded_from_admin_user_detail(
     await db_session.commit()
 
     post = _data(
-        await client.get(
-            f"/api/v1/admin/users/{verified_user.id}", headers=super_admin_headers
-        )
+        await client.get(f"/api/v1/admin/users/{verified_user.id}", headers=super_admin_headers)
     )
     assert post["shifts_count"] == 0
 
@@ -908,8 +1200,15 @@ async def test_payroll_only_missing_rate_keeps_penalty_only_member(
     client, owner_headers, org, employee_member, verified_user
 ):
     # penalty-only сотрудник (без смен) не исчезает под only_missing_rate — штраф не теряется
-    await _create_penalty(client, owner_headers, org.id, member_id=str(employee_member.id),
-                          reason="X", amount_minor=5000, occurred_at="2026-06-10T12:00:00Z")
+    await _create_penalty(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        reason="X",
+        amount_minor=5000,
+        occurred_at="2026-06-10T12:00:00Z",
+    )
     data = _data(await _payroll(client, owner_headers, org.id, only_missing_rate="true"))
     item = next(i for i in data["items"] if i["user_id"] == str(verified_user.id))
     assert item["penalty_amount_minor"] == 5000

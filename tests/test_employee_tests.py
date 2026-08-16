@@ -121,9 +121,7 @@ async def _submit_first_correct(
     """Стартует попытку и сдаёт только первый вопрос верно (50% при пороге 50 →
     статус назначения `passed`). Для наполнения реестра разными статусами."""
     fill = _data(
-        await client.post(
-            f"/api/v1/my/test-assignments/{assignment_id}/attempts", headers=headers
-        )
+        await client.post(f"/api/v1/my/test-assignments/{assignment_id}/attempts", headers=headers)
     )
     fire_q = next(q for q in fill["questions"] if q["text"] == "Что делать при пожаре?")
     resp = await client.post(
@@ -233,7 +231,7 @@ class TestTemplateInvariants:
         assert data["title"] == TWO_QUESTION_BODY["title"]
         assert data["question_count"] == 2
         assert data["total_points"] == 2
-        assert data["is_archived"] is False
+        assert data["is_deleted"] is False
         assert len(data["questions"]) == 2
         assert data["questions"][0]["options"][0]["is_correct"] is True
 
@@ -408,29 +406,27 @@ class TestTemplateCrud:
         assert item["total_points"] == 2
         assert item["assignments_count"] == 0
 
-    async def test_list_archived_filter(self, client: AsyncClient, owner_headers, org):
+    async def test_list_include_deleted_filter(self, client: AsyncClient, owner_headers, org):
         tpl = await _create_template(client, owner_headers, org.id)
-        await client.patch(
-            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
             headers=owner_headers,
-            json={"is_archived": True},
         )
         active = _data(
             await client.get(
                 f"/api/v1/organizations/{org.id}/test-templates",
                 headers=owner_headers,
-                params={"archived": "false"},
             )
         )
-        archived = _data(
+        with_deleted = _data(
             await client.get(
                 f"/api/v1/organizations/{org.id}/test-templates",
                 headers=owner_headers,
-                params={"archived": "true"},
+                params={"include_deleted": "true"},
             )
         )
         assert active["total"] == 0
-        assert archived["total"] == 1
+        assert with_deleted["total"] == 1
 
     async def test_get_detail_shows_is_correct(self, client: AsyncClient, owner_headers, org):
         tpl = await _create_template(client, owner_headers, org.id)
@@ -512,12 +508,11 @@ class TestTemplateCrud:
         assert resp.status_code == 422
         assert _err(resp) == "TEST_TEMPLATE_INVALID"
 
-    async def test_update_archived_forbidden(self, client: AsyncClient, owner_headers, org):
+    async def test_update_deleted_forbidden(self, client: AsyncClient, owner_headers, org):
         tpl = await _create_template(client, owner_headers, org.id)
-        await client.patch(
-            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
             headers=owner_headers,
-            json={"is_archived": True},
         )
         resp = await client.patch(
             f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
@@ -525,26 +520,75 @@ class TestTemplateCrud:
             json={"title": "X"},
         )
         assert resp.status_code == 400
-        assert _err(resp) == "TEST_TEMPLATE_ARCHIVED"
+        assert _err(resp) == "TEST_TEMPLATE_DELETED"
 
-    async def test_archive_and_unarchive(self, client: AsyncClient, owner_headers, org):
+
+class TestDeleteAndRestoreTemplate:
+    async def test_delete_hides_and_restore_shows_again(
+        self, client: AsyncClient, owner_headers, org
+    ):
         tpl = await _create_template(client, owner_headers, org.id)
-        archived = _data(
-            await client.patch(
-                f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
-                headers=owner_headers,
-                json={"is_archived": True},
+
+        deleted = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
+            headers=owner_headers,
+        )
+        assert deleted.status_code == 200
+        assert _data(deleted) == {"deleted": True}
+
+        listed = _data(
+            await client.get(
+                f"/api/v1/organizations/{org.id}/test-templates", headers=owner_headers
             )
         )
-        assert archived["is_archived"] is True
-        unarchived = _data(
-            await client.patch(
-                f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
+        assert listed["total"] == 0
+
+        with_deleted = _data(
+            await client.get(
+                f"/api/v1/organizations/{org.id}/test-templates",
                 headers=owner_headers,
-                json={"is_archived": False},
+                params={"include_deleted": "true"},
             )
         )
-        assert unarchived["is_archived"] is False
+        assert with_deleted["items"][0]["is_deleted"] is True
+
+        restored = await client.post(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/restore",
+            headers=owner_headers,
+        )
+        assert restored.status_code == 200
+        data = _data(restored)
+        assert data["is_deleted"] is False
+        assert data["deleted_at"] is None
+
+        listed_again = _data(
+            await client.get(
+                f"/api/v1/organizations/{org.id}/test-templates", headers=owner_headers
+            )
+        )
+        assert listed_again["total"] == 1
+
+    async def test_delete_twice_returns_404(self, client: AsyncClient, owner_headers, org):
+        tpl = await _create_template(client, owner_headers, org.id)
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
+            headers=owner_headers,
+        )
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 404
+        assert _err(resp) == "TEST_TEMPLATE_NOT_FOUND"
+
+    async def test_restore_not_deleted_returns_409(self, client: AsyncClient, owner_headers, org):
+        tpl = await _create_template(client, owner_headers, org.id)
+        resp = await client.post(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/restore",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 409
+        assert _err(resp) == "TEST_TEMPLATE_NOT_DELETED"
 
 
 # --- Назначения ------------------------------------------------------------------
@@ -604,18 +648,17 @@ class TestAssignments:
         result = await db_session.execute(select(Notification))
         assert len(result.scalars().all()) == 1
 
-    async def test_assign_archived_template_rejected(
+    async def test_assign_deleted_template_rejected(
         self, client: AsyncClient, owner_headers, org, employee_member
     ):
         tpl = await _create_template(client, owner_headers, org.id)
-        await client.patch(
-            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
             headers=owner_headers,
-            json={"is_archived": True},
         )
         resp = await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
         assert resp.status_code == 400
-        assert _err(resp) == "TEST_TEMPLATE_ARCHIVED"
+        assert _err(resp) == "TEST_TEMPLATE_DELETED"
 
     async def test_assign_unknown_member_not_found(self, client: AsyncClient, owner_headers, org):
         tpl = await _create_template(client, owner_headers, org.id)
@@ -792,21 +835,20 @@ class TestAttemptLifecycle:
         )
         assert first["id"] == second["id"]
 
-    async def test_start_attempt_archived_template(
+    async def test_start_attempt_deleted_template(
         self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
     ):
         tpl, assignment = await self._setup_assignment(client, owner_headers, org, employee_member)
-        await client.patch(
-            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/archive",
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
             headers=owner_headers,
-            json={"is_archived": True},
         )
         resp = await client.post(
             f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
             headers=employee_headers,
         )
         assert resp.status_code == 400
-        assert _err(resp) == "TEST_TEMPLATE_ARCHIVED"
+        assert _err(resp) == "TEST_TEMPLATE_DELETED"
 
     async def test_other_user_cannot_see_assignment(
         self, client: AsyncClient, owner_headers, emp2_headers, org, employee_member, emp2_member

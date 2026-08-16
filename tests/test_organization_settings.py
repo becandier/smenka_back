@@ -239,7 +239,7 @@ class TestUpdateSettings:
         assert resp.status_code == 200
         assert resp.json()["data"]["require_schedule"] is True
 
-    async def test_cannot_require_schedule_with_only_archived_schedule(
+    async def test_cannot_require_schedule_with_only_paused_schedule(
         self,
         client: AsyncClient,
         auth_headers: dict,
@@ -254,7 +254,7 @@ class TestUpdateSettings:
         await client.patch(
             f"/api/v1/organizations/{organization.id}/work-schedules/{schedule_id}",
             headers=auth_headers,
-            json={"is_archived": True},
+            json={"is_paused": True},
         )
 
         resp = await client.patch(

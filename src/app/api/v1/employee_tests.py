@@ -27,13 +27,13 @@ from src.app.schemas.employee_test import (
     MemberSummary,
     TemplateAssignmentsResponse,
     TemplateSummaryRef,
-    TestArchiveUpdate,
     TestAssignmentListResponse,
     TestAssignmentOut,
     TestAttemptReview,
     TestQuestionOptionOut,
     TestQuestionOut,
     TestTemplateCreate,
+    TestTemplateDeletedResponse,
     TestTemplateDetail,
     TestTemplateListResponse,
     TestTemplateSummary,
@@ -93,7 +93,8 @@ def _template_to_detail(template: TestTemplate) -> TestTemplateDetail:
         max_attempts=template.max_attempts,
         reveal_answers=template.reveal_answers,
         shuffle_questions=template.shuffle_questions,
-        is_archived=template.is_archived,
+        is_deleted=template.is_deleted,
+        deleted_at=template.deleted_at,
         question_count=len(questions),
         total_points=sum(q.points for q in questions),
         created_at=template.created_at,
@@ -115,7 +116,8 @@ def _template_to_summary(
         total_points=total_points,
         max_attempts=template.max_attempts,
         pass_threshold_percent=template.pass_threshold_percent,
-        is_archived=template.is_archived,
+        is_deleted=template.is_deleted,
+        deleted_at=template.deleted_at,
         assignments_count=assignments_count,
         created_at=template.created_at,
     )
@@ -316,7 +318,9 @@ async def validate_template(
 @router.get(
     "/test-templates",
     summary="Список шаблонов тестов",
-    description="Owner/admin. По умолчанию все (архивные и активные); фильтр archived опционален.",
+    description=(
+        "Owner/admin. По умолчанию удалённые скрыты; include_deleted=true — показать и их."
+    ),
 )
 async def list_templates(
     org_id: uuid.UUID,
@@ -324,10 +328,10 @@ async def list_templates(
     session: SessionDep,
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
-    archived: bool | None = Query(None, description="Фильтр по архивности"),
+    include_deleted: bool = Query(False, description="Включить удалённые шаблоны"),
 ) -> ApiResponse:
     items, total = await test_service.list_templates(
-        session, org_id, user.id, limit=limit, offset=offset, archived=archived
+        session, org_id, user.id, limit=limit, offset=offset, include_deleted=include_deleted
     )
     return ApiResponse.success(
         TestTemplateListResponse(
@@ -379,20 +383,38 @@ async def update_template(
     return ApiResponse.success(_template_to_detail(template).model_dump(mode="json"))
 
 
-@router.patch(
-    "/test-templates/{template_id}/archive",
-    summary="Архивировать/разархивировать шаблон",
+@router.delete(
+    "/test-templates/{template_id}",
+    summary="Удалить шаблон теста",
+    description=(
+        "Удаляет шаблон (мягкое удаление). Назначения и попытки сотрудников сохраняются "
+        "и продолжают показываться. Удалённый шаблон нельзя редактировать и нельзя "
+        "назначить. Повторный вызов на уже удалённом — 404."
+    ),
 )
-async def archive_template(
+async def delete_template(
     org_id: uuid.UUID,
     template_id: uuid.UUID,
-    body: TestArchiveUpdate,
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
-    template = await test_service.set_archived(
-        session, org_id, template_id, user.id, body.is_archived
-    )
+    await test_service.delete_template(session, org_id, template_id, user.id)
+    await session.commit()
+    return ApiResponse.success(TestTemplateDeletedResponse(deleted=True).model_dump())
+
+
+@router.post(
+    "/test-templates/{template_id}/restore",
+    summary="Восстановить удалённый шаблон теста",
+    description="Возвращает шаблон в работу. На неудалённом — 409 TEST_TEMPLATE_NOT_DELETED.",
+)
+async def restore_template(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    template = await test_service.restore_template(session, org_id, template_id, user.id)
     await session.commit()
     return ApiResponse.success(_template_to_detail(template).model_dump(mode="json"))
 

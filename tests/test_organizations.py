@@ -3,10 +3,11 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.organization import MemberRole, OrganizationMember
+from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.user import User, UserRole
 
 
@@ -325,7 +326,9 @@ class TestUpdateOrganization:
 
 
 class TestDeleteOrganization:
-    async def test_delete_organization_soft(self, client: AsyncClient, auth_headers):
+    async def test_delete_organization_soft(
+        self, client: AsyncClient, auth_headers, verified_user: User, db_session: AsyncSession
+    ):
         create_resp = await client.post(
             "/api/v1/organizations", headers=auth_headers, json={"name": "To Delete"}
         )
@@ -336,6 +339,15 @@ class TestDeleteOrganization:
 
         list_resp = await client.get("/api/v1/organizations", headers=auth_headers)
         assert len(list_resp.json()["data"]["items"]) == 0
+
+        row = (
+            await db_session.execute(
+                select(Organization).where(Organization.id == uuid.UUID(org_id))
+            )
+        ).scalar_one()
+        assert row.is_deleted is True
+        assert row.deleted_at is not None
+        assert row.deleted_by_user_id == verified_user.id
 
     async def test_delete_organization_not_owner(
         self, client: AsyncClient, auth_headers, db_session: AsyncSession

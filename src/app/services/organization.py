@@ -1,6 +1,7 @@
 import re
 import secrets
 import uuid
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -182,6 +183,8 @@ async def delete_organization(
     org = await get_organization(session, org_id)
     await ensure_owner(session, org, owner_id)
     org.is_deleted = True
+    org.deleted_at = datetime.now(UTC)
+    org.deleted_by_user_id = owner_id
     await session.flush()
     logger.info("organization_deleted", org_id=str(org_id))
 

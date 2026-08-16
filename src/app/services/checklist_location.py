@@ -166,7 +166,7 @@ async def get_location_only_template_ids(
     result = await session.execute(
         select(ChecklistTemplate.id).where(
             ChecklistTemplate.organization_id == org_id,
-            ChecklistTemplate.is_archived.is_(False),
+            ChecklistTemplate.is_deleted.is_(False),
             has_location,
             ~has_role,
         )

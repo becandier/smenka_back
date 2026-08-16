@@ -73,6 +73,8 @@ class AdjustmentResponse(BaseModel):
     occurred_at: datetime = Field(description="Дата/момент начисления (UTC)")
     created_by_user_id: str = Field(description="UUID назначившего (owner/admin)")
     created_by_name: str = Field(description="Имя назначившего")
+    is_deleted: bool = Field(description="Начисление отменено (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент отмены или null")
     created_at: datetime = Field(description="Момент создания")
 
 

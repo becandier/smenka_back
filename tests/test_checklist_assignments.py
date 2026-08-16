@@ -398,7 +398,7 @@ class TestEffectiveTemplates:
         ids = {item["id"] for item in resp.json()["data"]["items"]}
         assert ids == {tpl_a}
 
-    async def test_archived_filtered(
+    async def test_deleted_filtered(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_roles_and_member(

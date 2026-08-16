@@ -67,6 +67,8 @@ async def _build_adjustment_payloads(
                 occurred_at=a.occurred_at,
                 created_by_user_id=str(a.created_by_user_id),
                 created_by_name=name_by_user.get(a.created_by_user_id, "Unknown"),
+                is_deleted=a.is_deleted,
+                deleted_at=a.deleted_at,
                 created_at=a.created_at,
             )
         )
@@ -139,6 +141,7 @@ async def list_adjustments(
     date_to: dt_datetime | None = Query(
         None, description="Верхняя граница по occurred_at, включительно (UTC)"
     ),
+    include_deleted: bool = Query(False, description="Включить отменённые начисления"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
@@ -150,6 +153,7 @@ async def list_adjustments(
         shift_id=shift_id,
         date_from=date_from,
         date_to=date_to,
+        include_deleted=include_deleted,
         limit=limit,
         offset=offset,
     )
@@ -202,6 +206,28 @@ async def delete_adjustment(
     await adjustment_service.delete_adjustment(session, org_id, adjustment_id, user.id)
     await session.commit()
     return ApiResponse.success(AdjustmentDeletedResponse(deleted=True).model_dump())
+
+
+@router.post(
+    "/adjustments/{adjustment_id}/restore",
+    summary="Восстановить начисление",
+    description=(
+        "Возвращает отменённое начисление в силу. На неотменённом — 409 "
+        "ADJUSTMENT_NOT_DELETED. Owner/admin."
+    ),
+)
+async def restore_adjustment(
+    org_id: uuid.UUID,
+    adjustment_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    adjustment = await adjustment_service.restore_adjustment(
+        session, org_id, adjustment_id, user.id
+    )
+    await session.commit()
+    payloads = await _build_adjustment_payloads(session, [adjustment])
+    return ApiResponse.success(payloads[0].model_dump(mode="json"))
 
 
 @router.get(

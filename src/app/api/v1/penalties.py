@@ -35,6 +35,8 @@ def _template_to_response(template: OrganizationPenaltyTemplate) -> PenaltyTempl
         reason=template.reason,
         amount_minor=template.amount_minor,
         currency=template.currency,
+        is_deleted=template.is_deleted,
+        deleted_at=template.deleted_at,
         created_at=template.created_at,
         updated_at=template.updated_at,
     )
@@ -81,6 +83,8 @@ async def _build_penalty_payloads(
                 occurred_at=p.occurred_at,
                 comment=p.comment,
                 created_by_user_id=str(p.created_by_user_id),
+                is_deleted=p.is_deleted,
+                deleted_at=p.deleted_at,
                 created_at=p.created_at,
                 updated_at=p.updated_at,
             )
@@ -129,14 +133,20 @@ async def create_penalty_template(
 @router.get(
     "/penalty-templates",
     summary="Список шаблонов штрафов",
-    description="Активные шаблоны организации, created_at DESC. Owner/admin (и выбор в мобилке).",
+    description=(
+        "Шаблоны организации, created_at DESC. По умолчанию удалённые скрыты. "
+        "Owner/admin (и выбор в мобилке)."
+    ),
 )
 async def list_penalty_templates(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    include_deleted: bool = Query(False, description="Включить удалённые шаблоны"),
 ) -> ApiResponse:
-    templates = await penalty_service.list_templates(session, org_id, user.id)
+    templates = await penalty_service.list_templates(
+        session, org_id, user.id, include_deleted=include_deleted
+    )
     return ApiResponse.success(
         PenaltyTemplateListResponse(
             items=[_template_to_response(t) for t in templates],
@@ -183,6 +193,23 @@ async def delete_penalty_template(
     return ApiResponse.success(PenaltyTemplateDeletedResponse(deleted=True).model_dump())
 
 
+@router.post(
+    "/penalty-templates/{template_id}/restore",
+    summary="Восстановить шаблон штрафа",
+    description="Возвращает шаблон в список выбора. На неудалённом — 409 "
+    "PENALTY_TEMPLATE_NOT_DELETED. Owner/admin.",
+)
+async def restore_penalty_template(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    template = await penalty_service.restore_template(session, org_id, template_id, user.id)
+    await session.commit()
+    return ApiResponse.success(_template_to_response(template).model_dump(mode="json"))
+
+
 # --- Штрафы ------------------------------------------------------------------
 @router.post(
     "/penalties",
@@ -222,8 +249,7 @@ async def create_penalty(
     "/penalties",
     summary="Список штрафов организации",
     description=(
-        "Активные штрафы под фильтром (member_id/shift_id/период), "
-        "occurred_at DESC. Owner/admin."
+        "Активные штрафы под фильтром (member_id/shift_id/период), occurred_at DESC. Owner/admin."
     ),
 )
 async def list_penalties(
@@ -238,6 +264,7 @@ async def list_penalties(
     date_to: dt_datetime | None = Query(
         None, description="Верхняя граница по occurred_at, включительно (UTC)"
     ),
+    include_deleted: bool = Query(False, description="Включить снятые штрафы"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
@@ -249,6 +276,7 @@ async def list_penalties(
         shift_id=shift_id,
         date_from=date_from,
         date_to=date_to,
+        include_deleted=include_deleted,
         limit=limit,
         offset=offset,
     )
@@ -320,6 +348,25 @@ async def delete_penalty(
     await penalty_service.delete_penalty(session, org_id, penalty_id, user.id)
     await session.commit()
     return ApiResponse.success(PenaltyDeletedResponse(deleted=True).model_dump())
+
+
+@router.post(
+    "/penalties/{penalty_id}/restore",
+    summary="Восстановить штраф",
+    description=(
+        "Возвращает снятый штраф в силу. На неснятом — 409 PENALTY_NOT_DELETED. Owner/admin."
+    ),
+)
+async def restore_penalty(
+    org_id: uuid.UUID,
+    penalty_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    penalty = await penalty_service.restore_penalty(session, org_id, penalty_id, user.id)
+    await session.commit()
+    payloads = await _build_penalty_payloads(session, [penalty])
+    return ApiResponse.success(payloads[0].model_dump(mode="json"))
 
 
 # --- Сотрудник ---------------------------------------------------------------

@@ -50,7 +50,7 @@ def _schedule_to_response(
         end_time=_format_hhmm(schedule.end_time),
         duration_minutes=schedule.duration_minutes,
         crosses_midnight=schedule.crosses_midnight,
-        is_archived=schedule.is_archived,
+        is_paused=schedule.is_paused,
         role_ids=[str(r) for r in role_ids],
         work_location_ids=[str(loc) for loc in location_ids],
         created_at=schedule.created_at,
@@ -69,7 +69,7 @@ def _member_info(member: OrganizationMember) -> dict[str, str]:
 def _schedule_base_fields(schedule: WorkSchedule) -> dict[str, Any]:
     """Общие поля графика (id/имя/время/длительность), переиспользуются
     эффективными наборами (`get_member_schedules`/`get_my_schedules`), которым
-    не нужны `is_archived`/`role_ids`/`work_location_ids` из `_schedule_to_response`."""
+    не нужны `is_paused`/`role_ids`/`work_location_ids` из `_schedule_to_response`."""
     return {
         "id": str(schedule.id),
         "name": schedule.name,
@@ -118,11 +118,9 @@ async def list_schedules(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    include_archived: bool = Query(False, description="Включить архивные графики"),
+    include_paused: bool = Query(False, description="Включить приостановленные графики"),
 ) -> ApiResponse:
-    rows = await ws_service.list_schedules(
-        session, org_id, user.id, include_archived=include_archived
-    )
+    rows = await ws_service.list_schedules(session, org_id, user.id, include_paused=include_paused)
     return ApiResponse.success(
         WorkScheduleListResponse(
             items=[_schedule_to_response(s, role_ids, loc_ids) for s, role_ids, loc_ids in rows],
@@ -170,7 +168,7 @@ async def update_schedule(
         name=fields.get("name"),
         start_time=_parse_hhmm(fields["start_time"]) if "start_time" in fields else None,
         end_time=_parse_hhmm(fields["end_time"]) if "end_time" in fields else None,
-        is_archived=fields.get("is_archived"),
+        is_paused=fields.get("is_paused"),
     )
     await session.commit()
     role_ids = (await ws_service.get_role_ids_for_schedules(session, [schedule.id])).get(
@@ -315,7 +313,7 @@ async def get_member_schedules(
     return ApiResponse.success(
         EffectiveSchedulesResponse(
             items=[
-                {**_schedule_base_fields(s), "is_archived": s.is_archived, "source": source}
+                {**_schedule_base_fields(s), "is_paused": s.is_paused, "source": source}
                 for s, source in pairs
             ],
         ).model_dump(mode="json")

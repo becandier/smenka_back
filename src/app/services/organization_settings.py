@@ -65,7 +65,7 @@ async def _count_active_schedules(session: AsyncSession, org_id: uuid.UUID) -> i
         .select_from(WorkSchedule)
         .where(
             WorkSchedule.organization_id == org_id,
-            WorkSchedule.is_archived.is_(False),
+            WorkSchedule.is_paused.is_(False),
         )
     )
     return result.scalar_one()
@@ -106,7 +106,7 @@ async def update_settings(
     ):
         raise OrgError(
             "SCHEDULE_REQUIRED_NO_SCHEDULES",
-            "Нельзя требовать график: у организации нет ни одного неархивного графика",
+            "Нельзя требовать график: у организации нет ни одного активного графика",
             409,
         )
 

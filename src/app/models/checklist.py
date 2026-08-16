@@ -76,7 +76,16 @@ class ChecklistTemplate(Base):
     type: Mapped[ChecklistType] = mapped_column(Enum(ChecklistType))
     is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     max_per_shift: Mapped[int] = mapped_column(Integer, default=1)
-    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    deleted_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

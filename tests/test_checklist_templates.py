@@ -75,7 +75,7 @@ class TestCreateTemplate:
         assert data["type"] == "shift_start"
         assert data["is_required"] is True
         assert data["items_count"] == 0
-        assert data["is_archived"] is False
+        assert data["is_deleted"] is False
 
     async def test_invalid_type(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
@@ -120,7 +120,7 @@ class TestListTemplates:
         assert response.status_code == 200
         assert response.json()["data"]["items"] == []
 
-    async def test_archived_hidden_by_default(self, client: AsyncClient, super_admin_headers):
+    async def test_deleted_hidden_by_default(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         await client.delete(
@@ -133,7 +133,7 @@ class TestListTemplates:
         )
         assert response.json()["data"]["items"] == []
 
-    async def test_include_archived(self, client: AsyncClient, super_admin_headers):
+    async def test_include_deleted(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         await client.delete(
@@ -141,12 +141,12 @@ class TestListTemplates:
             headers=super_admin_headers,
         )
         response = await client.get(
-            f"/api/v1/organizations/{org_id}/checklist-templates?include_archived=true",
+            f"/api/v1/organizations/{org_id}/checklist-templates?include_deleted=true",
             headers=super_admin_headers,
         )
         items = response.json()["data"]["items"]
         assert len(items) == 1
-        assert items[0]["is_archived"] is True
+        assert items[0]["is_deleted"] is True
 
     async def test_items_count(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
@@ -200,7 +200,7 @@ class TestUpdateTemplate:
 
 
 class TestDeleteTemplate:
-    async def test_archive(self, client: AsyncClient, super_admin_headers):
+    async def test_delete_soft(self, client: AsyncClient, super_admin_headers):
         org_id = await _make_org(client, super_admin_headers)
         tpl_id = await _make_template(client, super_admin_headers, org_id)
         response = await client.delete(
@@ -208,6 +208,76 @@ class TestDeleteTemplate:
             headers=super_admin_headers,
         )
         assert response.status_code == 200
+        assert response.json()["data"]["deleted"] is True
+
+    async def test_delete_twice_returns_404(self, client: AsyncClient, super_admin_headers):
+        org_id = await _make_org(client, super_admin_headers)
+        tpl_id = await _make_template(client, super_admin_headers, org_id)
+        await client.delete(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{tpl_id}",
+            headers=super_admin_headers,
+        )
+        response = await client.delete(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{tpl_id}",
+            headers=super_admin_headers,
+        )
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "TEMPLATE_NOT_FOUND"
+
+
+class TestRestoreTemplate:
+    async def test_full_cycle(self, client: AsyncClient, super_admin_headers):
+        org_id = await _make_org(client, super_admin_headers)
+        tpl_id = await _make_template(client, super_admin_headers, org_id)
+
+        await client.delete(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{tpl_id}",
+            headers=super_admin_headers,
+        )
+        listed = await client.get(
+            f"/api/v1/organizations/{org_id}/checklist-templates",
+            headers=super_admin_headers,
+        )
+        assert listed.json()["data"]["items"] == []
+
+        included = await client.get(
+            f"/api/v1/organizations/{org_id}/checklist-templates?include_deleted=true",
+            headers=super_admin_headers,
+        )
+        assert included.json()["data"]["items"][0]["is_deleted"] is True
+
+        response = await client.post(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{tpl_id}/restore",
+            headers=super_admin_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["is_deleted"] is False
+        assert data["deleted_at"] is None
+
+        listed_after = await client.get(
+            f"/api/v1/organizations/{org_id}/checklist-templates",
+            headers=super_admin_headers,
+        )
+        assert len(listed_after.json()["data"]["items"]) == 1
+
+    async def test_restore_not_deleted_returns_409(self, client: AsyncClient, super_admin_headers):
+        org_id = await _make_org(client, super_admin_headers)
+        tpl_id = await _make_template(client, super_admin_headers, org_id)
+        response = await client.post(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{tpl_id}/restore",
+            headers=super_admin_headers,
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "TEMPLATE_NOT_DELETED"
+
+    async def test_restore_not_found(self, client: AsyncClient, super_admin_headers):
+        org_id = await _make_org(client, super_admin_headers)
+        response = await client.post(
+            f"/api/v1/organizations/{org_id}/checklist-templates/{uuid.uuid4()}/restore",
+            headers=super_admin_headers,
+        )
+        assert response.status_code == 404
 
 
 class TestItems:

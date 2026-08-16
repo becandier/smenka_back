@@ -46,10 +46,6 @@ class TestTemplateUpdate(BaseModel):
     questions: list[TestQuestionIn] | None = Field(default=None)
 
 
-class TestArchiveUpdate(BaseModel):
-    is_archived: bool
-
-
 class TestValidateResponse(BaseModel):
     valid: bool = True
     question_count: int
@@ -81,7 +77,8 @@ class TestTemplateDetail(BaseModel):
     max_attempts: int
     reveal_answers: bool
     shuffle_questions: bool
-    is_archived: bool
+    is_deleted: bool = Field(description="Тест удалён (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     question_count: int
     total_points: int
     created_at: datetime
@@ -96,7 +93,8 @@ class TestTemplateSummary(BaseModel):
     total_points: int
     max_attempts: int
     pass_threshold_percent: int
-    is_archived: bool
+    is_deleted: bool = Field(description="Тест удалён (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     assignments_count: int
     created_at: datetime
 
@@ -106,6 +104,10 @@ class TestTemplateListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class TestTemplateDeletedResponse(BaseModel):
+    deleted: bool = Field(description="Шаблон теста удалён (мягкое удаление)")
 
 
 # --- Назначения -----------------------------------------------------------------
