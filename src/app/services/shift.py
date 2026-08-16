@@ -983,6 +983,8 @@ async def get_org_shift_detail(
     session: AsyncSession,
     organization_id: uuid.UUID,
     shift_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
 ) -> Shift:
     """Load a single org shift (with pauses) for owner/admin review.
 
@@ -990,15 +992,19 @@ async def get_org_shift_detail(
     смена (персональная `organization_id=null` или смена другой org) трактуется
     как отсутствующая — `SHIFT_NOT_FOUND`, чтобы не раскрывать существование
     чужих/персональных смен.
+
+    `include_deleted` (manual_time_entry, A5) — симметрично `get_org_shifts`:
+    при `True` отдаёт и soft-deleted смену (нужно для карточки «Восстановить»
+    в списке с `include_deleted=true`), при `False` (по умолчанию) поведение
+    прежнее — удалённая смена трактуется как отсутствующая.
     """
+    conditions = [Shift.id == shift_id, Shift.organization_id == organization_id]
+    if not include_deleted:
+        conditions.append(Shift.is_deleted.is_(False))
     result = await session.execute(
         select(Shift)
         .options(selectinload(Shift.pauses), selectinload(Shift.work_location))
-        .where(
-            Shift.id == shift_id,
-            Shift.organization_id == organization_id,
-            Shift.is_deleted.is_(False),
-        )
+        .where(*conditions)
     )
     shift = result.scalar_one_or_none()
     if shift is None:
