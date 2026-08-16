@@ -295,6 +295,27 @@ async def start_shift(
     )
 
 
+@router.get(
+    "/{shift_id}",
+    summary="Деталь своей смены",
+    description="Деталь собственной смены текущего пользователя по id — персональной "
+    "(`organization_id=null`) или организационной, где пользователь является её владельцем. "
+    "Объявлен ПОСЛЕ статических `/stats` и `/start`, иначе перехватил бы их как shift_id. "
+    "Чужая, несуществующая или удалённая (soft-delete) смена — `404 SHIFT_NOT_FOUND` "
+    "(существование чужих смен не раскрывается).",
+)
+async def get_shift(
+    shift_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    shift = await shift_service.get_own_shift_detail(session, shift_id, user.id)
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    return ApiResponse.success(
+        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+    )
+
+
 @router.post(
     "/{shift_id}/pause",
     summary="Поставить на паузу",
