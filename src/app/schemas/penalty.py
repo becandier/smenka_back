@@ -30,6 +30,8 @@ class PenaltyTemplateResponse(BaseModel):
     reason: str = Field(description="Причина/название")
     amount_minor: int = Field(description="Сумма в копейках")
     currency: str = Field(description="Валюта")
+    is_deleted: bool = Field(description="Шаблон удалён (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     created_at: datetime = Field(description="Момент создания")
     updated_at: datetime = Field(description="Момент последнего изменения")
 
@@ -101,6 +103,8 @@ class PenaltyResponse(BaseModel):
     occurred_at: datetime = Field(description="Дата/момент штрафа (UTC)")
     comment: str | None = Field(default=None, description="Доп. комментарий или null")
     created_by_user_id: str = Field(description="UUID назначившего (admin/owner)")
+    is_deleted: bool = Field(description="Штраф снят (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент снятия или null")
     created_at: datetime = Field(description="Момент создания")
     updated_at: datetime = Field(description="Момент последнего изменения")
 

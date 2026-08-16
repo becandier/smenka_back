@@ -173,7 +173,7 @@ async def _set_member_override(
     assert resp.status_code == 200, resp.text
 
 
-async def _archive_template(
+async def _delete_template(
     client: AsyncClient,
     headers: dict[str, str],
     org_id: str,
@@ -386,7 +386,7 @@ class TestInstanceCreationLocationFilter:
         names = await _shift_checklist_names(client, ctx["member_headers"], shift_id)
         assert names == {"T1"}
 
-    async def test_9_archived_template_bound_to_location_not_created(
+    async def test_9_deleted_template_bound_to_location_not_created(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup_org_with_member(client, db_session, super_admin_headers)
@@ -400,7 +400,7 @@ class TestInstanceCreationLocationFilter:
         await _assign_role_to_member(
             client, super_admin_headers, ctx["org_id"], str(ctx["member_user"].id), role_id
         )
-        await _archive_template(client, super_admin_headers, ctx["org_id"], tpl)
+        await _delete_template(client, super_admin_headers, ctx["org_id"], tpl)
 
         shift_id = await _start_shift(client, ctx["member_headers"], ctx["org_id"], loc_a)
         names = await _shift_checklist_names(client, ctx["member_headers"], shift_id)
@@ -530,17 +530,17 @@ class TestLocationTemplatesApi:
         assert resp.status_code == 403
         assert resp.json()["error"]["code"] == "FORBIDDEN"
 
-    async def test_get_includes_archived_with_flag(
+    async def test_get_includes_deleted_with_flag(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
-        """Архивные шаблоны включаются в выдачу — привязка видна админу."""
+        """Удалённые шаблоны включаются в выдачу — привязка видна админу."""
         ctx = await _setup_org_with_member(client, db_session, super_admin_headers)
         loc_a = await _make_location(client, super_admin_headers, ctx["org_id"], "A")
         tpl = await _make_template(client, super_admin_headers, ctx["org_id"], name="T1")
         await _assign_template_to_locations(
             client, super_admin_headers, ctx["org_id"], tpl, [loc_a]
         )
-        await _archive_template(client, super_admin_headers, ctx["org_id"], tpl)
+        await _delete_template(client, super_admin_headers, ctx["org_id"], tpl)
 
         resp = await client.get(
             f"/api/v1/organizations/{ctx['org_id']}/locations/{loc_a}/checklist-templates",
@@ -550,7 +550,7 @@ class TestLocationTemplatesApi:
         items = resp.json()["data"]["items"]
         assert len(items) == 1
         assert items[0]["id"] == tpl
-        assert items[0]["is_archived"] is True
+        assert items[0]["is_deleted"] is True
 
     async def test_written_from_location_side_visible_from_template_side(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
@@ -600,13 +600,13 @@ class TestLocationDeletionCascade:
         )
         assert assignments.json()["data"]["location_ids"] == []
 
-        # Шаблон остаётся (не архивирован, не удалён).
+        # Шаблон остаётся (не удалён).
         detail = await client.get(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl}",
             headers=super_admin_headers,
         )
         assert detail.status_code == 200
-        assert detail.json()["data"]["is_archived"] is False
+        assert detail.json()["data"]["is_deleted"] is False
 
         # Побочный эффект (принят как есть, backend.md): шаблон без привязок
         # снова действует на всех точках — роль не нужна, канал location-only

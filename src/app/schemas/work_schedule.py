@@ -19,7 +19,9 @@ class WorkScheduleUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     start_time: str | None = Field(default=None, pattern=_HHMM_PATTERN)
     end_time: str | None = Field(default=None, pattern=_HHMM_PATTERN)
-    is_archived: bool | None = Field(default=None, description="Архивный график не выдаётся")
+    is_paused: bool | None = Field(
+        default=None, description="Приостановленный график не выдаётся при старте новых смен"
+    )
 
 
 class WorkScheduleResponse(BaseModel):
@@ -29,7 +31,7 @@ class WorkScheduleResponse(BaseModel):
     end_time: str = Field(description="HH:MM, локальное время организации")
     duration_minutes: int = Field(description="Длительность графика в минутах")
     crosses_midnight: bool = Field(description="Ночной график, переходящий через полночь")
-    is_archived: bool
+    is_paused: bool = Field(description="Приостановлен — не выдаётся при старте новых смен")
     role_ids: list[str] = Field(default_factory=list, description="Роли, которым назначен")
     work_location_ids: list[str] = Field(
         default_factory=list, description="Точки, к которым привязан"
@@ -91,7 +93,7 @@ class EffectiveScheduleResponse(BaseModel):
     end_time: str
     duration_minutes: int
     crosses_midnight: bool
-    is_archived: bool
+    is_paused: bool
     source: str = Field(description="global | location | role | personal_add")
 
 

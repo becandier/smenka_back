@@ -344,14 +344,14 @@ class TestEffectiveSchedulesResolution:
         source_by_id = {s.id: src for s, src in pairs}
         assert source_by_id[add_only_schedule.id] == "personal_add"
 
-    async def test_archived_schedule_excluded(self, db_session: AsyncSession):
+    async def test_paused_schedule_excluded(self, db_session: AsyncSession):
         org, member = await self._make_org_member(db_session)
         schedule = WorkSchedule(
             organization_id=org.id,
-            name="Архивный",
+            name="Приостановленный",
             start_time=time(9, 0),
             end_time=time(18, 0),
-            is_archived=True,
+            is_paused=True,
         )
         db_session.add(schedule)
         await db_session.commit()
@@ -372,7 +372,7 @@ class TestScheduleCrud:
         assert schedule["end_time"] == "18:00"
         assert schedule["duration_minutes"] == 540
         assert schedule["crosses_midnight"] is False
-        assert schedule["is_archived"] is False
+        assert schedule["is_paused"] is False
 
         get_resp = await client.get(
             f"/api/v1/organizations/{org_id}/work-schedules/{schedule['id']}",
@@ -432,26 +432,39 @@ class TestScheduleCrud:
         assert shift.scheduled_start_at == datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
         assert shift.scheduled_end_at == datetime(2026, 7, 20, 15, 0, tzinfo=UTC)
 
-    async def test_list_include_archived(self, client: AsyncClient, super_admin_headers):
+    async def test_list_include_paused(self, client: AsyncClient, super_admin_headers):
         org_id = await _create_org(client, super_admin_headers)
         schedule = await _create_schedule(client, super_admin_headers, org_id)
-        await client.patch(
+        patch_resp = await client.patch(
             f"/api/v1/organizations/{org_id}/work-schedules/{schedule['id']}",
             headers=super_admin_headers,
-            json={"is_archived": True},
+            json={"is_paused": True},
         )
+        assert patch_resp.json()["data"]["is_paused"] is True
 
         default_resp = await client.get(
             f"/api/v1/organizations/{org_id}/work-schedules", headers=super_admin_headers
         )
         assert default_resp.json()["data"]["total"] == 0
 
-        with_archived_resp = await client.get(
+        with_paused_resp = await client.get(
             f"/api/v1/organizations/{org_id}/work-schedules",
             headers=super_admin_headers,
-            params={"include_archived": "true"},
+            params={"include_paused": "true"},
         )
-        assert with_archived_resp.json()["data"]["total"] == 1
+        assert with_paused_resp.json()["data"]["total"] == 1
+        assert with_paused_resp.json()["data"]["items"][0]["is_paused"] is True
+
+        unpaused_resp = await client.patch(
+            f"/api/v1/organizations/{org_id}/work-schedules/{schedule['id']}",
+            headers=super_admin_headers,
+            json={"is_paused": False},
+        )
+        assert unpaused_resp.json()["data"]["is_paused"] is False
+        default_resp_again = await client.get(
+            f"/api/v1/organizations/{org_id}/work-schedules", headers=super_admin_headers
+        )
+        assert default_resp_again.json()["data"]["total"] == 1
 
     async def test_delete_schedule_shift_keeps_snapshot(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession

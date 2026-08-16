@@ -139,7 +139,7 @@ class TestListOverrides:
         assert by_tpl[t_rem]["type"] == "remove"
         assert by_tpl[t_rem]["template_type"] == "shift_end"
 
-    async def test_includes_overrides_of_archived_templates(
+    async def test_includes_overrides_of_deleted_templates(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
@@ -275,7 +275,7 @@ class TestUpsertOverride:
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "MEMBER_NOT_FOUND"
 
-    async def test_archived_template_rejected(
+    async def test_deleted_template_rejected(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
@@ -352,7 +352,7 @@ class TestDeleteOverride:
         )
         assert resp.status_code == 200
 
-    async def test_delete_on_archived_allowed(
+    async def test_delete_on_deleted_template_allowed(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
         ctx = await _setup(client, db_session, super_admin_headers)

@@ -77,6 +77,7 @@ def _org_to_response(
         owner_id=str(org.owner_id),
         invite_code=org.invite_code,
         is_deleted=org.is_deleted,
+        deleted_at=org.deleted_at,
         geo_check_enabled=geo_check,
         require_work_location=require_work_location,
         timezone=org.timezone,

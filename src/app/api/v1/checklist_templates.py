@@ -9,6 +9,7 @@ from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import (
     ItemsReorderRequest,
     TemplateCreate,
+    TemplateDeletedResponse,
     TemplateDetailResponse,
     TemplateItemCreate,
     TemplateItemResponse,
@@ -32,7 +33,8 @@ def _template_to_response(template: ChecklistTemplate, items_count: int) -> dict
         type=template.type.value,
         is_required=template.is_required,
         items_count=items_count,
-        is_archived=template.is_archived,
+        is_deleted=template.is_deleted,
+        deleted_at=template.deleted_at,
         created_at=template.created_at,
         updated_at=template.updated_at,
     ).model_dump(mode="json")
@@ -55,7 +57,8 @@ def _template_detail_to_response(template: ChecklistTemplate) -> dict[str, Any]:
         name=template.name,
         type=template.type.value,
         is_required=template.is_required,
-        is_archived=template.is_archived,
+        is_deleted=template.is_deleted,
+        deleted_at=template.deleted_at,
         created_at=template.created_at,
         updated_at=template.updated_at,
         items=[_item_to_response(it) for it in sorted(template.items, key=lambda x: x.position)],
@@ -90,20 +93,20 @@ async def create_template(
     "",
     summary="Список шаблонов",
     description=(
-        "Список шаблонов организации. По умолчанию архивные скрыты. Доступно владельцу и админам."
+        "Список шаблонов организации. По умолчанию удалённые скрыты. Доступно владельцу и админам."
     ),
 )
 async def list_templates(
     org_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    include_archived: bool = Query(False, description="Включить архивные шаблоны"),
+    include_deleted: bool = Query(False, description="Включить удалённые шаблоны"),
 ) -> ApiResponse:
     templates = await tpl_service.get_templates(
         session,
         org_id,
         user.id,
-        include_archived=include_archived,
+        include_deleted=include_deleted,
     )
     return ApiResponse.success(
         TemplateListResponse(
@@ -161,11 +164,11 @@ async def update_template(
 
 @router.delete(
     "/{template_id}",
-    summary="Архивировать шаблон",
+    summary="Удалить шаблон",
     description=(
-        "Помечает шаблон как архивный (is_archived=true). Для назначения новым "
-        "сменам шаблон больше не используется. Существующие экземпляры в активных "
-        "сменах сохраняются."
+        "Удаляет шаблон (мягкое удаление). Экземпляры в существующих сменах "
+        "сохраняются. Для назначения новым сменам шаблон больше не используется. "
+        "Повторный вызов на уже удалённом шаблоне — 404."
     ),
 )
 async def delete_template(
@@ -176,7 +179,25 @@ async def delete_template(
 ) -> ApiResponse:
     await tpl_service.delete_template(session, org_id, template_id, user.id)
     await session.commit()
-    return ApiResponse.success({"message": "Шаблон архивирован"})
+    return ApiResponse.success(TemplateDeletedResponse(deleted=True).model_dump())
+
+
+@router.post(
+    "/{template_id}/restore",
+    summary="Восстановить удалённый шаблон",
+    description="Возвращает шаблон в работу. На неудалённом шаблоне — 409 TEMPLATE_NOT_DELETED.",
+)
+async def restore_template(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    template, items_count = await tpl_service.restore_template(
+        session, org_id, template_id, user.id
+    )
+    await session.commit()
+    return ApiResponse.success(_template_to_response(template, items_count))
 
 
 @router.post(

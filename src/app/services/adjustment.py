@@ -64,15 +64,18 @@ async def _get_adjustment(
     session: AsyncSession,
     org_id: uuid.UUID,
     adjustment_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
 ) -> PayrollAdjustment:
-    """Активное начисление организации; отменённое/чужое → ADJUSTMENT_NOT_FOUND."""
-    result = await session.execute(
-        select(PayrollAdjustment).where(
-            PayrollAdjustment.id == adjustment_id,
-            PayrollAdjustment.organization_id == org_id,
-            PayrollAdjustment.is_deleted.is_(False),
-        )
-    )
+    """Начисление организации; по умолчанию только активное — отменённое/чужое →
+    ADJUSTMENT_NOT_FOUND. `include_deleted=True` — для restore."""
+    conditions = [
+        PayrollAdjustment.id == adjustment_id,
+        PayrollAdjustment.organization_id == org_id,
+    ]
+    if not include_deleted:
+        conditions.append(PayrollAdjustment.is_deleted.is_(False))
+    result = await session.execute(select(PayrollAdjustment).where(*conditions))
     adjustment = result.scalar_one_or_none()
     if adjustment is None:
         raise AdjustmentError("ADJUSTMENT_NOT_FOUND", "Начисление не найдено", 404)
@@ -112,6 +115,7 @@ async def _notify_adjustment_changed(
         "created": "Вам начислена корректировка зарплаты",
         "updated": "Ваша корректировка зарплаты изменена",
         "deleted": "Ваша корректировка зарплаты отменена",
+        "restored": "Ваша корректировка зарплаты восстановлена",
     }[action]
     await notification_service.create_notification(
         session,
@@ -221,6 +225,7 @@ async def list_adjustments(
     shift_id: uuid.UUID | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    include_deleted: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[PayrollAdjustment], int]:
@@ -229,10 +234,9 @@ async def list_adjustments(
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
 
     validate_date_range(date_from, date_to)
-    conditions = [
-        PayrollAdjustment.organization_id == org_id,
-        PayrollAdjustment.is_deleted.is_(False),
-    ]
+    conditions = [PayrollAdjustment.organization_id == org_id]
+    if not include_deleted:
+        conditions.append(PayrollAdjustment.is_deleted.is_(False))
     if member_id is not None:
         conditions.append(PayrollAdjustment.member_id == member_id)
     if shift_id is not None:
@@ -339,7 +343,7 @@ async def delete_adjustment(
     adjustment_id: uuid.UUID,
     requester_id: uuid.UUID,
 ) -> None:
-    """Отменить начисление (soft-delete)."""
+    """Отменить начисление (soft-delete). Повторный вызов на уже отменённом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
     adjustment = await _get_adjustment(session, org_id, adjustment_id)
@@ -380,6 +384,53 @@ async def delete_adjustment(
         adjustment_id=str(adjustment_id),
         deleted_by=str(requester_id),
     )
+
+
+async def restore_adjustment(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    adjustment_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> PayrollAdjustment:
+    """Восстановить отменённое начисление. На не-отменённом — 409 ADJUSTMENT_NOT_DELETED."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    adjustment = await _get_adjustment(session, org_id, adjustment_id, include_deleted=True)
+    if not adjustment.is_deleted:
+        raise AdjustmentError("ADJUSTMENT_NOT_DELETED", "Начисление не отменено", 409)
+
+    adjustment.is_deleted = False
+    adjustment.deleted_by_user_id = None
+    adjustment.deleted_at = None
+    await session.flush()
+
+    await audit_service.record(
+        session,
+        action=AuditAction.adjustment_restore,
+        resource_type=AuditResource.adjustment,
+        organization_id=org_id,
+        actor_user_id=requester_id,
+        resource_id=adjustment.id,
+        summary={"restored": True},
+    )
+    member_result = await session.execute(
+        select(OrganizationMember.user_id).where(OrganizationMember.id == adjustment.member_id)
+    )
+    user_id = member_result.scalar_one()
+    await _notify_adjustment_changed(
+        session,
+        org_id=org_id,
+        user_id=user_id,
+        action="restored",
+        adjustment=adjustment,
+    )
+
+    logger.info(
+        "adjustment_restored",
+        org_id=str(org_id),
+        adjustment_id=str(adjustment_id),
+    )
+    return adjustment
 
 
 async def list_my_adjustments(

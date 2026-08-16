@@ -33,7 +33,8 @@ class TemplateResponse(BaseModel):
     type: str
     is_required: bool
     items_count: int = Field(description="Количество пунктов в шаблоне")
-    is_archived: bool
+    is_deleted: bool = Field(description="Шаблон удалён (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     created_at: datetime
     updated_at: datetime
 
@@ -42,6 +43,10 @@ class TemplateResponse(BaseModel):
 
 class TemplateListResponse(BaseModel):
     items: list[TemplateResponse]
+
+
+class TemplateDeletedResponse(BaseModel):
+    deleted: bool = Field(description="Шаблон удалён (мягкое удаление)")
 
 
 class TemplateItemCreate(BaseModel):
@@ -74,7 +79,8 @@ class TemplateDetailResponse(BaseModel):
     name: str
     type: str
     is_required: bool
-    is_archived: bool
+    is_deleted: bool = Field(description="Шаблон удалён (мягкое удаление)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     created_at: datetime
     updated_at: datetime
     items: list[TemplateItemResponse]
@@ -117,8 +123,8 @@ class LocationTemplateResponse(BaseModel):
     name: str
     type: str
     is_required: bool
-    is_archived: bool = Field(
-        description="Архивные включаются в выдачу — админ видит, что привязка существует",
+    is_deleted: bool = Field(
+        description="Удалённые включаются в выдачу — админ видит, что привязка существует",
     )
 
 

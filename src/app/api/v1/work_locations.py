@@ -178,7 +178,7 @@ async def delete_location(
     summary="Чек-листы точки",
     description=(
         "Шаблоны, привязанные к точке (обратный срез к PUT .../locations). "
-        "Архивные включаются в выдачу с is_archived=true — привязка видна, "
+        "Удалённые включаются в выдачу с is_deleted=true — привязка видна, "
         "даже если шаблон больше не используется. Доступно владельцу и админам."
     ),
 )
@@ -202,7 +202,7 @@ async def get_location_checklist_templates(
                     name=t.name,
                     type=t.type.value,
                     is_required=t.is_required,
-                    is_archived=t.is_archived,
+                    is_deleted=t.is_deleted,
                 )
                 for t in templates
             ],

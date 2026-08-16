@@ -552,6 +552,93 @@ async def test_delete_adjustment_twice_404(client, owner_headers, org, employee_
     assert _err(second) == "ADJUSTMENT_NOT_FOUND"
 
 
+async def test_adjustment_include_deleted_and_restore_cycle(
+    client, owner_headers, owner, db_session, org, employee_member, verified_user
+):
+    a = _data(
+        await _create_adjustment(
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            amount_minor=10000,
+            reason="X",
+            occurred_at="2026-06-15T00:00:00Z",
+        )
+    )
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/adjustments/{a['id']}", headers=owner_headers
+    )
+
+    hidden = _data(
+        await client.get(f"/api/v1/organizations/{org.id}/adjustments", headers=owner_headers)
+    )
+    assert hidden["total"] == 0
+
+    shown = _data(
+        await client.get(
+            f"/api/v1/organizations/{org.id}/adjustments",
+            headers=owner_headers,
+            params={"include_deleted": "true"},
+        )
+    )
+    assert shown["total"] == 1
+    assert shown["items"][0]["is_deleted"] is True
+
+    restored = await client.post(
+        f"/api/v1/organizations/{org.id}/adjustments/{a['id']}/restore", headers=owner_headers
+    )
+    assert restored.status_code == 200
+    data = _data(restored)
+    assert data["is_deleted"] is False
+    assert data["deleted_at"] is None
+
+    listed_again = _data(
+        await client.get(f"/api/v1/organizations/{org.id}/adjustments", headers=owner_headers)
+    )
+    assert listed_again["total"] == 1
+
+    audit = (
+        (await db_session.execute(select(AuditLog).where(AuditLog.action == "adjustment.restore")))
+        .scalars()
+        .all()
+    )
+    assert len(audit) == 1
+
+    notif = (
+        (
+            await db_session.execute(
+                select(Notification).where(
+                    Notification.user_id == verified_user.id,
+                    Notification.type == "payroll_adjustment_changed",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert any(n.payload["action"] == "restored" for n in notif)
+
+
+async def test_restore_adjustment_not_deleted_409(client, owner_headers, org, employee_member):
+    a = _data(
+        await _create_adjustment(
+            client,
+            owner_headers,
+            org.id,
+            member_id=str(employee_member.id),
+            amount_minor=10000,
+            reason="X",
+            occurred_at="2026-06-15T00:00:00Z",
+        )
+    )
+    resp = await client.post(
+        f"/api/v1/organizations/{org.id}/adjustments/{a['id']}/restore", headers=owner_headers
+    )
+    assert resp.status_code == 409
+    assert _err(resp) == "ADJUSTMENT_NOT_DELETED"
+
+
 async def test_adjustment_rbac_employee_denied(client, auth_headers, org, employee_member):
     create = await _create_adjustment(
         client,

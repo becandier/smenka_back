@@ -46,6 +46,7 @@ class AuditAction(enum.StrEnum):
     adjustment_create = "adjustment.create"
     adjustment_update = "adjustment.update"
     adjustment_delete = "adjustment.delete"
+    adjustment_restore = "adjustment.restore"
 
 
 class AuditResource(enum.StrEnum):

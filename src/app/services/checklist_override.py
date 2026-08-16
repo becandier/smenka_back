@@ -74,10 +74,10 @@ async def upsert_override(
         ) from None
 
     template = await _get_template(session, org_id, template_id)
-    if template.is_archived:
+    if template.is_deleted:
         raise ChecklistError(
             "TEMPLATE_ARCHIVED",
-            "Нельзя создавать override для архивного шаблона",
+            "Нельзя создавать override для удалённого шаблона",
             400,
         )
 

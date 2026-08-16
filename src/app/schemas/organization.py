@@ -40,6 +40,7 @@ class OrganizationResponse(BaseModel):
     owner_id: str = Field(description="UUID владельца")
     invite_code: str = Field(description="Инвайт-код для присоединения")
     is_deleted: bool = Field(description="Помечена как удалённая")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
     geo_check_enabled: bool = Field(description="Геопроверка при начале смены")
     require_work_location: bool = Field(
         default=False,

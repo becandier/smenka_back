@@ -59,15 +59,18 @@ async def _get_template(
     session: AsyncSession,
     org_id: uuid.UUID,
     template_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
 ) -> OrganizationPenaltyTemplate:
-    """Активный шаблон организации; снятый/чужой → PENALTY_TEMPLATE_NOT_FOUND."""
-    result = await session.execute(
-        select(OrganizationPenaltyTemplate).where(
-            OrganizationPenaltyTemplate.id == template_id,
-            OrganizationPenaltyTemplate.organization_id == org_id,
-            OrganizationPenaltyTemplate.is_deleted.is_(False),
-        )
-    )
+    """Шаблон организации; по умолчанию только активный — снятый/чужой →
+    PENALTY_TEMPLATE_NOT_FOUND. `include_deleted=True` — для restore."""
+    conditions = [
+        OrganizationPenaltyTemplate.id == template_id,
+        OrganizationPenaltyTemplate.organization_id == org_id,
+    ]
+    if not include_deleted:
+        conditions.append(OrganizationPenaltyTemplate.is_deleted.is_(False))
+    result = await session.execute(select(OrganizationPenaltyTemplate).where(*conditions))
     template = result.scalar_one_or_none()
     if template is None:
         raise PenaltyError("PENALTY_TEMPLATE_NOT_FOUND", "Шаблон штрафа не найден", 404)
@@ -78,15 +81,18 @@ async def _get_penalty(
     session: AsyncSession,
     org_id: uuid.UUID,
     penalty_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
 ) -> Penalty:
-    """Активный штраф организации; снятый/чужой → PENALTY_NOT_FOUND."""
-    result = await session.execute(
-        select(Penalty).where(
-            Penalty.id == penalty_id,
-            Penalty.organization_id == org_id,
-            Penalty.is_deleted.is_(False),
-        )
-    )
+    """Штраф организации; по умолчанию только активный — снятый/чужой →
+    PENALTY_NOT_FOUND. `include_deleted=True` — для restore."""
+    conditions = [
+        Penalty.id == penalty_id,
+        Penalty.organization_id == org_id,
+    ]
+    if not include_deleted:
+        conditions.append(Penalty.is_deleted.is_(False))
+    result = await session.execute(select(Penalty).where(*conditions))
     penalty = result.scalar_one_or_none()
     if penalty is None:
         raise PenaltyError("PENALTY_NOT_FOUND", "Штраф не найден", 404)
@@ -143,16 +149,19 @@ async def list_templates(
     session: AsyncSession,
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
 ) -> list[OrganizationPenaltyTemplate]:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
 
+    conditions = [OrganizationPenaltyTemplate.organization_id == org_id]
+    if not include_deleted:
+        conditions.append(OrganizationPenaltyTemplate.is_deleted.is_(False))
+
     result = await session.execute(
         select(OrganizationPenaltyTemplate)
-        .where(
-            OrganizationPenaltyTemplate.organization_id == org_id,
-            OrganizationPenaltyTemplate.is_deleted.is_(False),
-        )
+        .where(*conditions)
         .order_by(OrganizationPenaltyTemplate.created_at.desc())
     )
     return list(result.scalars().all())
@@ -182,15 +191,45 @@ async def delete_template(
     org_id: uuid.UUID,
     template_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> None:
-    """Soft-delete шаблона: уходит из списка выбора, выданные штрафы не затрагиваются."""
+) -> OrganizationPenaltyTemplate:
+    """Soft-delete шаблона: уходит из списка выбора, выданные штрафы не затрагиваются.
+    Повторный вызов на уже удалённом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
     template = await _get_template(session, org_id, template_id)
 
     template.is_deleted = True
+    template.deleted_at = datetime.now(UTC)
+    template.deleted_by_user_id = requester_id
     await session.flush()
-    logger.info("penalty_template_deleted", org_id=str(org_id), template_id=str(template_id))
+    logger.info(
+        "penalty_template_deleted",
+        org_id=str(org_id),
+        template_id=str(template_id),
+        deleted_by=str(requester_id),
+    )
+    return template
+
+
+async def restore_template(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> OrganizationPenaltyTemplate:
+    """Восстановление удалённого шаблона. На не-удалённом — 409 PENALTY_TEMPLATE_NOT_DELETED."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id)
+    template = await _get_template(session, org_id, template_id, include_deleted=True)
+    if not template.is_deleted:
+        raise PenaltyError("PENALTY_TEMPLATE_NOT_DELETED", "Шаблон штрафа не удалён", 409)
+
+    template.is_deleted = False
+    template.deleted_at = None
+    template.deleted_by_user_id = None
+    await session.flush()
+    logger.info("penalty_template_restored", org_id=str(org_id), template_id=str(template_id))
+    return template
 
 
 # --- Штрафы ------------------------------------------------------------------
@@ -276,6 +315,7 @@ async def list_penalties(
     shift_id: uuid.UUID | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    include_deleted: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[Penalty], int]:
@@ -284,7 +324,9 @@ async def list_penalties(
     await ensure_admin_or_owner(session, org, requester_id)
 
     validate_date_range(date_from, date_to)
-    conditions = [Penalty.organization_id == org_id, Penalty.is_deleted.is_(False)]
+    conditions = [Penalty.organization_id == org_id]
+    if not include_deleted:
+        conditions.append(Penalty.is_deleted.is_(False))
     if member_id is not None:
         conditions.append(Penalty.member_id == member_id)
     if shift_id is not None:
@@ -359,8 +401,9 @@ async def delete_penalty(
     org_id: uuid.UUID,
     penalty_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> None:
-    """Снять штраф (soft-delete): любой admin/owner, фиксируем кто и когда снял."""
+) -> Penalty:
+    """Снять штраф (soft-delete): любой admin/owner, фиксируем кто и когда снял.
+    Повторный вызов на уже снятом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
     penalty = await _get_penalty(session, org_id, penalty_id)
@@ -375,6 +418,28 @@ async def delete_penalty(
         penalty_id=str(penalty_id),
         deleted_by=str(requester_id),
     )
+    return penalty
+
+
+async def restore_penalty(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    penalty_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> Penalty:
+    """Восстановление снятого штрафа. На не-снятом — 409 PENALTY_NOT_DELETED."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id)
+    penalty = await _get_penalty(session, org_id, penalty_id, include_deleted=True)
+    if not penalty.is_deleted:
+        raise PenaltyError("PENALTY_NOT_DELETED", "Штраф не снят", 409)
+
+    penalty.is_deleted = False
+    penalty.deleted_by_user_id = None
+    penalty.deleted_at = None
+    await session.flush()
+    logger.info("penalty_restored", org_id=str(org_id), penalty_id=str(penalty_id))
+    return penalty
 
 
 async def list_my_penalties(

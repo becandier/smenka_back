@@ -56,7 +56,7 @@ class WorkSchedule(Base):
     name: Mapped[str] = mapped_column(SaString(100))
     start_time: Mapped[time] = mapped_column(Time)
     end_time: Mapped[time] = mapped_column(Time)
-    is_archived: Mapped[bool] = mapped_column(
+    is_paused: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         server_default="false",

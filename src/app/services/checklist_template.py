@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -113,14 +114,14 @@ async def _get_template(
     template_id: uuid.UUID,
     *,
     with_items: bool = False,
-    include_archived: bool = True,
+    include_deleted: bool = True,
 ) -> ChecklistTemplate:
     query = select(ChecklistTemplate).where(
         ChecklistTemplate.id == template_id,
         ChecklistTemplate.organization_id == org_id,
     )
-    if not include_archived:
-        query = query.where(ChecklistTemplate.is_archived.is_(False))
+    if not include_deleted:
+        query = query.where(ChecklistTemplate.is_deleted.is_(False))
     if with_items:
         query = query.options(selectinload(ChecklistTemplate.items))
     result = await session.execute(query)
@@ -161,7 +162,7 @@ async def get_templates(
     session: AsyncSession,
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
-    include_archived: bool = False,
+    include_deleted: bool = False,
 ) -> list[tuple[ChecklistTemplate, int]]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -169,8 +170,8 @@ async def get_templates(
     query = select(ChecklistTemplate).where(
         ChecklistTemplate.organization_id == org_id,
     )
-    if not include_archived:
-        query = query.where(ChecklistTemplate.is_archived.is_(False))
+    if not include_deleted:
+        query = query.where(ChecklistTemplate.is_deleted.is_(False))
     query = query.order_by(ChecklistTemplate.created_at)
 
     result = await session.execute(query)
@@ -239,22 +240,61 @@ async def update_template(
     return template, items_count
 
 
+async def _count_items(session: AsyncSession, template_id: uuid.UUID) -> int:
+    result = await session.execute(
+        select(func.count(ChecklistTemplateItem.id)).where(
+            ChecklistTemplateItem.template_id == template_id,
+        )
+    )
+    return result.scalar_one()
+
+
 async def delete_template(
     session: AsyncSession,
     org_id: uuid.UUID,
     template_id: uuid.UUID,
     requester_id: uuid.UUID,
 ) -> None:
+    """Мягкое удаление. Повторный вызов на уже удалённом шаблоне — 404
+    (`_get_template` с `include_deleted=False` его не находит)."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
-    template = await _get_template(session, org_id, template_id)
-    template.is_archived = True
+    template = await _get_template(session, org_id, template_id, include_deleted=False)
+    template.is_deleted = True
+    template.deleted_at = datetime.now(UTC)
+    template.deleted_by_user_id = requester_id
     await session.flush()
     logger.info(
-        "checklist_template_archived",
+        "checklist_template_deleted",
+        org_id=str(org_id),
+        template_id=str(template_id),
+        deleted_by=str(requester_id),
+    )
+
+
+async def restore_template(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> tuple[ChecklistTemplate, int]:
+    """Восстановление удалённого шаблона. На не-удалённом — 409 TEMPLATE_NOT_DELETED."""
+    org = await get_organization(session, org_id)
+    await _check_admin_or_owner(session, org, requester_id)
+    template = await _get_template(session, org_id, template_id, include_deleted=True)
+    if not template.is_deleted:
+        raise ChecklistError("TEMPLATE_NOT_DELETED", "Шаблон не удалён", 409)
+
+    template.is_deleted = False
+    template.deleted_at = None
+    template.deleted_by_user_id = None
+    await session.flush()
+    logger.info(
+        "checklist_template_restored",
         org_id=str(org_id),
         template_id=str(template_id),
     )
+    return template, await _count_items(session, template_id)
 
 
 async def add_item(

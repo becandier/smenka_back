@@ -300,7 +300,7 @@ async def _compute_effective(
         select(ChecklistTemplate).where(
             ChecklistTemplate.id.in_(all_ids),
             ChecklistTemplate.organization_id == org_id,
-            ChecklistTemplate.is_archived.is_(False),
+            ChecklistTemplate.is_deleted.is_(False),
         )
     )
     templates = {t.id: t for t in templates_result.scalars().all()}

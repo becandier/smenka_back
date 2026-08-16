@@ -207,14 +207,14 @@ async def list_schedules(
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
     *,
-    include_archived: bool = False,
+    include_paused: bool = False,
 ) -> list[tuple[WorkSchedule, list[uuid.UUID], list[uuid.UUID]]]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
 
     query = select(WorkSchedule).where(WorkSchedule.organization_id == org_id)
-    if not include_archived:
-        query = query.where(WorkSchedule.is_archived.is_(False))
+    if not include_paused:
+        query = query.where(WorkSchedule.is_paused.is_(False))
     query = query.order_by(WorkSchedule.created_at)
 
     schedules = list((await session.execute(query)).scalars().all())
@@ -253,7 +253,7 @@ async def update_schedule(
     name: str | None = None,
     start_time: time | None = None,
     end_time: time | None = None,
-    is_archived: bool | None = None,
+    is_paused: bool | None = None,
 ) -> WorkSchedule:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
@@ -272,8 +272,8 @@ async def update_schedule(
         schedule.name = name
     schedule.start_time = new_start
     schedule.end_time = new_end
-    if is_archived is not None:
-        schedule.is_archived = is_archived
+    if is_paused is not None:
+        schedule.is_paused = is_paused
 
     await session.flush()
     logger.info("work_schedule_updated", org_id=str(org_id), schedule_id=str(schedule_id))
@@ -538,7 +538,7 @@ async def _compute_effective_schedules(
     no_role_result = await session.execute(
         select(WorkSchedule.id, has_location.label("has_location")).where(
             WorkSchedule.organization_id == org_id,
-            WorkSchedule.is_archived.is_(False),
+            WorkSchedule.is_paused.is_(False),
             ~has_role,
         )
     )
@@ -569,7 +569,7 @@ async def _compute_effective_schedules(
         select(WorkSchedule).where(
             WorkSchedule.id.in_(all_ids),
             WorkSchedule.organization_id == org_id,
-            WorkSchedule.is_archived.is_(False),
+            WorkSchedule.is_paused.is_(False),
         )
     )
     schedules = {s.id: s for s in schedules_result.scalars().all()}
