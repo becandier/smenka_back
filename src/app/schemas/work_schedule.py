@@ -118,6 +118,10 @@ class MyScheduleItemResponse(BaseModel):
     starts_in_minutes: int = Field(
         description="Минуты до планового начала; отрицательное — график уже идёт"
     )
+    can_start_now: bool = Field(
+        description="S1: можно начать смену прямо сейчас с этим графиком "
+        "(now >= next_start_at - early_start_minutes, schedule_window_enforcement)"
+    )
 
 
 class ResolvedWorkLocationResponse(BaseModel):
@@ -133,6 +137,10 @@ class MySchedulesResponse(BaseModel):
     total: int
     require_schedule: bool = Field(
         description="Дублирует настройку организации — обязателен ли выбор графика"
+    )
+    early_start_minutes: int = Field(
+        description="Дублирует настройку организации — допуск на ранний старт в минутах "
+        "(0–240); клиент пересчитывает can_start_now локально по таймеру, не дёргая сервер"
     )
     resolved_work_location: ResolvedWorkLocationResponse | None = Field(
         default=None,

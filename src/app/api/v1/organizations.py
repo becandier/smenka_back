@@ -658,6 +658,7 @@ def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
         require_schedule=s.require_schedule,
         late_tolerance_minutes=s.late_tolerance_minutes,
         overtime_request_days=s.overtime_request_days,
+        early_start_minutes=s.early_start_minutes,
     ).model_dump()
 
 

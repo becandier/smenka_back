@@ -686,6 +686,25 @@ def compute_scheduled_window(
     return min(valid, key=lambda pair: abs((started_at - pair[0]).total_seconds()))
 
 
+# --- S1: «график стартуем сейчас» (schedule_window_enforcement/backend.md) ------
+
+
+def is_schedule_startable(
+    now: datetime,
+    next_start_at: datetime,
+    early_start_minutes: int,
+) -> bool:
+    """S1 — единственный источник истины для допуска к старту смены: используется
+    и при старте (S2, `services/shift.py::_resolve_org_shift_schedule`), и в
+    `my-schedules` (S3, `can_start_now` ниже).
+
+    Верхняя граница (`now <= next_end_at`) выполняется по построению R2: он не
+    возвращает окна, чей конец уже в прошлом относительно того же `now`/
+    `started_at`, каким было рассчитано `next_start_at`.
+    """
+    return now >= next_start_at - timedelta(minutes=early_start_minutes)
+
+
 # --- my-schedules (мобилка): эффективный набор + плановое окно "прямо сейчас" ---
 
 
@@ -696,6 +715,7 @@ class MyScheduleItem:
     next_end_at: datetime
     is_current: bool
     starts_in_minutes: int
+    can_start_now: bool
 
 
 @dataclass(frozen=True)
@@ -707,10 +727,15 @@ class MySchedulesResult:
     `work_schedules_geo_resolve/backend.md`). `None`, если точка не
     определена (в т.ч. когда координаты не попали ни в одну зону — это НЕ
     ошибка здесь, в отличие от старта смены).
+
+    `early_start_minutes` дублирует настройку организации (`schedule_window_
+    enforcement/backend.md`) — мобилка пересчитывает `can_start_now` локально
+    по таймеру, не дёргая сервер.
     """
 
     items: list[MyScheduleItem]
     require_schedule: bool
+    early_start_minutes: int
     resolved_work_location: WorkLocation | None
 
 
@@ -718,6 +743,7 @@ def _build_my_schedule_items(
     pairs: list[tuple[WorkSchedule, str]],
     tz: ZoneInfo,
     moment: datetime,
+    early_start_minutes: int,
 ) -> list[MyScheduleItem]:
     items: list[MyScheduleItem] = []
     for schedule, _source in pairs:
@@ -726,6 +752,7 @@ def _build_my_schedule_items(
         )
         is_current = start_utc <= moment <= end_utc
         starts_in_minutes = round((start_utc - moment).total_seconds() / 60)
+        can_start_now = is_schedule_startable(moment, start_utc, early_start_minutes)
         items.append(
             MyScheduleItem(
                 schedule=schedule,
@@ -733,9 +760,11 @@ def _build_my_schedule_items(
                 next_end_at=end_utc,
                 is_current=is_current,
                 starts_in_minutes=starts_in_minutes,
+                can_start_now=can_start_now,
             )
         )
-    items.sort(key=lambda it: (not it.is_current, abs(it.starts_in_minutes)))
+    # S3: стартуемые сейчас — первыми, затем текущие по окну, затем ближайшие по времени.
+    items.sort(key=lambda it: (not it.can_start_now, not it.is_current, abs(it.starts_in_minutes)))
     return items
 
 
@@ -772,6 +801,7 @@ async def get_my_schedules(
 
     org_settings = await get_settings_for_org(session, org_id)
     require_schedule = org_settings.require_schedule if org_settings is not None else False
+    early_start_minutes = org_settings.early_start_minutes if org_settings is not None else 0
     geo_check_enabled = org_settings is not None and org_settings.geo_check_enabled
 
     resolved_location: WorkLocation | None = None
@@ -797,15 +827,21 @@ async def get_my_schedules(
     member = member_result.scalar_one_or_none()
     if member is None:
         return MySchedulesResult(
-            items=[], require_schedule=require_schedule, resolved_work_location=None
+            items=[],
+            require_schedule=require_schedule,
+            early_start_minutes=early_start_minutes,
+            resolved_work_location=None,
         )
 
     pairs = await get_effective_schedules(session, org_id, member, effective_location_id)
     tz = ZoneInfo(org.timezone)
     now = datetime.now(UTC)
-    items = _build_my_schedule_items(pairs, tz, now)
+    items = _build_my_schedule_items(pairs, tz, now, early_start_minutes)
     return MySchedulesResult(
-        items=items, require_schedule=require_schedule, resolved_work_location=resolved_location
+        items=items,
+        require_schedule=require_schedule,
+        early_start_minutes=early_start_minutes,
+        resolved_work_location=resolved_location,
     )
 
 
