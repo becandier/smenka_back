@@ -63,6 +63,35 @@
 	reverse_proxy web:80
 }
 
+# Лендинг (smenka.space + www). Статика собирается из репозитория `smenka_landing`
+# (Astro) и кладётся на сервер в /opt/smenka/landing — Caddy отдаёт её сам,
+# без отдельного контейнера с nginx: страница статическая, проксировать нечего.
+# CI-образ и сервис `landing` появятся, когда репозиторий заведут на GitHub.
+{$LANDING_DOMAIN} {
+	import security_headers
+	tls {
+		protocols tls1.2 tls1.3
+	}
+	encode zstd gzip
+	root * /srv/landing
+	# Хешированные ассеты Astro и шрифты неизменяемы — кэшируем на год.
+	@immutable path /_astro/* /fonts/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	# HTML всегда свежий, иначе выкладка не доезжает до вернувшегося посетителя.
+	@html path *.html /
+	header @html Cache-Control "no-cache"
+	file_server
+}
+
+# www → корень, единственный канонический адрес для поисковиков и рекламы.
+www.{$LANDING_DOMAIN} {
+	import security_headers
+	tls {
+		protocols tls1.2 tls1.3
+	}
+	redir https://{$LANDING_DOMAIN}{uri} permanent
+}
+
 # Мониторинг Celery. Доступ закрыт basic-auth самого Flower (FLOWER_BASIC_AUTH).
 {$FLOWER_DOMAIN} {
 	import security_headers

@@ -27,8 +27,12 @@ services:
       WEB_DOMAIN: ${WEB_DOMAIN}
       # Поддомен мониторинга Celery (Flower). Должен быть задан в .env.prod.
       FLOWER_DOMAIN: ${FLOWER_DOMAIN}
+      # Корневой домен с лендингом (статика, раздаётся самим Caddy).
+      LANDING_DOMAIN: ${LANDING_DOMAIN}
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Собранная статика лендинга (Astro → dist), кладётся на сервер выкладкой.
+      - ./landing:/srv/landing:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
