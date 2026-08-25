@@ -10,7 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
-from src.app.models.employee_test import TestTemplate
+from src.app.models.employee_test import (
+    TestAssignment,
+    TestAttempt,
+    TestAttemptQuestion,
+    TestTemplate,
+)
 from src.app.models.notification import Notification
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.user import User
@@ -730,7 +735,7 @@ class TestAssignments:
         assert by_status["total"] == 2
 
     async def test_delete_assignment_without_attempts(
-        self, client: AsyncClient, owner_headers, org, employee_member
+        self, client: AsyncClient, owner_headers, org, employee_member, db_session: AsyncSession
     ):
         tpl = await _create_template(client, owner_headers, org.id)
         assignment = _data(
@@ -743,7 +748,188 @@ class TestAssignments:
         assert resp.status_code == 200
         assert _data(resp) == {"deleted": True}
 
-    async def test_delete_assignment_with_attempts_rejected(
+        row = await db_session.execute(
+            select(TestAssignment).where(TestAssignment.id == uuid.UUID(assignment["id"]))
+        )
+        assert row.scalar_one_or_none() is None
+
+    async def test_delete_assignment_in_progress_attempt_cascades(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        """Снятие назначения с открытой (in_progress) попыткой удаляет её и снимки
+        вопросов молча — никакого статуса «отозван» (backend.md test_assignment_unassign)."""
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+        fill = _data(
+            await client.post(
+                f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
+                headers=employee_headers,
+            )
+        )
+        attempt_id = uuid.UUID(fill["id"])
+
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 200
+        assert _data(resp) == {"deleted": True}
+
+        attempt_row = await db_session.execute(
+            select(TestAttempt).where(TestAttempt.id == attempt_id)
+        )
+        assert attempt_row.scalar_one_or_none() is None
+        question_rows = await db_session.execute(
+            select(TestAttemptQuestion).where(TestAttemptQuestion.attempt_id == attempt_id)
+        )
+        assert question_rows.scalars().all() == []
+
+    async def test_delete_assignment_submitted_passed_cascades(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+        await _submit_first_correct(client, employee_headers, assignment["id"])
+
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 200
+        assert _data(resp) == {"deleted": True}
+
+        assignment_row = await db_session.execute(
+            select(TestAssignment).where(TestAssignment.id == uuid.UUID(assignment["id"]))
+        )
+        assert assignment_row.scalar_one_or_none() is None
+        attempt_rows = await db_session.execute(
+            select(TestAttempt).where(TestAttempt.assignment_id == uuid.UUID(assignment["id"]))
+        )
+        assert attempt_rows.scalars().all() == []
+
+    async def test_delete_assignment_removes_only_its_notification(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        org,
+        employee_member,
+        employee_user,
+        db_session: AsyncSession,
+    ):
+        tpl1 = await _create_template(client, owner_headers, org.id)
+        tpl2 = await _create_template(
+            client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": "Второй тест"}
+        )
+        assignment1 = _data(
+            await _assign(client, owner_headers, org.id, tpl1["id"], [str(employee_member.id)])
+        )["items"][0]
+        assignment2 = _data(
+            await _assign(client, owner_headers, org.id, tpl2["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        # уведомление ДРУГОГО типа с тем же assignment_id в payload — не должно задеться.
+        db_session.add(
+            Notification(
+                user_id=employee_user.id,
+                organization_id=org.id,
+                type="shift_manual_changed",
+                title="Другое уведомление",
+                payload={"assignment_id": assignment1["id"]},
+            )
+        )
+        await db_session.commit()
+
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment1['id']}",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 200
+
+        remaining = (
+            (await db_session.execute(select(Notification).order_by(Notification.created_at)))
+            .scalars()
+            .all()
+        )
+        assert len(remaining) == 2
+        by_type = {n.type: n for n in remaining}
+        assert by_type["test_assigned"].payload["assignment_id"] == assignment2["id"]
+        assert by_type["shift_manual_changed"].payload["assignment_id"] == assignment1["id"]
+
+    async def test_delete_assignment_repeat_returns_404(
+        self, client: AsyncClient, owner_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+        first = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
+            headers=owner_headers,
+        )
+        assert first.status_code == 200
+
+        second = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
+            headers=owner_headers,
+        )
+        assert second.status_code == 404
+        assert _err(second) == "TEST_ASSIGNMENT_NOT_FOUND"
+
+    async def test_delete_assignment_wrong_org_returns_404(
+        self,
+        client: AsyncClient,
+        owner: User,
+        owner_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        other_org = Organization(name="Другая организация", owner_id=owner.id)
+        db_session.add(other_org)
+        await db_session.commit()
+
+        resp = await client.delete(
+            f"/api/v1/organizations/{other_org.id}/test-assignments/{assignment['id']}",
+            headers=owner_headers,
+        )
+        assert resp.status_code == 404
+        assert _err(resp) == "TEST_ASSIGNMENT_NOT_FOUND"
+
+    async def test_delete_assignment_employee_forbidden(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
+            headers=employee_headers,
+        )
+        assert resp.status_code == 403
+
+    async def test_reassign_after_delete_creates_fresh_assignment(
         self,
         client: AsyncClient,
         owner_headers,
@@ -755,27 +941,105 @@ class TestAssignments:
         assignment = _data(
             await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
         )["items"][0]
+        await _submit_first_correct(client, employee_headers, assignment["id"])
 
-        # attempts_used растёт только на submit, не на старт попытки.
-        fill = _data(
-            await client.post(
-                f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
-                headers=employee_headers,
-            )
-        )
-        submit_resp = await client.post(
-            f"/api/v1/my/test-attempts/{fill['id']}/submit",
-            headers=employee_headers,
-            json={"answers": []},
-        )
-        assert submit_resp.status_code == 200
-
-        resp = await client.delete(
+        await client.delete(
             f"/api/v1/organizations/{org.id}/test-assignments/{assignment['id']}",
             headers=owner_headers,
         )
-        assert resp.status_code == 409
-        assert _err(resp) == "TEST_ASSIGNMENT_HAS_ATTEMPTS"
+
+        resp = await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        assert resp.status_code == 201, resp.text
+        data = _data(resp)
+        assert data["created"] == 1
+        assert data["updated"] == 0
+        new_assignment = data["items"][0]
+        assert new_assignment["id"] != assignment["id"]
+        assert new_assignment["attempts_used"] == 0
+        assert new_assignment["status"] == "assigned"
+        assert new_assignment["passed"] is False
+
+    async def test_org_registry_hides_deleted_template_by_default(
+        self, client: AsyncClient, owner_headers, org, employee_member, emp2_member
+    ):
+        tpl1 = await _create_template(client, owner_headers, org.id)
+        tpl2 = await _create_template(
+            client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": "Второй тест"}
+        )
+        await _assign(client, owner_headers, org.id, tpl1["id"], [str(employee_member.id)])
+        await _assign(client, owner_headers, org.id, tpl2["id"], [str(emp2_member.id)])
+
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl1['id']}",
+            headers=owner_headers,
+        )
+
+        default_view = _data(
+            await client.get(
+                f"/api/v1/organizations/{org.id}/test-assignments", headers=owner_headers
+            )
+        )
+        assert default_view["total"] == 1
+        assert default_view["items"][0]["template"]["id"] == tpl2["id"]
+
+        with_deleted = _data(
+            await client.get(
+                f"/api/v1/organizations/{org.id}/test-assignments",
+                headers=owner_headers,
+                params={"include_deleted": "true"},
+            )
+        )
+        assert with_deleted["total"] == 2
+        assert {item["template"]["id"] for item in with_deleted["items"]} == {
+            tpl1["id"],
+            tpl2["id"],
+        }
+
+    async def test_restore_template_returns_assignments_to_both_registries(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
+            headers=owner_headers,
+        )
+        assert (
+            _data(await client.get("/api/v1/my/test-assignments", headers=employee_headers))[
+                "total"
+            ]
+            == 0
+        )
+        assert (
+            _data(
+                await client.get(
+                    f"/api/v1/organizations/{org.id}/test-assignments", headers=owner_headers
+                )
+            )["total"]
+            == 0
+        )
+
+        restore_resp = await client.post(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}/restore",
+            headers=owner_headers,
+        )
+        assert restore_resp.status_code == 200
+
+        assert (
+            _data(await client.get("/api/v1/my/test-assignments", headers=employee_headers))[
+                "total"
+            ]
+            == 1
+        )
+        assert (
+            _data(
+                await client.get(
+                    f"/api/v1/organizations/{org.id}/test-assignments", headers=owner_headers
+                )
+            )["total"]
+            == 1
+        )
 
     async def test_employee_cannot_manage_assignments(
         self, client: AsyncClient, employee_headers, employee_member, org, owner_headers
@@ -1471,3 +1735,44 @@ class TestMyAssignmentsList:
         assert len(assigned["items"]) == 1
         assert assigned["items"][0]["template"]["id"] == tpl_a["id"]
         assert assigned["items"][0]["status"] == "assigned"
+
+    async def test_deleted_template_assignment_hidden_from_list(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        """Назначение мягко удалённого шаблона не отдаётся ни в items, ни в total
+        (backend.md test_assignment_unassign) — для сотрудника его как будто нет."""
+        tpl1 = await _create_template(client, owner_headers, org.id)
+        tpl2 = await _create_template(
+            client, owner_headers, org.id, {**TWO_QUESTION_BODY, "title": "Второй тест"}
+        )
+        await _assign(client, owner_headers, org.id, tpl1["id"], [str(employee_member.id)])
+        await _assign(client, owner_headers, org.id, tpl2["id"], [str(employee_member.id)])
+
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl1['id']}",
+            headers=owner_headers,
+        )
+
+        data = _data(await client.get("/api/v1/my/test-assignments", headers=employee_headers))
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["template"]["id"] == tpl2["id"]
+
+    async def test_deleted_template_assignment_detail_not_found(
+        self, client: AsyncClient, owner_headers, employee_headers, org, employee_member
+    ):
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        await client.delete(
+            f"/api/v1/organizations/{org.id}/test-templates/{tpl['id']}",
+            headers=owner_headers,
+        )
+
+        resp = await client.get(
+            f"/api/v1/my/test-assignments/{assignment['id']}", headers=employee_headers
+        )
+        assert resp.status_code == 404
+        assert _err(resp) == "TEST_ASSIGNMENT_NOT_FOUND"
