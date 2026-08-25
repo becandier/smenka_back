@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,7 +28,7 @@ from src.app.models.employee_test import (
     TestQuestionType,
     TestTemplate,
 )
-from src.app.models.notification import NotificationType
+from src.app.models.notification import Notification, NotificationType
 from src.app.models.organization import OrganizationMember
 from src.app.services import notification as notification_service
 from src.app.services.common import ensure_admin_or_owner
@@ -577,13 +577,20 @@ async def list_org_assignments(
     template_id: uuid.UUID | None = None,
     member_id: uuid.UUID | None = None,
     status: str | None = None,
+    include_deleted: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[TestAssignment], int]:
+    """`include_deleted=False` (по умолчанию) скрывает назначения удалённых
+    (soft-delete) шаблонов — и в выдаче, и в `total` (см. backend.md
+    test_assignment_unassign). `True` — показывает все, чтобы админ мог найти
+    и разобрать назначения удалённого теста."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
 
     conditions = [TestTemplate.organization_id == org_id]
+    if not include_deleted:
+        conditions.append(TestTemplate.is_deleted.is_(False))
     if template_id is not None:
         conditions.append(TestAssignment.template_id == template_id)
     if member_id is not None:
@@ -639,15 +646,24 @@ async def delete_assignment(
     assignment_id: uuid.UUID,
     requester_id: uuid.UUID,
 ) -> None:
+    """Безвозвратное снятие назначения — при любом `status`/`attempts_used`
+    (см. backend.md test_assignment_unassign; было заблокировано при
+    `attempts_used > 0`, ограничение снято владельцем). Попытки и их
+    снимки вопросов/вариантов уходят каскадом (FK `ON DELETE CASCADE`,
+    миграция `9632b96364fd`) вместе со строкой `test_assignments`. В той же
+    транзакции удаляется уведомление `test_assigned` этого назначения —
+    иначе у сотрудника в ленте остаётся тап в 404. Новых уведомлений не
+    создаём, история не сохраняется."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
     assignment = await _get_org_assignment(session, org_id, assignment_id)
-    if assignment.attempts_used > 0:
-        raise TestError(
-            "TEST_ASSIGNMENT_HAS_ATTEMPTS",
-            "У назначения есть сданные попытки, снятие запрещено",
-            409,
+
+    await session.execute(
+        delete(Notification).where(
+            Notification.type == NotificationType.test_assigned.value,
+            Notification.payload["assignment_id"].astext == str(assignment_id),
         )
+    )
     await session.delete(assignment)
     await session.flush()
     logger.info("test_assignment_deleted", org_id=str(org_id), assignment_id=str(assignment_id))
@@ -712,8 +728,10 @@ async def list_my_assignments(
     """Мои назначения (по всем моим организациям либо одной). Пагинировано:
     возвращает (страница, total). Сортировка стабильна — `created_at DESC, id DESC`
     (вторичный ключ гарантирует детерминированный порядок при равных `created_at`,
-    чтобы страницы не перемешивались)."""
-    conditions = [OrganizationMember.user_id == user_id]
+    чтобы страницы не перемешивались). Назначения удалённых (soft-delete) шаблонов
+    не отдаются — ни в `items`, ни в `total` (см. backend.md test_assignment_unassign):
+    для сотрудника такого назначения не существует."""
+    conditions = [OrganizationMember.user_id == user_id, TestTemplate.is_deleted.is_(False)]
     if organization_id is not None:
         conditions.append(TestTemplate.organization_id == organization_id)
     if status is not None:
@@ -747,7 +765,12 @@ async def get_my_assignment_detail(
     user_id: uuid.UUID,
     assignment_id: uuid.UUID,
 ) -> tuple[TestAssignment, list[TestAttempt]]:
+    """Назначение удалённого (soft-delete) шаблона отдаёт `404
+    TEST_ASSIGNMENT_NOT_FOUND` — для сотрудника такого назначения не
+    существует (см. backend.md test_assignment_unassign)."""
     assignment = await _get_my_assignment(session, user_id, assignment_id, with_template=True)
+    if assignment.template.is_deleted:
+        raise TestError("TEST_ASSIGNMENT_NOT_FOUND", "Назначение не найдено", 404)
     attempts_result = await session.execute(
         select(TestAttempt)
         .where(TestAttempt.assignment_id == assignment.id)

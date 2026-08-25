@@ -474,6 +474,10 @@ async def list_template_assignments(
 @router.get(
     "/test-assignments",
     summary="Реестр результатов по всей организации",
+    description=(
+        "Owner/admin. По умолчанию скрывает назначения удалённых (soft-delete) шаблонов "
+        "(и в items, и в total); include_deleted=true — показать и их."
+    ),
 )
 async def list_org_assignments(
     org_id: uuid.UUID,
@@ -482,6 +486,7 @@ async def list_org_assignments(
     template_id: uuid.UUID | None = Query(None),
     member_id: uuid.UUID | None = Query(None),
     status: str | None = Query(None, description="assigned | in_progress | passed | failed"),
+    include_deleted: bool = Query(False, description="Включить назначения удалённых шаблонов"),
     limit: int = Query(20, ge=1, le=50),
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
@@ -492,6 +497,7 @@ async def list_org_assignments(
         template_id=template_id,
         member_id=member_id,
         status=status,
+        include_deleted=include_deleted,
         limit=limit,
         offset=offset,
     )
@@ -506,7 +512,11 @@ async def list_org_assignments(
 @router.delete(
     "/test-assignments/{assignment_id}",
     summary="Снять назначение",
-    description="Только если ни одной сданной попытки — иначе 409 TEST_ASSIGNMENT_HAS_ATTEMPTS.",
+    description=(
+        "Безвозвратно, при любом статусе и числе попыток: назначение, все попытки "
+        "и их снимки удаляются каскадом, вместе с уведомлением test_assigned этого "
+        "назначения. История не сохраняется, сотрудник не уведомляется."
+    ),
 )
 async def delete_assignment(
     org_id: uuid.UUID,
