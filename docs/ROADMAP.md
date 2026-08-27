@@ -6,6 +6,21 @@
 
 ---
 
+## Фича — Старт смены по фото при недоступной геолокации (`shift_geo_photo_fallback`) `[~]`
+ТЗ: `../../docs/tasks/shift_geo_photo_fallback/backend.md`  STATUS: `../../docs/tasks/shift_geo_photo_fallback/STATUS.md`
+- [x] Категория файла `FileCategory.shift_geo_photo` + политика (`shift-geo-photos/`, 10 МБ, image-MIME, org-scoped): загрузка — любой участник org, чтение — владелец/admin/owner org/super_admin. Схема категорий не мигрируется — `files.category` не native PG enum, а VARCHAR(32) без CHECK
+- [x] `shifts` +2 nullable-колонки: `geo_fallback_photo_file_id` (FK→`files.id` ON DELETE SET NULL) и `geo_fallback_reason` (VARCHAR(40), enum `GeoFallbackReason` — 6 машинных кодов клиента). Инвариант «стартовала без геопроверки» ⇔ `geo_fallback_reason IS NOT NULL`
+- [x] `POST /shifts/start` +пара `geo_fallback_photo_id`/`geo_fallback_reason` (только вместе; несовместимы с координатами; только org с `geo_check_enabled`; `work_location_id` обязателен и валидируется на org); персональная смена и org без геопроверки → `422 VALIDATION_ERROR`, ни координат ни фото → прежний `400 COORDS_REQUIRED`
+- [x] Новый код `422 GEO_FALLBACK_PHOTO_INVALID` (нет файла/битый id/чужой/другая org/не та категория/уже привязан) — в `../../docs/ERROR_FORMAT.md`
+- [x] Захват фото (`is_attached=true`) в одной транзакции со вставкой смены под `SELECT ... FOR UPDATE` — два параллельных старта с одним снимком не дадут две смены; любой отказ старта оставляет файл непривязанным (подберёт чистка сирот)
+- [x] `ShiftResponse` +3 additive-поля (`geo_fallback`/`geo_fallback_reason`/`geo_fallback_photo_file_id`) во всех местах выдачи смены; `GET /organizations/{id}/shifts` +query `geo_fallback` (true/false/не передан)
+- [x] Настроек организации фича не добавляет (фолбэк включён всегда); аудита старта смены в проекте нет — дополнять нечего, факт фолбэка попал в structlog `shift_started`
+- [x] Миграция `ac0ce20ba98d`, обратима — проверено `upgrade`/`downgrade` локально
+- [x] 23 теста (`tests/test_shift_geo_photo_fallback.py`): happy path + `is_attached`, права на категорию (участник грузит, коллега не читает, owner читает), пара полей (одно без другого), фото+координаты, невалидный reason, точка (обязательна/чужая), org без гео, персональная смена, невалидное фото (нет/битый id/чужой владелец/другая org/чужая категория/уже привязан/повторное использование), фильтр `geo_fallback` в реестре, обратная совместимость обычной и персональной смены
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Ручной учёт времени и начисления (`manual_time_entry`) `[~]`
 ТЗ: `../../docs/tasks/manual_time_entry/backend.md`  STATUS: `../../docs/tasks/manual_time_entry/STATUS.md`
 - [x] `shifts` — 6 nullable-колонок ручного ввода (`created_by_user_id`/`edited_by_user_id`/`edited_at`/`manual_note`/`deleted_by_user_id`/`deleted_at`, FK→`users.id` ON DELETE SET NULL); задействована существующая заготовка `is_deleted` (`fines`)
