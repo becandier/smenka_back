@@ -13,6 +13,7 @@ from src.app.models.checklist import (
 )
 from src.app.models.organization import OrganizationMember
 from src.app.models.organization_role import OrganizationRole
+from src.app.services import entitlements
 from src.app.services.checklist_location import (
     _get_org_location,
     get_location_ids_for_templates,
@@ -59,6 +60,7 @@ async def assign_template_to_roles(
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
     await _ensure_ids_belong_to_org(
@@ -153,6 +155,7 @@ async def set_member_overrides(
 ) -> list[tuple[uuid.UUID, OverrideType]]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, user_id)
 
     parsed: list[tuple[uuid.UUID, OverrideType]] = []

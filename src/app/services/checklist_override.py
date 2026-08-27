@@ -10,6 +10,7 @@ from src.app.models.checklist import (
     ChecklistTemplate,
     OverrideType,
 )
+from src.app.services import entitlements
 from src.app.services.checklist_assignment import _get_member
 from src.app.services.checklist_template import (
     ChecklistError,
@@ -63,6 +64,7 @@ async def upsert_override(
     """Idempotent upsert of one override via INSERT ... ON CONFLICT DO UPDATE."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     try:
         override_type = OverrideType(override_type_raw)
@@ -118,6 +120,7 @@ async def delete_override(
     """Idempotent delete — no error if override doesn't exist."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     # Validate template belongs to org (consistent with PUT).
     await _get_template(session, org_id, template_id)

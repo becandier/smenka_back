@@ -31,6 +31,7 @@ from src.app.models.knowledge import (
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.user import User, UserRole
+from src.app.services import entitlements
 from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.file_storage import delete_file, presigned_urls_for
@@ -216,6 +217,7 @@ async def create_node(
 ) -> KnowledgeNode:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     if parent_id is not None:
         await _get_node(session, org_id, parent_id)  # родитель строго в этой org
 
@@ -392,6 +394,7 @@ async def update_node(
 ) -> tuple[KnowledgeNode, list[tuple[uuid.UUID, str]], list[dict[str, Any]] | None]:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id, for_update="parent_id" in fields)
 
     if "content" in fields:
@@ -569,6 +572,7 @@ async def delete_node(
     """Удалить узел и поддерево; файлы поддерева — из S3 и `files` ДО каскада (приватность)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id)
 
     subtree_ids = await _collect_subtree_ids(session, org_id, node_id)
@@ -639,6 +643,7 @@ async def reorder_nodes(
 ) -> None:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     if parent_id is not None:
         await _get_node(session, org_id, parent_id)
 
@@ -707,6 +712,7 @@ async def replace_access(
     """Bulk-замена набора правил + all_members в одной транзакции."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id, for_update=True)
 
     seen: set[tuple[str, uuid.UUID]] = set()

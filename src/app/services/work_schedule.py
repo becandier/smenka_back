@@ -29,6 +29,7 @@ from src.app.models.work_schedule import (
     WorkScheduleMemberOverride,
     WorkScheduleRole,
 )
+from src.app.services import entitlements
 from src.app.services.checklist_location import _get_org_location, matches_location
 from src.app.services.common import ensure_admin_or_owner, ensure_member
 from src.app.services.organization import get_organization
@@ -147,6 +148,7 @@ async def create_schedule(
 ) -> WorkSchedule:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     if start_time == end_time:
         raise WorkScheduleError(
@@ -257,6 +259,7 @@ async def update_schedule(
 ) -> WorkSchedule:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     schedule = await _get_schedule(session, org_id, schedule_id)
 
     new_start = start_time if start_time is not None else schedule.start_time
@@ -291,6 +294,7 @@ async def delete_schedule(
     история не рушится. Привязки удаляются каскадом."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     schedule = await _get_schedule(session, org_id, schedule_id)
 
     await session.delete(schedule)
@@ -310,6 +314,7 @@ async def set_schedule_roles(
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_schedule(session, org_id, schedule_id)
 
     await _ensure_ids_belong_to_org(
@@ -350,6 +355,7 @@ async def set_schedule_locations(
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_schedule(session, org_id, schedule_id)
 
     await _ensure_ids_belong_to_org(
@@ -436,6 +442,7 @@ async def set_member_schedule_overrides(
 ) -> list[tuple[uuid.UUID, ScheduleOverrideType]]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, user_id)
 
     parsed: list[tuple[uuid.UUID, ScheduleOverrideType]] = []
@@ -861,6 +868,7 @@ async def change_shift_schedule(
 
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     shift = await get_org_shift_detail(session, org_id, shift_id)
 
     if work_schedule_id is None:

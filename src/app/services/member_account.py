@@ -19,7 +19,7 @@ from src.app.core.logging import get_logger
 from src.app.core.security import generate_password, hash_password
 from src.app.models.organization import MemberRole, OrganizationMember
 from src.app.models.user import RefreshToken, User
-from src.app.services import lockout
+from src.app.services import entitlements, lockout
 from src.app.services.auth import get_user_by_email
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import (
@@ -85,6 +85,8 @@ async def create_member(
     """
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, actor_id)
+    await entitlements.require_active_subscription(session, org, actor_id)
+    await entitlements.require_capacity(session, org, entitlements.LimitKind.employees)
 
     role_enum = MemberRole(role)
     # Владелец может назначить admin, обычный admin-участник — только employee
@@ -170,6 +172,7 @@ async def reset_password(
     """
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, actor_id)
+    await entitlements.require_active_subscription(session, org, actor_id)
 
     member = await get_member(session, org_id, target_user_id)
     user = member.user

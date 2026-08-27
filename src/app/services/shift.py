@@ -19,6 +19,7 @@ from src.app.models.shift import (
     ShiftStatus,
 )
 from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
+from src.app.services import entitlements
 
 logger = get_logger(__name__)
 
@@ -243,6 +244,12 @@ async def _resolve_org_shift_start(
     )
     if member_result.scalar_one_or_none() is None:
         raise ShiftError("FORBIDDEN", "Вы не являетесь участником организации", 403)
+
+    # tariffs: read-only организации не начинает новых смен (backend.md,
+    # «Блокируется в первую очередь POST /shifts/start с organization_id»).
+    # Персональные смены (organization_id is None) сюда не попадают вовсе.
+    # SubscriptionError уже зарегистрирован в main.py — пробрасывается как есть.
+    await entitlements.require_active_subscription(session, org, user_id)
 
     org_settings = await get_settings_for_org(session, organization_id)
     geo_enabled = org_settings is not None and org_settings.geo_check_enabled

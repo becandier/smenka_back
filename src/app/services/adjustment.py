@@ -21,6 +21,7 @@ from src.app.models.notification import NotificationType
 from src.app.models.organization import OrganizationMember
 from src.app.models.shift import Shift
 from src.app.services import audit as audit_service
+from src.app.services import entitlements
 from src.app.services import notification as notification_service
 from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
@@ -150,6 +151,7 @@ async def create_adjustment(
     """Начислить/удержать. occurred_at по умолчанию = started_at смены при shift_id."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
 
     if amount_minor == 0:
@@ -270,6 +272,7 @@ async def update_adjustment(
     """Исправить запись начисления. member_id не меняется."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id)
 
     changed: dict[str, Any] = {}
@@ -346,6 +349,7 @@ async def delete_adjustment(
     """Отменить начисление (soft-delete). Повторный вызов на уже отменённом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id)
 
     adjustment.is_deleted = True
@@ -395,6 +399,7 @@ async def restore_adjustment(
     """Восстановить отменённое начисление. На не-отменённом — 409 ADJUSTMENT_NOT_DELETED."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id, include_deleted=True)
     if not adjustment.is_deleted:
         raise AdjustmentError("ADJUSTMENT_NOT_DELETED", "Начисление не отменено", 409)

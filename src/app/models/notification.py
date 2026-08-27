@@ -23,6 +23,8 @@ class NotificationType(enum.StrEnum):
     test_assigned = "test_assigned"
     shift_manual_changed = "shift_manual_changed"
     payroll_adjustment_changed = "payroll_adjustment_changed"
+    subscription_expiring = "subscription_expiring"
+    subscription_suspended = "subscription_suspended"
 
 
 class Notification(Base):

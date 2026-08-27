@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 from src.app.core.logging import get_logger
 from src.app.models.organization import Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import _check_org_access, get_organization
 
@@ -59,6 +60,7 @@ async def create_role(
 ) -> OrganizationRole:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     existing = await session.execute(
         select(OrganizationRole).where(
@@ -105,6 +107,7 @@ async def update_role(
 ) -> OrganizationRole:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     role = await get_role(session, org_id, role_id)
 
     if role.name == name:
@@ -139,6 +142,7 @@ async def delete_role(
 ) -> None:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     role = await get_role(session, org_id, role_id)
     await session.delete(role)
     await session.flush()
@@ -158,6 +162,7 @@ async def assign_role_to_member(
 ) -> OrganizationMember:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     if role_id is not None:
         await get_role(session, org_id, role_id)

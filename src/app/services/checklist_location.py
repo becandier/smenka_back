@@ -29,6 +29,7 @@ from src.app.models.checklist import (
     ChecklistTemplateLocation,
 )
 from src.app.models.work_location import WorkLocation
+from src.app.services import entitlements
 from src.app.services.checklist_template import (
     ChecklistError,
     _check_admin_or_owner,
@@ -68,6 +69,7 @@ async def set_template_locations(
     """PUT-семантика: полный список точек шаблона (замена)."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
     await _ensure_ids_belong_to_org(
@@ -184,6 +186,7 @@ async def set_location_templates(
     """PUT-семантика: полный список шаблонов, привязанных к точке (замена)."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_org_location(session, org_id, location_id)
 
     await _ensure_ids_belong_to_org(

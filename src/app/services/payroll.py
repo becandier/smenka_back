@@ -32,6 +32,7 @@ from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
 from src.app.schemas.payroll import Granularity
+from src.app.services import entitlements
 from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.shift import (
@@ -111,6 +112,7 @@ async def create_rate(
     """Добавить новую строку истории (назначение ставки «с даты»)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
 
     effective_from = ensure_utc(effective_from)
@@ -193,6 +195,7 @@ async def update_rate(
     """Исправить запись истории (опечатка). Для новой ставки «с даты» — POST."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
     rate = await _get_rate(session, member.id, rate_id)
 
@@ -244,6 +247,7 @@ async def delete_rate(
     """Удалить ошибочную запись истории. Расчёты сразу увидят изменение."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
     rate = await _get_rate(session, member.id, rate_id)
 

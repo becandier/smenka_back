@@ -38,11 +38,13 @@ from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse
 from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
+from src.app.services import entitlements
 from src.app.services import member_account as member_account_service
 from src.app.services import organization as org_service
 from src.app.services import organization_settings as settings_service
 from src.app.services import overtime as overtime_service
 from src.app.services import shift as shift_service
+from src.app.services import subscription as subscription_service
 from src.app.services.overtime import DEFAULT_OVERTIME_REQUEST_DAYS
 from src.app.utils.request import get_client_ip
 
@@ -58,6 +60,7 @@ def _org_to_response(
     org: "Organization",
     my_role: str | None = None,
     my_custom_role: Any = None,
+    subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     geo_check = org.settings.geo_check_enabled if org.settings else False
     require_work_location = org.settings.require_work_location if org.settings else False
@@ -85,6 +88,7 @@ def _org_to_response(
         created_at=org.created_at,
         my_role=my_role,
         my_custom_role=custom_role_payload,
+        subscription=subscription,
     ).model_dump(mode="json")
 
 
@@ -200,7 +204,25 @@ async def get_organization(
     org = await org_service.get_organization(session, org_id)
     roles = await org_service.batch_get_my_roles(session, [org], user.id)
     my_role, my_custom_role = roles.get(org.id, (None, None))
-    return ApiResponse.success(_org_to_response(org, my_role, my_custom_role))
+
+    # tariffs: additive-поле subscription — только owner/admin/super_admin,
+    # для employee всегда null (backend.md, п.3 API-контрактов). Организация
+    # без строки subscriptions (в проде невозможно — автосоздание + data-
+    # миграция; в тестах бывает — прямое создание Organization через ORM в
+    # обход сервиса) не должна ронять весь эндпоинт: additive-поле просто
+    # остаётся null, тем же fail-open духом, что и require_active_subscription.
+    subscription_payload: dict[str, Any] | None = None
+    if my_role in ("owner", "admin") or user.role == UserRole.super_admin:
+        try:
+            subscription_payload = await subscription_service.build_subscription_payload(
+                session, org_id
+            )
+        except entitlements.SubscriptionError:
+            subscription_payload = None
+
+    return ApiResponse.success(
+        _org_to_response(org, my_role, my_custom_role, subscription_payload)
+    )
 
 
 @router.patch(
@@ -597,6 +619,7 @@ async def update_member(
     # по разу на каждое поле (apply_* ниже работают с уже готовым `member`).
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, user.id)
+    await entitlements.require_active_subscription(session, org, user.id)
     member = await org_service.get_member(session, org_id, member_user_id)
 
     if "display_name" in body.model_fields_set:

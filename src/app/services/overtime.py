@@ -19,6 +19,7 @@ from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import get_organization
 from src.app.services.organization_settings import get_settings_for_org
@@ -174,6 +175,7 @@ async def review_overtime_request(
         requester_id,
         message="Нет прав для рассмотрения заявок на переработку",
     )
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     try:
         new_status = OvertimeRequestStatus(status)

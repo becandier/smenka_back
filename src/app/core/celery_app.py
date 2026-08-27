@@ -35,6 +35,7 @@ celery_app.conf.update(
     include=[
         "src.app.tasks.shifts",
         "src.app.tasks.cleanup",
+        "src.app.tasks.subscriptions",
     ],
     beat_schedule={
         "auto-finish-stale-shifts": {
@@ -55,6 +56,11 @@ celery_app.conf.update(
         "cleanup-orphan-files": {
             "task": "cleanup_orphan_files",
             "schedule": crontab(minute=0),  # ежечасно
+        },
+        "notify-subscription-status": {
+            "task": "notify_subscription_status",
+            # Раз в сутки (tariffs, backend.md «Уведомления»).
+            "schedule": crontab(hour=8, minute=0),
         },
     },
 )

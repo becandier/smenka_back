@@ -9,6 +9,7 @@ from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
 from src.app.models.work_schedule import WorkSchedule
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import OrgError, get_organization
 
@@ -78,6 +79,8 @@ async def update_settings(
     **fields: Any,
 ) -> OrganizationSettings:
     settings = await get_settings(session, org_id, requester_id)
+    org = await get_organization(session, org_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     if fields.get("geo_check_enabled") is True and not settings.geo_check_enabled:
         count = await _count_locations(session, org_id)

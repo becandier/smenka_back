@@ -15,6 +15,7 @@ from src.app.models.checklist import (
     PhotoSource,
 )
 from src.app.models.organization import Organization
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import get_organization
 
@@ -141,6 +142,7 @@ async def create_template(
 ) -> ChecklistTemplate:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     template = ChecklistTemplate(
         organization_id=org_id,
@@ -215,6 +217,7 @@ async def update_template(
 ) -> tuple[ChecklistTemplate, int]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id)
 
     if name is not None:
@@ -259,6 +262,7 @@ async def delete_template(
     (`_get_template` с `include_deleted=False` его не находит)."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, include_deleted=False)
     template.is_deleted = True
     template.deleted_at = datetime.now(UTC)
@@ -281,6 +285,7 @@ async def restore_template(
     """Восстановление удалённого шаблона. На не-удалённом — 409 TEMPLATE_NOT_DELETED."""
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, include_deleted=True)
     if not template.is_deleted:
         raise ChecklistError("TEMPLATE_NOT_DELETED", "Шаблон не удалён", 409)
@@ -310,6 +315,7 @@ async def add_item(
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
     max_pos = await session.execute(
@@ -372,6 +378,7 @@ async def update_item(
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
     item = await _get_item(session, template_id, item_id)
 
@@ -400,6 +407,7 @@ async def delete_item(
 ) -> None:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
     item = await _get_item(session, template_id, item_id)
     await session.delete(item)
@@ -415,6 +423,7 @@ async def reorder_items(
 ) -> list[ChecklistTemplateItem]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
     result = await session.execute(

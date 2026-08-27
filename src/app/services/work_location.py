@@ -8,6 +8,7 @@ from src.app.core.logging import get_logger
 from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.organization import OrgError, _check_org_access, get_organization
 from src.app.utils.geo import haversine_distance
@@ -56,6 +57,8 @@ async def create_work_location(
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_capacity(session, org, entitlements.LimitKind.locations)
 
     location = WorkLocation(
         organization_id=org_id,
@@ -94,6 +97,7 @@ async def update_work_location(
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     location = await _get_location(session, org_id, location_id)
     for key, value in fields.items():
@@ -111,6 +115,7 @@ async def delete_work_location(
 ) -> None:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     location = await _get_location(session, org_id, location_id)
     await session.delete(location)
