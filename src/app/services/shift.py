@@ -11,7 +11,13 @@ from sqlalchemy.orm import selectinload
 from src.app.core.logging import get_logger
 from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
 from src.app.models.organization import OrganizationMember
-from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
+from src.app.models.shift import (
+    GeoFallbackReason,
+    Pause,
+    Shift,
+    ShiftFinishReason,
+    ShiftStatus,
+)
 from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
 
 logger = get_logger(__name__)
@@ -99,6 +105,101 @@ async def _require_org_location(
     return work_location_id
 
 
+@dataclass(frozen=True)
+class GeoFallbackStart:
+    """Пара «фото + причина» для старта смены без геопроверки (shift_geo_photo_fallback).
+
+    Собирается только если оба поля пришли вместе; `photo_id` — сырой id из тела
+    запроса, он проверяется и «захватывается» позже (`_claim_geo_fallback_photo`).
+    """
+
+    photo_id: str
+    reason: GeoFallbackReason
+
+
+def _resolve_geo_fallback_input(
+    organization_id: uuid.UUID | None,
+    latitude: float | None,
+    longitude: float | None,
+    photo_id: str | None,
+    reason: GeoFallbackReason | None,
+) -> GeoFallbackStart | None:
+    """Контекстно-независимые проверки пары `geo_fallback_*` при старте смены.
+
+    Всё, что можно отбить до похода в БД (R1/R4 backend.md):
+    - одно поле без другого → `VALIDATION_ERROR`;
+    - фото вместе с координатами → `VALIDATION_ERROR` (двусмысленность: фото НЕ
+      обходит проверку «вне зоны», координаты обрабатываются по старым правилам);
+    - фолбэк в персональной смене → `VALIDATION_ERROR` (гео там не проверяется).
+
+    Ветку «организация без геопроверки» проверить здесь нельзя — настройки org
+    читаются в `_resolve_org_shift_start`, там же и отбивается.
+    """
+    if (photo_id is None) != (reason is None):
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "geo_fallback_photo_id и geo_fallback_reason передаются только вместе",
+            422,
+        )
+    if photo_id is None or reason is None:
+        return None
+    if latitude is not None or longitude is not None:
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "Старт по фото несовместим с координатами — передайте что-то одно",
+            422,
+        )
+    if organization_id is None:
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "Старт по фото доступен только в организации с геопроверкой",
+            422,
+        )
+    return GeoFallbackStart(photo_id=photo_id, reason=reason)
+
+
+async def _claim_geo_fallback_photo(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    photo_id: str,
+) -> uuid.UUID:
+    """Проверить фото-фолбэк и захватить его под эту смену (`is_attached=true`).
+
+    Любое нарушение (нет файла / битый id / чужой владелец / другая org / не та
+    категория / файл уже привязан) → единый `422 GEO_FALLBACK_PHOTO_INVALID`:
+    клиенту достаточно перезалить снимок, детализация лишь помогла бы перебирать
+    чужие id.
+
+    `SELECT ... FOR UPDATE` + проверка `is_attached` в одной транзакции со
+    вставкой смены — это и есть защита от повторного использования файла: два
+    параллельных старта с одним фото сериализуются на строке `files`, второй
+    видит уже привязанный файл и получает отказ.
+    """
+    from src.app.models.file import File, FileCategory
+
+    invalid = ShiftError("GEO_FALLBACK_PHOTO_INVALID", "Фото недоступно для привязки", 422)
+    try:
+        file_uuid = uuid.UUID(photo_id)
+    except (ValueError, AttributeError, TypeError):
+        raise invalid from None
+
+    file = (
+        await session.execute(select(File).where(File.id == file_uuid).with_for_update())
+    ).scalar_one_or_none()
+    if (
+        file is None
+        or file.category != FileCategory.shift_geo_photo
+        or file.owner_user_id != user_id
+        or file.organization_id != organization_id
+        or file.is_attached
+    ):
+        raise invalid
+
+    file.is_attached = True
+    return file.id
+
+
 async def _resolve_org_shift_start(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -106,11 +207,14 @@ async def _resolve_org_shift_start(
     latitude: float | None,
     longitude: float | None,
     work_location_id: str | None,
+    geo_fallback: GeoFallbackStart | None = None,
 ) -> uuid.UUID | None:
     """Проверить членство/гео и определить точку смены по матрице гео×обязательность.
 
     Возвращает `work_location_id` для сохранения в смене (или `None`).
     - гео вкл: точку определяет сервер (ближайшая из совпавших зон), присланное игнорируется;
+    - гео вкл + фолбэк по фото: координат нет, точку выбирает сотрудник — она
+      обязательна и валидируется на org (shift_geo_photo_fallback);
     - гео выкл + require: точка обязательна (422 если не передана), валидируется на org;
     - гео выкл + не require: точка опциональна, при наличии — валидируется на org.
     """
@@ -144,6 +248,19 @@ async def _resolve_org_shift_start(
 
     # Гео вкл: точка определяется сервером, присланный work_location_id игнорируется.
     if geo_enabled:
+        # Фолбэк по фото: координат нет вообще, ближайшую зону подобрать нечем —
+        # точку смены называет сам сотрудник, поэтому она обязательна.
+        if geo_fallback is not None:
+            if work_location_id is None:
+                raise ShiftError(
+                    "WORK_LOCATION_REQUIRED",
+                    "Необходимо выбрать рабочую точку",
+                    422,
+                )
+            return await _require_org_location(
+                session, organization_id, _parse_work_location_id(work_location_id)
+            )
+
         if latitude is None or longitude is None:
             raise ShiftError(
                 "COORDS_REQUIRED",
@@ -163,6 +280,14 @@ async def _resolve_org_shift_start(
                 403,
             )
         return nearest.id
+
+    # Гео выкл: фолбэк по фото не имеет смысла — проверять было нечего (R4).
+    if geo_fallback is not None:
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "Старт по фото доступен только в организации с геопроверкой",
+            422,
+        )
 
     # Гео выкл: точка берётся из выбора сотрудника.
     if work_location_id is not None:
@@ -379,6 +504,8 @@ async def start_shift(
     longitude: float | None = None,
     work_location_id: str | None = None,
     work_schedule_id: str | None = None,
+    geo_fallback_photo_id: str | None = None,
+    geo_fallback_reason: GeoFallbackReason | None = None,
 ) -> Shift:
     """Start a new shift.
 
@@ -390,7 +517,19 @@ async def start_shift(
       `require_work_location`). Персональная смена точку не привязывает.
     - Персональная смена (`organization_id is None`) графики не применяет — все
       `scheduled_*` остаются `null` (R3 backend.md).
+    - `geo_fallback_photo_id` + `geo_fallback_reason` (только вместе, только org с
+      геопроверкой, только без координат) — старт по фото с камеры, когда гео на
+      клиенте физически недоступно: смена помечается «стартовала без геопроверки»
+      (shift_geo_photo_fallback).
     """
+    geo_fallback = _resolve_geo_fallback_input(
+        organization_id,
+        latitude,
+        longitude,
+        geo_fallback_photo_id,
+        geo_fallback_reason,
+    )
+
     await _auto_finish_stale_for_user(session, user_id)
 
     # Check for existing active shift in the same context
@@ -423,6 +562,7 @@ async def start_shift(
             latitude,
             longitude,
             work_location_id,
+            geo_fallback,
         )
         member_result = await session.execute(
             select(OrganizationMember).where(
@@ -452,6 +592,14 @@ async def start_shift(
             now,
         )
 
+    # Фото захватывается последним: любой отказ выше оставляет его
+    # `is_attached=false`, и файл-сироту подберёт штатная чистка.
+    geo_fallback_photo_file_id: uuid.UUID | None = None
+    if geo_fallback is not None and organization_id is not None:
+        geo_fallback_photo_file_id = await _claim_geo_fallback_photo(
+            session, user_id, organization_id, geo_fallback.photo_id
+        )
+
     shift = Shift(
         user_id=user_id,
         organization_id=organization_id,
@@ -461,6 +609,8 @@ async def start_shift(
         schedule_name=schedule_name,
         scheduled_start_at=scheduled_start_at,
         scheduled_end_at=scheduled_end_at,
+        geo_fallback_photo_file_id=geo_fallback_photo_file_id,
+        geo_fallback_reason=geo_fallback.reason if geo_fallback is not None else None,
     )
     session.add(shift)
     await session.flush()
@@ -476,6 +626,7 @@ async def start_shift(
         user_id=str(user_id),
         org_id=str(organization_id) if organization_id else None,
         work_schedule_id=str(schedule_id) if schedule_id else None,
+        geo_fallback_reason=geo_fallback.reason.value if geo_fallback is not None else None,
     )
 
     return await _get_shift_with_pauses(session, shift.id, user_id)
@@ -955,6 +1106,7 @@ async def get_org_shifts(
     has_overtime: str | None = None,
     include_deleted: bool = False,
     only_manual: bool = False,
+    geo_fallback: bool | None = None,
     limit: int = 20,
     offset: int = 0,
     sort: str = "started_at",
@@ -969,7 +1121,9 @@ async def get_org_shifts(
     также по И с остальными. `include_deleted`/`only_manual` — фильтры
     manual_time_entry (A5): `include_deleted` показывает и soft-deleted смены,
     `only_manual` — только заведённые/правленые вручную (created_by_user_id
-    IS NOT NULL OR edited_at IS NOT NULL). Поведение по умолчанию не меняется.
+    IS NOT NULL OR edited_at IS NOT NULL). `geo_fallback` (shift_geo_photo_fallback)
+    — `true` только смены со стартом без геопроверки, `false` только обычные,
+    `None` (по умолчанию) без фильтра. Поведение по умолчанию не меняется.
     """
     conditions = [Shift.organization_id == organization_id]
     if not include_deleted:
@@ -996,6 +1150,14 @@ async def get_org_shifts(
         conditions.append(late_seconds_expr > 0)
     if has_overtime is not None:
         conditions.append(_has_overtime_condition(has_overtime))
+    if geo_fallback is not None:
+        # Признак «стартовала без геопроверки» — это наличие причины (фото могло
+        # быть удалено, FK уходит в NULL, а причина остаётся).
+        conditions.append(
+            Shift.geo_fallback_reason.isnot(None)
+            if geo_fallback
+            else Shift.geo_fallback_reason.is_(None)
+        )
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
     query = (

@@ -753,6 +753,12 @@ async def list_org_shifts(
         description="Только смены, заведённые или правленые вручную "
         "(created_by_user_id IS NOT NULL OR edited_at IS NOT NULL, manual_time_entry)",
     ),
+    geo_fallback: bool | None = Query(
+        None,
+        description="Фильтр «старт без геопроверки» (shift_geo_photo_fallback): "
+        "true — только смены, стартовавшие по фото вместо координат, false — только "
+        "обычные, не передан — без фильтра",
+    ),
     limit: int = Query(20, ge=1, le=100, description="Размер страницы (1–100)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
@@ -799,6 +805,7 @@ async def list_org_shifts(
         has_overtime=has_overtime,
         include_deleted=include_deleted,
         only_manual=only_manual,
+        geo_fallback=geo_fallback,
         limit=limit,
         offset=offset,
         sort=sort,

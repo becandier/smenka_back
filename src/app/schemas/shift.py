@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from src.app.models.shift import GeoFallbackReason
 from src.app.schemas.overtime import OvertimeInfo
 
 
@@ -153,6 +154,22 @@ class ShiftResponse(BaseModel):
         description="true — смена удалена (soft-delete). В обычных выборках всегда false; "
         "возможно true только при include_deleted=true и в ответе DELETE",
     )
+    geo_fallback: bool = Field(
+        default=False,
+        description="true — смена стартовала без геопроверки, по фото с камеры "
+        "(shift_geo_photo_fallback). Derived: geo_fallback_reason IS NOT NULL",
+    )
+    geo_fallback_reason: str | None = Field(
+        default=None,
+        description="Машинный код гео-ошибки клиента на старте: GEO_PERMISSION_DENIED, "
+        "GEO_PERMISSION_DENIED_FOREVER, GEO_SERVICE_DISABLED, GEO_UNAVAILABLE, "
+        "GEO_UNSUPPORTED, GEO_INSECURE_CONTEXT. null — обычная смена",
+    )
+    geo_fallback_photo_file_id: str | None = Field(
+        default=None,
+        description="UUID файла-снимка (категория shift_geo_photo) — смотреть через "
+        "GET /files/{file_id}. null — обычная смена либо фото уже удалено",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -212,6 +229,19 @@ class ShiftStartRequest(BaseModel):
         "передан — обязан быть в эффективном наборе сотрудника (иначе "
         "SCHEDULE_NOT_AVAILABLE). Если не передан — сервер подставляет автоматически "
         "(1 доступный) или требует выбора (require_schedule=true и >1/0 доступных)",
+    )
+    geo_fallback_photo_id: str | None = Field(
+        default=None,
+        description="UUID уже загруженного файла категории `shift_geo_photo` — снимок "
+        "с камеры вместо координат, когда геолокация недоступна. Только вместе с "
+        "`geo_fallback_reason`, только для организации с геопроверкой и только без "
+        "координат; требует `work_location_id` (shift_geo_photo_fallback)",
+    )
+    geo_fallback_reason: GeoFallbackReason | None = Field(
+        default=None,
+        description="Машинный код гео-ошибки клиента: GEO_PERMISSION_DENIED, "
+        "GEO_PERMISSION_DENIED_FOREVER, GEO_SERVICE_DISABLED, GEO_UNAVAILABLE, "
+        "GEO_UNSUPPORTED, GEO_INSECURE_CONTEXT. Только вместе с `geo_fallback_photo_id`",
     )
 
 
