@@ -66,6 +66,8 @@ def _shift_to_response(
     `is_manual`/`is_edited`/`manual_note`/`edited_at`/`is_deleted` (manual_time_entry)
     читаются прямо со смены — видны и в персональном, и в орг-контексте (R7).
     `created_by_name`/`edited_by_name` — имя админа, только орг-контекст.
+    `geo_fallback*` (shift_geo_photo_fallback) тоже читаются со смены: у обычной
+    смены это `false`/`null`/`null`.
     """
     work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
@@ -127,6 +129,13 @@ def _shift_to_response(
         edited_by_name=edited_by_name,
         created_by_name=created_by_name,
         is_deleted=shift.is_deleted,
+        geo_fallback=shift.geo_fallback_reason is not None,
+        geo_fallback_reason=(
+            shift.geo_fallback_reason.value if shift.geo_fallback_reason is not None else None
+        ),
+        geo_fallback_photo_file_id=(
+            str(shift.geo_fallback_photo_file_id) if shift.geo_fallback_photo_file_id else None
+        ),
     ).model_dump(mode="json")
 
 
@@ -260,7 +269,11 @@ async def shift_stats(
     description="Начинает новую смену. Без `organization_id` — персональная смена. "
     "С `organization_id` — организационная смена (требуется членство, при включённой "
     "геопроверке нужны координаты). Допускается одна активная персональная смена + "
-    "по одной на каждую организацию одновременно.",
+    "по одной на каждую организацию одновременно. Если геолокация на клиенте "
+    "физически недоступна — вместо координат можно прислать `geo_fallback_photo_id` "
+    "(файл категории `shift_geo_photo`) + `geo_fallback_reason` и обязательный "
+    "`work_location_id`: смена стартует помеченной «без геопроверки» "
+    "(shift_geo_photo_fallback).",
 )
 async def start_shift(
     user: CurrentUserDep,
@@ -272,12 +285,16 @@ async def start_shift(
     lng = None
     work_location_id = None
     work_schedule_id = None
+    geo_fallback_photo_id = None
+    geo_fallback_reason = None
     if body is not None:
         org_id = uuid.UUID(body.organization_id) if body.organization_id else None
         lat = body.latitude
         lng = body.longitude
         work_location_id = body.work_location_id
         work_schedule_id = body.work_schedule_id
+        geo_fallback_photo_id = body.geo_fallback_photo_id
+        geo_fallback_reason = body.geo_fallback_reason
 
     shift = await shift_service.start_shift(
         session,
@@ -287,6 +304,8 @@ async def start_shift(
         longitude=lng,
         work_location_id=work_location_id,
         work_schedule_id=work_schedule_id,
+        geo_fallback_photo_id=geo_fallback_photo_id,
+        geo_fallback_reason=geo_fallback_reason,
     )
     await session.commit()
     late_tolerance, overtime = await _enrich_single_shift(session, shift)
