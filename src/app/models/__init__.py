@@ -47,10 +47,17 @@ from src.app.models.organization import MemberRole, Organization, OrganizationMe
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
+from src.app.models.plan import Plan
 from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
 from src.app.models.shift_overtime_request import (
     OvertimeRequestStatus,
     ShiftOvertimeRequest,
+)
+from src.app.models.subscription import (
+    Subscription,
+    SubscriptionEvent,
+    SubscriptionEventType,
+    SubscriptionStatus,
 )
 from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_location import WorkLocation
@@ -103,6 +110,7 @@ __all__ = [
     "Penalty",
     "PhotoRequirement",
     "PhotoSource",
+    "Plan",
     "RateType",
     "RefreshToken",
     "ScheduleOverrideType",
@@ -110,6 +118,10 @@ __all__ = [
     "ShiftFinishReason",
     "ShiftOvertimeRequest",
     "ShiftStatus",
+    "Subscription",
+    "SubscriptionEvent",
+    "SubscriptionEventType",
+    "SubscriptionStatus",
     "TestAssignment",
     "TestAssignmentStatus",
     "TestAttempt",

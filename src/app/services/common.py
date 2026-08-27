@@ -28,7 +28,10 @@ class AccessError(Exception):
         self.status_code = status_code
 
 
-async def _is_super_admin(session: AsyncSession, user_id: uuid.UUID) -> bool:
+async def is_super_admin(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    """Проверка платформенной роли, переиспользуемая и вне org-guard'ов ниже
+    (напр. `services/entitlements.py`, где `require_active_subscription`
+    должен пропускать super_admin в обход read-only)."""
     result = await session.execute(select(User.role).where(User.id == user_id))
     return result.scalar_one_or_none() == UserRole.super_admin
 
@@ -43,7 +46,7 @@ async def ensure_owner(
     """Допускает только владельца организации или super_admin."""
     if org.owner_id == user_id:
         return
-    if await _is_super_admin(session, user_id):
+    if await is_super_admin(session, user_id):
         return
     raise AccessError("FORBIDDEN", message, 403)
 
@@ -66,7 +69,7 @@ async def ensure_member(
     )
     if result.scalar_one_or_none() is not None:
         return
-    if await _is_super_admin(session, user_id):
+    if await is_super_admin(session, user_id):
         return
     raise AccessError("FORBIDDEN", message, 403)
 
@@ -97,6 +100,6 @@ async def ensure_admin_or_owner(
     )
     if result.scalar_one_or_none() is not None:
         return
-    if allow_super_admin and await _is_super_admin(session, user_id):
+    if allow_super_admin and await is_super_admin(session, user_id):
         return
     raise AccessError("FORBIDDEN", message, 403)
