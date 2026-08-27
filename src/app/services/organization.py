@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.services import entitlements
 from src.app.services.common import ensure_admin_or_owner, ensure_member, ensure_owner
 
 logger = get_logger(__name__)
@@ -47,6 +48,10 @@ async def create_organization(
     session.add(settings)
     await session.flush()
     await session.refresh(org, ["settings"])
+
+    # tariffs: триал ровно один на организацию, выдаётся автоматически —
+    # отдельного эндпоинта «начать триал» нет (backend.md, «Создание подписки»).
+    await entitlements.create_subscription_for_org(session, org.id, actor_user_id=owner_id)
 
     logger.info("organization_created", org_id=str(org.id), owner_id=str(owner_id))
     return org
@@ -166,6 +171,7 @@ async def update_organization(
     org = await get_organization(session, org_id)
     # Управляющее действие: доступно owner, admin-участнику и super_admin.
     await ensure_admin_or_owner(session, org, actor_id)
+    await entitlements.require_active_subscription(session, org, actor_id)
     if name is not None:
         org.name = name
     if timezone is not None:
@@ -197,6 +203,7 @@ async def rotate_invite_code(
     org = await get_organization(session, org_id)
     # Онбординг сотрудников — функция админа: ротировать код может owner и admin.
     await ensure_admin_or_owner(session, org, actor_id)
+    await entitlements.require_active_subscription(session, org, actor_id)
     org.invite_code = _generate_invite_code()
     await session.flush()
     return org.invite_code
@@ -230,6 +237,12 @@ async def join_by_invite(
     )
     if existing.scalar_one_or_none() is not None:
         raise OrgError("ALREADY_MEMBER", "Вы уже состоите в этой организации", 409)
+
+    # tariffs: read-only организации не принимает новых участников; лимит
+    # сотрудников проверяется у организации, к которой присоединяются
+    # (backend.md, «Энфорсмент лимитов» — join по инвайту, точка роста).
+    await entitlements.require_active_subscription(session, org, user_id)
+    await entitlements.require_capacity(session, org, entitlements.LimitKind.employees)
 
     member = OrganizationMember(
         organization_id=org.id,
@@ -363,6 +376,7 @@ async def update_member_role(
     # Only owner or super_admin can change roles
     if not is_super_admin and org.owner_id != requester_id:
         raise OrgError("FORBIDDEN", "Только владелец или super_admin может менять роли", 403)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     try:
         role_enum = MemberRole(new_role)

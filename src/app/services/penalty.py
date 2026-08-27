@@ -17,6 +17,7 @@ from src.app.core.logging import get_logger
 from src.app.models.organization import OrganizationMember
 from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
 from src.app.models.shift import Shift
+from src.app.services import entitlements
 from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.shift import ensure_utc, validate_date_range
@@ -132,6 +133,8 @@ async def create_template(
 ) -> OrganizationPenaltyTemplate:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
 
     template = OrganizationPenaltyTemplate(
         organization_id=org_id,
@@ -176,6 +179,9 @@ async def update_template(
 ) -> OrganizationPenaltyTemplate:
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
+
     template = await _get_template(session, org_id, template_id)
 
     for key in ("reason", "amount_minor", "currency"):
@@ -196,6 +202,8 @@ async def delete_template(
     Повторный вызов на уже удалённом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+
     template = await _get_template(session, org_id, template_id)
 
     template.is_deleted = True
@@ -220,6 +228,9 @@ async def restore_template(
     """Восстановление удалённого шаблона. На не-удалённом — 409 PENALTY_TEMPLATE_NOT_DELETED."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
+
     template = await _get_template(session, org_id, template_id, include_deleted=True)
     if not template.is_deleted:
         raise PenaltyError("PENALTY_TEMPLATE_NOT_DELETED", "Шаблон штрафа не удалён", 409)
@@ -250,6 +261,9 @@ async def create_penalty(
     """Назначить штраф. reason/amount/currency — снимок (из шаблона или кастом)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
+
     member = await _get_member(session, org_id, member_id)
 
     template = None
@@ -371,6 +385,9 @@ async def update_penalty(
     """Исправить запись штрафа. member_id не меняется (для переназначения — снять и создать)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
+
     penalty = await _get_penalty(session, org_id, penalty_id)
 
     if "shift_id" in fields:
@@ -406,6 +423,8 @@ async def delete_penalty(
     Повторный вызов на уже снятом — 404."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+
     penalty = await _get_penalty(session, org_id, penalty_id)
 
     penalty.is_deleted = True
@@ -430,6 +449,9 @@ async def restore_penalty(
     """Восстановление снятого штрафа. На не-снятом — 409 PENALTY_NOT_DELETED."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.fines)
+
     penalty = await _get_penalty(session, org_id, penalty_id, include_deleted=True)
     if not penalty.is_deleted:
         raise PenaltyError("PENALTY_NOT_DELETED", "Штраф не снят", 409)

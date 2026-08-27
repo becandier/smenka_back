@@ -30,6 +30,7 @@ from src.app.models.employee_test import (
 )
 from src.app.models.notification import Notification, NotificationType
 from src.app.models.organization import OrganizationMember
+from src.app.services import entitlements
 from src.app.services import notification as notification_service
 from src.app.services.common import ensure_admin_or_owner
 from src.app.services.notification import NotificationInput
@@ -190,6 +191,7 @@ async def create_template(
 ) -> TestTemplate:
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
 
     if not title or not title.strip():
         raise TestError("TEST_TEMPLATE_INVALID", "title обязателен", 422)
@@ -227,6 +229,7 @@ async def validate_template_only(
     """Сухая проверка без записи в БД. Возвращает (question_count, total_points)."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_feature(session, org, entitlements.PlanFeature.test_import)
     return validate_template_payload(
         pass_threshold_percent=pass_threshold_percent,
         max_attempts=max_attempts,
@@ -311,6 +314,7 @@ async def update_template(
     присутствует — полная замена набора вопросов (снимки уже сданных попыток не трогает)."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if template.is_deleted:
         raise TestError(
@@ -384,6 +388,7 @@ async def delete_template(
     восстановления)."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if template.is_deleted:
         raise TestError("TEST_TEMPLATE_NOT_FOUND", "Шаблон теста не найден", 404)
@@ -410,6 +415,7 @@ async def restore_template(
     """Восстановление удалённого шаблона. На не-удалённом — 409 TEST_TEMPLATE_NOT_DELETED."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if not template.is_deleted:
         raise TestError("TEST_TEMPLATE_NOT_DELETED", "Шаблон теста не удалён", 409)
@@ -464,6 +470,7 @@ async def assign_template(
     Возвращает (assignments, created, updated)."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id)
     if template.is_deleted:
         raise TestError(
@@ -656,6 +663,7 @@ async def delete_assignment(
     создаём, история не сохраняется."""
     org = await get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await entitlements.require_active_subscription(session, org, requester_id)
     assignment = await _get_org_assignment(session, org_id, assignment_id)
 
     await session.execute(
