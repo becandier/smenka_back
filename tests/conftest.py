@@ -26,6 +26,7 @@ from src.app.core.database import Base, get_session
 from src.app.core.rate_limit import limiter
 from src.app.core.security import hash_password
 from src.app.main import app
+from src.app.models.plan import Plan
 from src.app.models.user import User, UserRole
 
 settings = get_settings()
@@ -60,12 +61,49 @@ TEST_DATABASE_URL = (
 )
 
 
+async def _seed_plans(conn) -> None:
+    """`plans` (tariffs) — статичный справочник, в проде сидируется миграцией,
+    не рантаймом приложения. Тестовая БД поднимается из ORM-метаданных
+    (`create_all`), а не через Alembic, поэтому сидируем вручную — иначе
+    любое создание организации падает на FK `subscriptions.plan_code`."""
+    await conn.execute(
+        Plan.__table__.insert(),
+        [
+            {
+                "code": "standard",
+                "name": "Стандарт",
+                "price_minor": 500000,
+                "currency": "RUB",
+                "max_employees": 15,
+                "max_locations": 3,
+                "feature_fines": False,
+                "feature_test_import": False,
+                "sort_order": 10,
+                "is_active": True,
+            },
+            {
+                "code": "premium",
+                "name": "Премиум",
+                "price_minor": 1000000,
+                "currency": "RUB",
+                "max_employees": None,
+                "max_locations": None,
+                "feature_fines": True,
+                "feature_test_import": True,
+                "sort_order": 20,
+                "is_active": True,
+            },
+        ],
+    )
+
+
 @pytest.fixture(scope="session")
 async def test_engine():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+        await _seed_plans(conn)
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -79,10 +117,19 @@ def test_session_factory(test_engine):
 
 @pytest.fixture(autouse=True)
 async def _cleanup_tables(test_session_factory):
-    """Truncate all tables after each test for isolation."""
+    """Truncate all tables after each test for isolation.
+
+    `plans` — исключение: статичный справочник (2 строки standard/premium),
+    в проде живёт только миграцией и не трогается рантаймом — как и в проде,
+    в тестах он сидируется один раз на сессию (`_seed_plans`) и не участвует
+    в per-test truncate, иначе следующий же тест не смог бы создать
+    организацию (FK `subscriptions.plan_code`).
+    """
     yield
     async with test_session_factory() as session:
         for table in reversed(Base.metadata.sorted_tables):
+            if table.name == "plans":
+                continue
             await session.execute(text(f"TRUNCATE TABLE {table.name} CASCADE"))
         await session.commit()
 
