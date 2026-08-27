@@ -117,6 +117,12 @@ class GeoFallbackStart:
     reason: GeoFallbackReason
 
 
+# Фолбэк бессмысленен там, где гео и так не проверяется: персональная смена
+# (проверяется до похода в БД) и организация с выключенной геопроверкой (видно
+# только после чтения настроек) — сообщение у обоих отказов одно.
+_GEO_FALLBACK_NOT_APPLICABLE = "Старт по фото доступен только в организации с геопроверкой"
+
+
 def _resolve_geo_fallback_input(
     organization_id: uuid.UUID | None,
     latitude: float | None,
@@ -150,11 +156,7 @@ def _resolve_geo_fallback_input(
             422,
         )
     if organization_id is None:
-        raise ShiftError(
-            "VALIDATION_ERROR",
-            "Старт по фото доступен только в организации с геопроверкой",
-            422,
-        )
+        raise ShiftError("VALIDATION_ERROR", _GEO_FALLBACK_NOT_APPLICABLE, 422)
     return GeoFallbackStart(photo_id=photo_id, reason=reason)
 
 
@@ -283,11 +285,7 @@ async def _resolve_org_shift_start(
 
     # Гео выкл: фолбэк по фото не имеет смысла — проверять было нечего (R4).
     if geo_fallback is not None:
-        raise ShiftError(
-            "VALIDATION_ERROR",
-            "Старт по фото доступен только в организации с геопроверкой",
-            422,
-        )
+        raise ShiftError("VALIDATION_ERROR", _GEO_FALLBACK_NOT_APPLICABLE, 422)
 
     # Гео выкл: точка берётся из выбора сотрудника.
     if work_location_id is not None:
@@ -593,7 +591,8 @@ async def start_shift(
         )
 
     # Фото захватывается последним: любой отказ выше оставляет его
-    # `is_attached=false`, и файл-сироту подберёт штатная чистка.
+    # `is_attached=false`, и файл-сироту подберёт штатная чистка. `organization_id`
+    # здесь всегда не None (фолбэк без организации отсечён выше) — условие для mypy.
     geo_fallback_photo_file_id: uuid.UUID | None = None
     if geo_fallback is not None and organization_id is not None:
         geo_fallback_photo_file_id = await _claim_geo_fallback_photo(
