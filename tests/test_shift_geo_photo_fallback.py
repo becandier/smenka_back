@@ -116,9 +116,7 @@ async def _make_org(
     db_session.add(org)
     await db_session.flush()
 
-    db_session.add(
-        OrganizationSettings(organization_id=org.id, geo_check_enabled=geo)
-    )
+    db_session.add(OrganizationSettings(organization_id=org.id, geo_check_enabled=geo))
     location = WorkLocation(
         organization_id=org.id,
         name="Точка",
