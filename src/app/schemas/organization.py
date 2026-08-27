@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -65,6 +66,13 @@ class OrganizationResponse(BaseModel):
     my_custom_role: RoleResponse | None = Field(
         default=None,
         description="Кастомная роль текущего пользователя (у owner всегда null)",
+    )
+    subscription: dict[str, Any] | None = Field(
+        default=None,
+        description="Состояние подписки (tariffs), тот же объект, что и "
+        "GET .../subscription. Заполняется только для owner/admin/super_admin, "
+        "для employee и в других эндпоинтах (list) — всегда null. Additive-поле, "
+        "старые клиенты игнорируют. Только в GET /organizations/{org_id}.",
     )
 
     model_config = {"from_attributes": True}

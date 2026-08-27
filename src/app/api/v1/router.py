@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from src.app.api.v1.adjustments import router as adjustments_router
 from src.app.api.v1.admin import router as admin_router
+from src.app.api.v1.admin_subscriptions import router as admin_subscriptions_router
 from src.app.api.v1.auth import router as auth_router
 from src.app.api.v1.checklist_assignments import router as checklist_assignments_router
 from src.app.api.v1.checklist_instances import router as checklist_instances_router
@@ -18,7 +19,9 @@ from src.app.api.v1.organizations import router as organizations_router
 from src.app.api.v1.overtime import router as overtime_router
 from src.app.api.v1.payroll import router as payroll_router
 from src.app.api.v1.penalties import router as penalties_router
+from src.app.api.v1.plans import router as plans_router
 from src.app.api.v1.shifts import router as shifts_router
+from src.app.api.v1.subscriptions import router as subscription_router
 from src.app.api.v1.users import router as users_router
 from src.app.api.v1.work_locations import router as work_locations_router
 from src.app.api.v1.work_schedules import router as work_schedules_router
@@ -46,3 +49,6 @@ router.include_router(notifications_router)
 router.include_router(employee_tests_router)
 router.include_router(my_tests_router)
 router.include_router(admin_router)
+router.include_router(admin_subscriptions_router)
+router.include_router(plans_router)
+router.include_router(subscription_router)

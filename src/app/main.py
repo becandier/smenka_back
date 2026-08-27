@@ -24,6 +24,7 @@ from src.app.services.auth import AuthError
 from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
 from src.app.services.employee_test import TestError
+from src.app.services.entitlements import SubscriptionError
 from src.app.services.file_storage import FileError
 from src.app.services.knowledge import KnowledgeError
 from src.app.services.notification import NotificationError
@@ -389,6 +390,14 @@ async def file_error_handler(request: Request, exc: FileError) -> JSONResponse:
 
 @app.exception_handler(PenaltyError)
 async def penalty_error_handler(request: Request, exc: PenaltyError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(SubscriptionError)
+async def subscription_error_handler(request: Request, exc: SubscriptionError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
