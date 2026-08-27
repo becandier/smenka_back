@@ -22,6 +22,24 @@ class ShiftStatus(enum.StrEnum):
     finished = "finished"
 
 
+class GeoFallbackReason(enum.StrEnum):
+    """Машинный код гео-ошибки клиента при старте смены по фото вместо координат
+    (shift_geo_photo_fallback).
+
+    Значения — контракт с мобилкой (UPPER_SNAKE, как коды ошибок API), поэтому
+    имена членов совпадают со значениями: в БД (VARCHAR(40)) хранится ровно тот
+    код, который прислал клиент. Набор фиксирован — произвольную строку сюда
+    класть нельзя.
+    """
+
+    GEO_PERMISSION_DENIED = "GEO_PERMISSION_DENIED"
+    GEO_PERMISSION_DENIED_FOREVER = "GEO_PERMISSION_DENIED_FOREVER"
+    GEO_SERVICE_DISABLED = "GEO_SERVICE_DISABLED"
+    GEO_UNAVAILABLE = "GEO_UNAVAILABLE"
+    GEO_UNSUPPORTED = "GEO_UNSUPPORTED"
+    GEO_INSECURE_CONTEXT = "GEO_INSECURE_CONTEXT"
+
+
 class ShiftFinishReason(enum.StrEnum):
     """Причина завершения смены. NULL у активных/паузных и у всех исторических
     смен, заведённых до фичи work_schedules."""
@@ -107,6 +125,19 @@ class Shift(Base):
     )
     finish_reason: Mapped[ShiftFinishReason | None] = mapped_column(
         Enum(ShiftFinishReason),
+        nullable=True,
+    )
+    # --- shift_geo_photo_fallback: старт без геопроверки, по фото с камеры ---
+    # Файл категории `shift_geo_photo`. ON DELETE SET NULL: если фото когда-нибудь
+    # удалят, признак «стартовала без гео» не теряется — он живёт в reason.
+    geo_fallback_photo_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Инвариант: `geo_fallback_reason IS NOT NULL` ⇔ смена стартовала без геопроверки.
+    geo_fallback_reason: Mapped[GeoFallbackReason | None] = mapped_column(
+        Enum(GeoFallbackReason, native_enum=False, length=40),
         nullable=True,
     )
     # --- manual_time_entry: ручной ввод/правка/удаление смены администратором ---

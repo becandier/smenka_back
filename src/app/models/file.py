@@ -25,6 +25,8 @@ class FileCategory(enum.StrEnum):
     checklist_photo = "checklist_photo"
     knowledge_base = "knowledge_base"
     avatar = "avatar"
+    # Фото с камеры вместо координат при старте смены (shift_geo_photo_fallback).
+    shift_geo_photo = "shift_geo_photo"
     other = "other"
 
 

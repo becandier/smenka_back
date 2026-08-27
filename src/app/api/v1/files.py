@@ -35,7 +35,8 @@ def _file_response(file: FileModel, url: str, url_expires_at: datetime) -> dict[
         "реестре `files` (is_attached=false). Тип проверяется по реальному "
         "содержимому, размер — по политике категории. Право проверяется по "
         "`category`: knowledge_base — только admin/owner организации; "
-        "checklist_photo — любой участник; avatar/other — персональные. "
+        "checklist_photo и shift_geo_photo — любой участник; avatar/other — "
+        "персональные. "
         "Возвращает метаданные и свежий presigned GET URL."
     ),
 )
@@ -61,6 +62,7 @@ async def upload_file(
     description=(
         "Возвращает метаданные файла и новый presigned GET URL (для обновления "
         "протухшей ссылки). Доступ — загрузивший, admin/owner организации файла "
+        "(в т.ч. для просмотра фото старта без геопроверки, shift_geo_photo) "
         "или участник (для knowledge_base)."
     ),
 )

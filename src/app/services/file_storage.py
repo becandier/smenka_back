@@ -83,6 +83,14 @@ CATEGORY_POLICIES: dict[FileCategory, CategoryPolicy] = {
         allow_any_image=True,
         org_scoped=True,
     ),
+    # shift_geo_photo_fallback: снимок с камеры вместо координат при старте смены.
+    # Политика 1-в-1 с checklist_photo — тот же профиль «фото сотрудника в org».
+    FileCategory.shift_geo_photo: CategoryPolicy(
+        prefix="shift-geo-photos/",
+        max_size_bytes=10 * _MB,
+        allowed_mimes=_IMAGE_MIMES,
+        org_scoped=True,
+    ),
     FileCategory.avatar: CategoryPolicy(
         prefix="avatars/",
         max_size_bytes=5 * _MB,
@@ -219,7 +227,7 @@ async def _check_upload_access(
         await ensure_admin_or_owner(
             session, org, user.id, message="Нет прав на загрузку в базу знаний"
         )
-    else:  # checklist_photo — любой участник организации
+    else:  # checklist_photo / shift_geo_photo — любой участник организации
         await ensure_member(session, org, user.id, message="Нужно быть участником организации")
     return organization_id
 
@@ -342,7 +350,8 @@ async def _ensure_can_read(session: AsyncSession, file: File, user: User) -> Non
         if file.category == FileCategory.knowledge_base:
             await ensure_member(session, org, user.id, message="Нет доступа к файлу")
             return
-        if file.category == FileCategory.checklist_photo:
+        # Фото сотрудника (чек-лист / гео-фолбэк старта) разбирает admin/owner org.
+        if file.category in (FileCategory.checklist_photo, FileCategory.shift_geo_photo):
             await ensure_admin_or_owner(session, org, user.id, message="Нет доступа к файлу")
             return
     raise AccessError("FORBIDDEN", "Нет доступа к файлу", 403)
