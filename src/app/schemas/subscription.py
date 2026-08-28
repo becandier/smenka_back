@@ -66,6 +66,10 @@ class AdminSubscriptionRow(BaseModel):
     current_period_end: datetime | None = None
     grace_ends_at: datetime | None = None
     days_left: int | None = None
+    limits: PlanLimits = Field(
+        description="Эффективные лимиты (как в п.2 ТЗ): в trialing — от premium, "
+        "независимо от plan_code"
+    )
     usage: AdminSubscriptionUsage
     note: str | None = None
     updated_at: datetime

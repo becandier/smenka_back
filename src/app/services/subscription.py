@@ -35,7 +35,6 @@ logger = get_logger(__name__)
 
 _EXTEND_MIN_MONTHS = 1
 _EXTEND_MAX_MONTHS = 24
-_EXPIRING_SOON_DAYS = 7
 
 
 # --- 1. Витрина тарифов -------------------------------------------------------
@@ -86,7 +85,10 @@ class AdminSubscriptionRow:
     owner_email: str
     owner_login: str | None
     sub: Subscription
-    plan: Plan
+    plan: Plan  # сохранённый план организации (Subscription.plan_code), НЕ эффективный
+    # эффективный план — как в limits/features п.2 ТЗ: в trialing это premium
+    # независимо от plan.code
+    effective_plan: Plan
     status: EffectiveStatus
     employees: int
     locations: int
@@ -138,10 +140,15 @@ async def list_admin_subscriptions(
     statuses: list[str] | None = None,
     plan_code: str | None = None,
     q: str | None = None,
+    expiring_soon: bool = False,
     limit: int = 20,
     offset: int = 0,
     sort: str | None = None,
 ) -> tuple[list[AdminSubscriptionRow], int]:
+    """`expiring_soon=True` фильтрует на всей выборке (до пагинации) по
+    `entitlements.is_expiring_soon` — тому же предикату, что даёт
+    `expiring_in_7_days` в `get_summary`, чтобы фильтр реестра и счётчик
+    сводки никогда не расходились."""
     query = (
         select(Organization, User.email, User.login, Subscription, Plan)
         .join(Subscription, Subscription.organization_id == Organization.id)
@@ -159,23 +166,29 @@ async def list_admin_subscriptions(
     employees_map, locations_map = await _usage_maps(session, org_ids)
 
     now = datetime.now(UTC)
-    built = [
-        AdminSubscriptionRow(
-            org=org,
-            owner_email=owner_email or "",
-            owner_login=owner_login,
-            sub=sub,
-            plan=plan,
-            status=entitlements.compute_effective_status(sub, now),
-            employees=employees_map.get(org.id, 0),
-            locations=locations_map.get(org.id, 0),
+    built: list[AdminSubscriptionRow] = []
+    for org, owner_email, owner_login, sub, plan in rows:
+        status = entitlements.compute_effective_status(sub, now)
+        effective_plan = await entitlements.get_effective_plan(session, sub, status)
+        built.append(
+            AdminSubscriptionRow(
+                org=org,
+                owner_email=owner_email or "",
+                owner_login=owner_login,
+                sub=sub,
+                plan=plan,
+                effective_plan=effective_plan,
+                status=status,
+                employees=employees_map.get(org.id, 0),
+                locations=locations_map.get(org.id, 0),
+            )
         )
-        for org, owner_email, owner_login, sub, plan in rows
-    ]
 
     if statuses:
         status_set = set(statuses)
         built = [b for b in built if b.status.value in status_set]
+    if expiring_soon:
+        built = [b for b in built if entitlements.is_expiring_soon(b.sub, now)]
 
     total = len(built)
     built.sort(key=lambda b: _registry_sort_key(b, sort, now))
@@ -428,8 +441,7 @@ async def get_summary(session: AsyncSession) -> dict[str, Any]:
         by_plan[sub.plan_code] = by_plan.get(sub.plan_code, 0) + 1
         if status == EffectiveStatus.active:
             mrr_minor += price_minor
-        dl = entitlements.days_left(sub, now)
-        if dl is not None and 0 <= dl <= _EXPIRING_SOON_DAYS:
+        if entitlements.is_expiring_soon(sub, now):
             expiring_in_7_days += 1
 
     return {

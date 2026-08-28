@@ -390,3 +390,225 @@ class TestAdminSubscriptionEndpoints:
     ):
         resp = await client.get("/api/v1/admin/subscriptions", headers=auth_headers)
         assert resp.status_code == 403
+
+    async def test_expiring_soon_finds_trialing_org_with_null_current_period_end(
+        self, client: AsyncClient, super_admin_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Техдолг backend.md: свежесозданная trialing-организация никогда не
+        имеет `current_period_end` (только `trial_ends_at`) — это и был
+        исходный баг клиентского фильтра. `expiring_soon` обязан находить её
+        по `days_left`, а не спотыкаться о NULL в колонке."""
+        org_id = await _create_org_via_api(client, super_admin_headers)
+        sub = (
+            await db_session.execute(
+                select(Subscription).where(Subscription.organization_id == uuid.UUID(org_id))
+            )
+        ).scalar_one()
+        sub.trial_ends_at = datetime.now(UTC) + timedelta(days=3)
+        await db_session.commit()
+        assert sub.current_period_end is None
+
+        resp = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true"},
+        )
+        assert resp.status_code == 200
+        items = _data(resp)["items"]
+        row = next((i for i in items if i["organization_id"] == org_id), None)
+        assert row is not None, "горящий триал с NULL current_period_end не найден фильтром"
+        assert row["status"] == "trialing"
+        assert row["current_period_end"] is None
+
+    async def test_expiring_soon_excludes_suspended_canceled_and_far_future(
+        self, client: AsyncClient, super_admin_headers: dict[str, str], db_session: AsyncSession
+    ):
+        far_org_id = await _create_org_via_api(client, super_admin_headers)  # trial через 14 дней
+        suspended_org_id = await _create_org_via_api(client, super_admin_headers)
+        canceled_org_id = await _create_org_via_api(client, super_admin_headers)
+
+        suspended_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(suspended_org_id)
+                )
+            )
+        ).scalar_one()
+        suspended_sub.status = "active"
+        suspended_sub.current_period_end = datetime.now(UTC) - timedelta(days=60)
+
+        canceled_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(canceled_org_id)
+                )
+            )
+        ).scalar_one()
+        canceled_sub.status = "canceled"
+        await db_session.commit()
+
+        resp = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true"},
+        )
+        assert resp.status_code == 200
+        ids = [i["organization_id"] for i in _data(resp)["items"]]
+        assert far_org_id not in ids
+        assert suspended_org_id not in ids
+        assert canceled_org_id not in ids
+
+    async def test_expiring_soon_combines_with_status_and_plan_code_filters(
+        self, client: AsyncClient, super_admin_headers: dict[str, str], db_session: AsyncSession
+    ):
+        trial_org_id = await _create_org_via_api(client, super_admin_headers)
+        active_org_id = await _create_org_via_api(client, super_admin_headers)
+
+        trial_sub = (
+            await db_session.execute(
+                select(Subscription).where(Subscription.organization_id == uuid.UUID(trial_org_id))
+            )
+        ).scalar_one()
+        trial_sub.trial_ends_at = datetime.now(UTC) + timedelta(days=2)
+
+        active_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(active_org_id)
+                )
+            )
+        ).scalar_one()
+        active_sub.status = "active"
+        active_sub.plan_code = "standard"
+        active_sub.current_period_end = datetime.now(UTC) + timedelta(days=5)
+        await db_session.commit()
+
+        resp_active = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true", "status": "active"},
+        )
+        ids_active = [i["organization_id"] for i in _data(resp_active)["items"]]
+        assert active_org_id in ids_active
+        assert trial_org_id not in ids_active
+
+        resp_trialing = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true", "status": "trialing"},
+        )
+        ids_trialing = [i["organization_id"] for i in _data(resp_trialing)["items"]]
+        assert trial_org_id in ids_trialing
+        assert active_org_id not in ids_trialing
+
+        resp_plan = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true", "plan_code": "standard"},
+        )
+        ids_plan = [i["organization_id"] for i in _data(resp_plan)["items"]]
+        assert active_org_id in ids_plan
+        assert trial_org_id not in ids_plan
+
+    async def test_expiring_soon_count_matches_summary_expiring_in_7_days(
+        self, client: AsyncClient, super_admin_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Защита от расхождения: фильтр реестра и счётчик сводки обязаны
+        считать одно и то же — оба переиспользуют `entitlements.
+        is_expiring_soon`."""
+        stale_trial_id = await _create_org_via_api(
+            client, super_admin_headers
+        )  # 14 дней, не горит
+        soon_trial_id = await _create_org_via_api(client, super_admin_headers)
+        soon_active_id = await _create_org_via_api(client, super_admin_headers)
+        stale_suspended_id = await _create_org_via_api(client, super_admin_headers)
+
+        soon_trial_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(soon_trial_id)
+                )
+            )
+        ).scalar_one()
+        soon_trial_sub.trial_ends_at = datetime.now(UTC) + timedelta(days=1)
+
+        soon_active_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(soon_active_id)
+                )
+            )
+        ).scalar_one()
+        soon_active_sub.status = "active"
+        soon_active_sub.current_period_end = datetime.now(UTC) + timedelta(days=6)
+
+        stale_suspended_sub = (
+            await db_session.execute(
+                select(Subscription).where(
+                    Subscription.organization_id == uuid.UUID(stale_suspended_id)
+                )
+            )
+        ).scalar_one()
+        stale_suspended_sub.status = "active"
+        stale_suspended_sub.current_period_end = datetime.now(UTC) - timedelta(days=100)
+        await db_session.commit()
+
+        list_resp = await client.get(
+            "/api/v1/admin/subscriptions",
+            headers=super_admin_headers,
+            params={"expiring_soon": "true", "limit": 100},
+        )
+        assert list_resp.status_code == 200
+        list_data = _data(list_resp)
+        ids = {i["organization_id"] for i in list_data["items"]}
+
+        summary_resp = await client.get(
+            "/api/v1/admin/subscriptions/summary", headers=super_admin_headers
+        )
+        assert summary_resp.status_code == 200
+        summary_data = _data(summary_resp)
+
+        assert ids == {soon_trial_id, soon_active_id}
+        assert list_data["total"] == 2
+        assert summary_data["expiring_in_7_days"] == 2
+        assert list_data["total"] == summary_data["expiring_in_7_days"]
+        assert stale_trial_id not in ids
+        assert stale_suspended_id not in ids
+
+    async def test_registry_limits_for_trialing_org_are_premium_regardless_of_plan_code(
+        self, client: AsyncClient, super_admin_headers: dict[str, str], db_session: AsyncSession
+    ):
+        """Расхождение из backend.md: `limits` в элементе списка обязаны быть
+        ЭФФЕКТИВНЫМИ, как в п.2 ТЗ — в `trialing` от `premium`, даже если у
+        подписки сохранён `plan_code=standard` (например, после ручной правки
+        супер-админом)."""
+        trial_org_id = await _create_org_via_api(client, super_admin_headers)
+        trial_sub = (
+            await db_session.execute(
+                select(Subscription).where(Subscription.organization_id == uuid.UUID(trial_org_id))
+            )
+        ).scalar_one()
+        trial_sub.plan_code = "standard"
+        await db_session.commit()
+        assert trial_sub.status == "trialing"
+
+        standard_org_id = await _create_org_via_api(client, super_admin_headers)
+        await client.post(
+            f"/api/v1/admin/organizations/{standard_org_id}/subscription/extend",
+            headers=super_admin_headers,
+            json={"months": 1, "plan_code": "standard"},
+        )
+
+        resp = await client.get("/api/v1/admin/subscriptions", headers=super_admin_headers)
+        assert resp.status_code == 200
+        items = _data(resp)["items"]
+
+        trial_row = next(i for i in items if i["organization_id"] == trial_org_id)
+        assert trial_row["plan_code"] == "standard"
+        assert trial_row["status"] == "trialing"
+        assert trial_row["limits"] == {"max_employees": None, "max_locations": None}
+
+        standard_row = next(i for i in items if i["organization_id"] == standard_org_id)
+        assert standard_row["plan_code"] == "standard"
+        assert standard_row["status"] == "active"
+        assert standard_row["limits"] == {"max_employees": 15, "max_locations": 3}
