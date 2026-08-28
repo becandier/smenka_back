@@ -97,19 +97,34 @@ class Settings(BaseSettings):
     sentry_release: str = ""  # версия образа/коммит, передаётся ENV при сборке
     sentry_traces_sample_rate: float = 0.0
 
-    # Loops (отправка кодов подтверждения письмом — smtp_email, транспорт Loops).
-    # Пустой loops_api_key = отправка выключена (dev/CI): код возвращается в ответе и
-    # логах, письмо не шлётся. Непустой key (прод) = код уходит только письмом, в ответе null.
-    loops_api_key: str = ""
-    loops_transactional_id: str = ""
-    loops_api_url: str = "https://app.loops.so/api/v1/transactional"
-    # Таймаут HTTP-запроса к Loops (сек) — чтобы зависший провайдер не держал запрос.
-    loops_timeout_seconds: int = 10
+    # Отправка кодов подтверждения письмом (smtp_email). Транспорт — сменный:
+    # активная реализация выбирается `email_provider` (см. services/email.py —
+    # Protocol EmailProvider + фабрика _PROVIDERS). Третий провайдер подряд
+    # (Яндекс-SMTP → Loops → SendPulse) — переезд не должен трогать вызывающий код.
+    # "none" (или неизвестное значение) = отправка выключена (dev/CI): код
+    # возвращается в ответе и логах, письмо не шлётся.
+    email_provider: str = "sendpulse"
+
+    # SendPulse (REST API — OAuth client_credentials + /smtp/emails).
+    sendpulse_api_id: str = ""
+    sendpulse_api_secret: str = ""
+    sendpulse_from_email: str = ""
+    sendpulse_from_name: str = "Smenka"
+    # Таймаут HTTP-запроса к SendPulse (сек) — чтобы зависший провайдер не держал запрос.
+    sendpulse_timeout_seconds: int = 10
 
     @property
     def email_enabled(self) -> bool:
-        """Отправка писем включена, когда задан ключ Loops. Иначе dev/CI-режим (код в ответе)."""
-        return bool(self.loops_api_key)
+        """Отправка писем включена, когда выбран провайдер и заданы его креды.
+
+        Иначе (провайдер "none", неизвестное значение или пустые креды) — dev/CI-режим:
+        код возвращается в ответе, письмо не шлётся.
+        """
+        if self.email_provider == "sendpulse":
+            return bool(
+                self.sendpulse_api_id and self.sendpulse_api_secret and self.sendpulse_from_email
+            )
+        return False
 
     @property
     def s3_public_endpoint(self) -> str:

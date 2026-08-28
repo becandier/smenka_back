@@ -1,88 +1,85 @@
-"""Отправка кодов подтверждения через Loops (transactional API — smtp_email).
+"""Доставка кодов подтверждения email — граница между вызывающим кодом и провайдером.
 
-Режимы (флаг — непустой `LOOPS_API_KEY`):
-- **Loops выключен** (dev/CI/тесты): письма не шлём, код возвращается вызывающему
-  для отдачи в ответе/логах. Живой Loops локалке и тестам не нужен.
-- **Loops включён** (прод): код уходит письмом через HTTP API, в ответе/логах кода нет.
+Третий провайдер подряд (Яндекс-SMTP → Loops → SendPulse) — оба предыдущих
+отвалились не по нашей вине (антиспам, блокировка IP), поэтому транспорт здесь
+явно **сменный**: `EmailProvider` — протокол одного метода, `_PROVIDERS` —
+реестр реализаций по значению `settings.email_provider`. Следующий переезд —
+это новый файл `email_<provider>.py` + одна строка в `_PROVIDERS` ниже;
+`deliver_verification_code` и её вызывающие (`api/v1/auth.py`) не меняются.
 
-Транспорт — `httpx.AsyncClient` (async, не блокирует event loop). Шаблон
-«Verification code» (`LOOPS_TRANSACTIONAL_ID`) — правки вёрстки идут из
-`docs/email-templates/verification-code/index.mjml`, не отсюда.
+Режимы (флаг — `settings.email_enabled`, зависит от провайдера и его кредов):
+- **выключен** (dev/CI/тесты): письма не шлём, код возвращается вызывающему
+  для отдачи в ответе/логах. Живой провайдер локалке и тестам не нужен.
+- **включён** (прод): код уходит письмом через провайдера, в ответе/логах кода нет.
 """
 
-from typing import Any
+from collections.abc import Callable
 
-import httpx
-
-from src.app.core.config import get_settings
+from src.app.core.config import Settings, get_settings
 from src.app.core.logging import get_logger
 from src.app.services.auth import AuthError
+from src.app.services.email_provider import EmailDeliveryError, EmailProvider
+from src.app.services.email_sendpulse import SendPulseEmailProvider
 
 logger = get_logger(__name__)
 settings = get_settings()
 
 _EMAIL_SEND_FAILED_MESSAGE = "Не удалось отправить письмо с кодом. Запросите код повторно."
 
+# Реестр провайдеров по `settings.email_provider`. Новый провайдер = новый
+# файл `email_<provider>.py` с классом, реализующим `EmailProvider`, + строка тут.
+# Значение — конструктор (класс), а не сам протокол: у EmailProvider нет
+# декларированного __init__, поэтому фабрики типизированы как Callable.
+_PROVIDERS: dict[str, Callable[[Settings], EmailProvider]] = {
+    "sendpulse": SendPulseEmailProvider,
+}
+
+
+def _build_provider(current_settings: Settings) -> EmailProvider | None:
+    """`None` — известного провайдера нет (`email_provider="none"` или опечатка в
+    значении); в этом случае `email_enabled` уже `False`, отправка не вызывается."""
+    provider_factory = _PROVIDERS.get(current_settings.email_provider)
+    if provider_factory is None:
+        return None
+    return provider_factory(current_settings)
+
+
+# Провайдер — синглтон процесса: держит кэш OAuth-токена в памяти между
+# вызовами (см. email_sendpulse.SendPulseEmailProvider), пересоздавать на
+# каждое письмо нельзя — это заново запросит токен у провайдера.
+_provider = _build_provider(settings)
+
 
 async def deliver_verification_code(to_email: str, code: str) -> str | None:
     """Доставить пользователю код подтверждения.
 
-    Loops выключен → возвращает `code` (его кладут в ответ как раньше).
-    Loops включён → шлёт письмо через HTTP API Loops и возвращает `None`
-    (код в ответе не отдаём). Ошибка отправки при включённом Loops →
+    Отправка выключена → возвращает `code` (его кладут в ответ как раньше).
+    Отправка включена → шлёт письмо через активного провайдера и возвращает
+    `None` (код в ответе не отдаём). Ошибка отправки при включённой отправке →
     `AuthError("EMAIL_SEND_FAILED")` (пользователь и код уже сохранены —
     он сможет повторить через `resend-code`).
     """
     if not settings.email_enabled:
         return code
 
-    payload: dict[str, Any] = {
-        "transactionalId": settings.loops_transactional_id,
-        "email": to_email,
-        "dataVariables": {
-            "code": code,
-            "ttlMinutes": settings.verification_code_expire_minutes,
-        },
-    }
+    if _provider is None:
+        # Защитный случай: email_enabled=True обязан подразумевать known-провайдер
+        # (см. Settings.email_enabled) — но не полагаемся на это молча.
+        logger.error(
+            "verification_email_failed", email=to_email, error="no email provider configured"
+        )
+        raise AuthError("EMAIL_SEND_FAILED", _EMAIL_SEND_FAILED_MESSAGE, 502)
 
     try:
-        response = await _send_loops_request(payload)
-    except httpx.HTTPError as exc:
+        await _provider.send_verification_code(
+            to_email=to_email,
+            code=code,
+            ttl_minutes=settings.verification_code_expire_minutes,
+        )
+    except EmailDeliveryError as exc:
         # repr, а не тело письма/код — в логах кода быть не должно.
         logger.error("verification_email_failed", email=to_email, error=repr(exc))
         raise AuthError("EMAIL_SEND_FAILED", _EMAIL_SEND_FAILED_MESSAGE, 502) from exc
 
-    if not _is_success(response):
-        # Тело ответа Loops содержит осмысленную диагностику (например,
-        # «transactionalId not found» / «missing data variable») — без ключа и кода.
-        logger.error(
-            "verification_email_failed",
-            email=to_email,
-            status_code=response.status_code,
-            body=response.text,
-        )
-        raise AuthError("EMAIL_SEND_FAILED", _EMAIL_SEND_FAILED_MESSAGE, 502)
-
     logger.info("verification_email_sent", email=to_email)
     return None
-
-
-async def _send_loops_request(payload: dict[str, Any]) -> httpx.Response:
-    """Изолирована для мокания в тестах (см. `oauth_tokens._fetch_jwks`)."""
-    async with httpx.AsyncClient(timeout=settings.loops_timeout_seconds) as client:
-        return await client.post(
-            settings.loops_api_url,
-            headers={"Authorization": f"Bearer {settings.loops_api_key}"},
-            json=payload,
-        )
-
-
-def _is_success(response: httpx.Response) -> bool:
-    """Успех — только HTTP 200 и тело `{"success": true}`."""
-    if response.status_code != 200:
-        return False
-    try:
-        data = response.json()
-    except ValueError:
-        return False
-    return data.get("success") is True
