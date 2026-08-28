@@ -45,6 +45,7 @@ from src.app.services.common import is_super_admin
 
 GRACE_DAYS = 7
 PREMIUM_PLAN_CODE = "premium"
+EXPIRING_SOON_DAYS = 7
 
 
 class EffectiveStatus(enum.StrEnum):
@@ -166,6 +167,23 @@ def period_reference(sub: Subscription, now: datetime | None = None) -> datetime
     `past_due`, `None` для `suspended`/`canceled` (реестр подписок super_admin,
     сортировка по умолчанию — ближайшее окончание сверху)."""
     return _resolve(sub, now or datetime.now(UTC)).reference
+
+
+def is_expiring_soon(
+    sub: Subscription, now: datetime | None = None, *, threshold_days: int = EXPIRING_SOON_DAYS
+) -> bool:
+    """Единственный источник правды для «истекает в ближайшие
+    `threshold_days` дней»: эффективный статус ∈ {`trialing`, `active`} и
+    `0 <= days_left <= threshold_days`. Статус отдельно не проверяется —
+    `days_left()` уже возвращает `None` для `suspended`/`canceled` и
+    отрицательное число для `past_due` (now всегда позже `reference` там), так
+    что диапазон `0..threshold_days` сам по себе эквивалентен ограничению по
+    статусу. Переиспользуется в `GET /admin/subscriptions?expiring_soon=true`
+    и в счётчике `expiring_in_7_days` у `GET /admin/subscriptions/summary`,
+    чтобы фильтр реестра и сводка никогда не разъезжались (docs/tasks/
+    tariffs/backend.md, «Контракт доработок»)."""
+    dl = days_left(sub, now)
+    return dl is not None and 0 <= dl <= threshold_days
 
 
 # --- Доступ к БД: планы, подписка, usage --------------------------------------

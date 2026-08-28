@@ -8,6 +8,7 @@ from src.app.schemas.base import ApiResponse
 from src.app.schemas.subscription import (
     AdminSubscriptionListResponse,
     AdminSubscriptionUsage,
+    PlanLimits,
     SubscriptionEventActor,
     SubscriptionEventListResponse,
     SubscriptionEventResponse,
@@ -40,6 +41,10 @@ def _registry_row_to_response(row: AdminSubscriptionRow) -> dict[str, Any]:
         current_period_end=row.sub.current_period_end,
         grace_ends_at=entitlements.grace_ends_at(row.sub),
         days_left=entitlements.days_left(row.sub),
+        limits=PlanLimits(
+            max_employees=row.effective_plan.max_employees,
+            max_locations=row.effective_plan.max_locations,
+        ),
         usage=AdminSubscriptionUsage(employees=row.employees, locations=row.locations),
         note=row.sub.note,
         updated_at=row.sub.updated_at,
@@ -52,7 +57,10 @@ def _registry_row_to_response(row: AdminSubscriptionRow) -> dict[str, Any]:
     description=(
         "Все подписки (организации с `is_deleted=true` исключены). Фильтры: "
         "status (эффективный, множественный), plan_code, q (ILIKE по названию "
-        "организации). Сортировка по умолчанию — ближайшее окончание сверху."
+        "организации), expiring_soon (эффективный статус trialing/active и "
+        "0 <= days_left <= 7, посчитано на всей таблице — тем же предикатом, что "
+        "expiring_in_7_days в /subscriptions/summary). Сортировка по умолчанию — "
+        "ближайшее окончание сверху."
     ),
 )
 async def list_admin_subscriptions(
@@ -61,6 +69,11 @@ async def list_admin_subscriptions(
     status: list[str] | None = Query(None, description="Эффективный статус, можно несколько раз"),
     plan_code: str | None = Query(None),
     q: str | None = Query(None, description="Поиск по названию организации (ILIKE)"),
+    expiring_soon: bool = Query(
+        False,
+        description="Только организации, истекающие в ближайшие 7 дней (trialing/active, "
+        "0 <= days_left <= 7), отфильтровано на всей таблице",
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     sort: str | None = Query(
@@ -74,6 +87,7 @@ async def list_admin_subscriptions(
         statuses=status,
         plan_code=plan_code,
         q=q,
+        expiring_soon=expiring_soon,
         limit=limit,
         offset=offset,
         sort=sort,
