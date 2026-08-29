@@ -105,9 +105,11 @@ class Settings(BaseSettings):
     # возвращается в ответе и логах, письмо не шлётся.
     email_provider: str = "sendpulse"
 
-    # SendPulse (REST API — OAuth client_credentials + /smtp/emails).
-    sendpulse_api_id: str = ""
-    sendpulse_api_secret: str = ""
+    # SendPulse (REST API — статический API-ключ, /smtp/emails). Ключ выдаётся
+    # в личном кабинете SendPulse в формате `sp_apikey_<64 hex>` и передаётся
+    # напрямую как Bearer-токен — обмена на access-токен нет (подтверждено
+    # живым запросом с прод-сервера).
+    sendpulse_api_key: str = ""
     sendpulse_from_email: str = ""
     sendpulse_from_name: str = "Smenka"
     # Таймаут HTTP-запроса к SendPulse (сек) — чтобы зависший провайдер не держал запрос.
@@ -121,9 +123,7 @@ class Settings(BaseSettings):
         код возвращается в ответе, письмо не шлётся.
         """
         if self.email_provider == "sendpulse":
-            return bool(
-                self.sendpulse_api_id and self.sendpulse_api_secret and self.sendpulse_from_email
-            )
+            return bool(self.sendpulse_api_key and self.sendpulse_from_email)
         return False
 
     @property

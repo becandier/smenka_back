@@ -1,8 +1,7 @@
 """Тесты отправки кодов подтверждения через SendPulse (smtp_email, транспорт SendPulse).
 
-HTTP-слой всегда мокается (`email_sendpulse._fetch_access_token` /
-`email_sendpulse._send_email_request`) — живых запросов к SendPulse из тестов
-быть не должно.
+HTTP-слой всегда мокается (`email_sendpulse._send_email_request`) — живых
+запросов к SendPulse из тестов быть не должно.
 """
 
 import base64
@@ -19,12 +18,7 @@ from src.app.services import auth as auth_service
 from src.app.services import email as email_service
 from src.app.services import email_sendpulse
 
-
-def _token_payload(
-    access_token: str = "test-access-token",  # noqa: S107 — тестовый фикстурный токен
-    expires_in: int = 3600,
-) -> dict[str, Any]:
-    return {"access_token": access_token, "token_type": "Bearer", "expires_in": expires_in}
+_TEST_API_KEY = "sp_apikey_test-key"
 
 
 def _send_response(status_code: int, body: dict[str, Any]) -> httpx.Response:
@@ -33,18 +27,14 @@ def _send_response(status_code: int, body: dict[str, Any]) -> httpx.Response:
 
 @pytest.fixture
 def sendpulse_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Включить SendPulse (прод-режим) на время теста: непустые api_id/secret/from."""
+    """Включить SendPulse (прод-режим) на время теста: непустые api_key/from."""
     monkeypatch.setattr(email_service.settings, "email_provider", "sendpulse")
-    monkeypatch.setattr(email_service.settings, "sendpulse_api_id", "test-id")
-    monkeypatch.setattr(email_service.settings, "sendpulse_api_secret", "test-secret")
+    monkeypatch.setattr(email_service.settings, "sendpulse_api_key", _TEST_API_KEY)
     monkeypatch.setattr(email_service.settings, "sendpulse_from_email", "noreply@smenka.space")
     monkeypatch.setattr(email_service.settings, "sendpulse_from_name", "Smenka")
     monkeypatch.setattr(email_service.settings, "sendpulse_timeout_seconds", 10)
 
     assert email_service._provider is not None, "провайдер должен резолвиться в SendPulse"
-    # Сбрасываем кэш токена — провайдер живёт весь тестовый процесс синглтоном,
-    # предыдущий тест мог оставить в нём токен/просроченный кэш.
-    email_service._provider._token = None  # type: ignore[attr-defined]
 
 
 def _decode_html(payload: dict[str, Any]) -> str:
@@ -58,9 +48,7 @@ async def test_sendpulse_off_returns_code_and_does_not_send(
 ) -> None:
     """SendPulse выключен (дефолт: пустые креды): код в ответе, HTTP-запрос не уходит."""
     send_mock = AsyncMock()
-    fetch_mock = AsyncMock()
     monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
-    monkeypatch.setattr(email_sendpulse, "_fetch_access_token", fetch_mock)
 
     response = await client.post(
         "/api/v1/auth/register",
@@ -72,7 +60,6 @@ async def test_sendpulse_off_returns_code_and_does_not_send(
     assert code is not None
     assert len(code) == 4
     send_mock.assert_not_awaited()
-    fetch_mock.assert_not_awaited()
 
 
 async def test_email_provider_none_disables_sending(
@@ -81,8 +68,7 @@ async def test_email_provider_none_disables_sending(
 ) -> None:
     """`email_provider=none` явно выключает отправку, даже если креды заданы."""
     monkeypatch.setattr(email_service.settings, "email_provider", "none")
-    monkeypatch.setattr(email_service.settings, "sendpulse_api_id", "test-id")
-    monkeypatch.setattr(email_service.settings, "sendpulse_api_secret", "test-secret")
+    monkeypatch.setattr(email_service.settings, "sendpulse_api_key", _TEST_API_KEY)
     monkeypatch.setattr(email_service.settings, "sendpulse_from_email", "noreply@smenka.space")
 
     response = await client.post(
@@ -100,9 +86,7 @@ async def test_sendpulse_on_sends_email_and_hides_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SendPulse включён: запрос ушёл с правильным телом, verification_code в ответе = null."""
-    fetch_mock = AsyncMock(return_value=_token_payload())
     send_mock = AsyncMock(return_value=_send_response(200, {"result": True, "id": "abc"}))
-    monkeypatch.setattr(email_sendpulse, "_fetch_access_token", fetch_mock)
     monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
 
     response = await client.post(
@@ -113,13 +97,11 @@ async def test_sendpulse_on_sends_email_and_hides_code(
     assert response.status_code == 201
     assert response.json()["data"]["verification_code"] is None
 
-    fetch_mock.assert_awaited_once()
     send_mock.assert_awaited_once()
 
     args = send_mock.await_args.args
-    # _send_email_request(settings, access_token, payload)
-    assert args[1] == "test-access-token"
-    payload = args[2]
+    # _send_email_request(settings, payload)
+    payload = args[1]
     assert payload["email"]["subject"] == "Код подтверждения Smenka"
     assert payload["email"]["from"] == {"name": "Smenka", "email": "noreply@smenka.space"}
     assert payload["email"]["to"] == [{"email": "on@example.com"}]
@@ -133,6 +115,27 @@ async def test_sendpulse_on_sends_email_and_hides_code(
     assert codes_in_html, "код должен присутствовать в HTML-письме"
 
 
+async def test_sendpulse_sends_api_key_as_bearer_token(
+    client: AsyncClient,
+    sendpulse_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ключ уходит напрямую в заголовке Authorization: Bearer <key>, без обмена на токен."""
+    send_mock = AsyncMock(return_value=_send_response(200, {"result": True, "id": "abc"}))
+    monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "bearer@example.com", "password": "Password1", "name": "Bearer"},
+    )
+
+    assert response.status_code == 201
+    send_mock.assert_awaited_once()
+
+    settings_arg = send_mock.await_args.args[0]
+    assert settings_arg.sendpulse_api_key == _TEST_API_KEY
+
+
 async def test_sendpulse_on_result_false_returns_error(
     client: AsyncClient,
     db_session: AsyncSession,
@@ -140,9 +143,6 @@ async def test_sendpulse_on_result_false_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """HTTP 200, но result != true → EMAIL_SEND_FAILED, пользователь уже создан."""
-    monkeypatch.setattr(
-        email_sendpulse, "_fetch_access_token", AsyncMock(return_value=_token_payload())
-    )
     monkeypatch.setattr(
         email_sendpulse,
         "_send_email_request",
@@ -169,9 +169,6 @@ async def test_sendpulse_on_non_2xx_returns_error(
 ) -> None:
     """HTTP 4xx/5xx от отправки → EMAIL_SEND_FAILED."""
     monkeypatch.setattr(
-        email_sendpulse, "_fetch_access_token", AsyncMock(return_value=_token_payload())
-    )
-    monkeypatch.setattr(
         email_sendpulse,
         "_send_email_request",
         AsyncMock(return_value=_send_response(400, {"message": "invalid sender"})),
@@ -186,20 +183,73 @@ async def test_sendpulse_on_non_2xx_returns_error(
     assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
 
 
-async def test_sendpulse_token_request_failure_returns_error_and_persists_user(
+async def test_sendpulse_on_401_invalid_key_returns_error(
+    client: AsyncClient,
+    sendpulse_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Неверный API-ключ → 401 от SendPulse → EMAIL_SEND_FAILED."""
+    monkeypatch.setattr(
+        email_sendpulse,
+        "_send_email_request",
+        AsyncMock(
+            return_value=_send_response(401, {"error": "Client authentication failed"}),
+        ),
+    )
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "unauthorized@example.com", "password": "Password1", "name": "Unauth"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
+
+
+async def test_sendpulse_on_403_ip_not_allowed_gives_clear_message(
+    client: AsyncClient,
+    sendpulse_on: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 IP address is not allowed → EMAIL_SEND_FAILED, а в логе — внятная подсказка
+    про White List ключа (иначе диагностика уходит в часы при смене IP сервера)."""
+    monkeypatch.setattr(
+        email_sendpulse,
+        "_send_email_request",
+        AsyncMock(
+            return_value=_send_response(403, {"error": "IP address is not allowed"}),
+        ),
+    )
+    log_error = Mock()
+    monkeypatch.setattr(email_service.logger, "error", log_error)
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "forbidden-ip@example.com", "password": "Password1", "name": "Forbidden"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
+
+    log_error.assert_called_once()
+    _, kwargs = log_error.call_args
+    error_repr = kwargs["error"]
+    assert "White List" in error_repr or "белом списке" in error_repr
+    assert "IP" in error_repr
+
+
+async def test_sendpulse_http_error_returns_error(
     client: AsyncClient,
     db_session: AsyncSession,
     sendpulse_on: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Сбой получения OAuth-токена → EMAIL_SEND_FAILED, но пользователь уже создан в БД."""
+    """Сетевая ошибка/таймаут запроса отправки → EMAIL_SEND_FAILED, пользователь уже создан."""
     monkeypatch.setattr(
         email_sendpulse,
-        "_fetch_access_token",
+        "_send_email_request",
         AsyncMock(side_effect=httpx.TimeoutException("boom")),
     )
-    send_mock = AsyncMock()
-    monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
 
     response = await client.post(
         "/api/v1/auth/register",
@@ -208,85 +258,10 @@ async def test_sendpulse_token_request_failure_returns_error_and_persists_user(
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "EMAIL_SEND_FAILED"
-    send_mock.assert_not_awaited()
 
     user = await auth_service.get_user_by_email(db_session, "timeout@example.com")
     assert user is not None
     assert user.is_verified is False
-
-
-async def test_sendpulse_token_reused_between_sends(
-    client: AsyncClient,
-    sendpulse_on: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Токен запрашивается один раз и переиспользуется между отправками (register + resend)."""
-    fetch_mock = AsyncMock(return_value=_token_payload())
-    send_mock = AsyncMock(return_value=_send_response(200, {"result": True, "id": "abc"}))
-    monkeypatch.setattr(email_sendpulse, "_fetch_access_token", fetch_mock)
-    monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
-
-    await client.post(
-        "/api/v1/auth/register",
-        json={"email": "resend@example.com", "password": "Password1", "name": "Resend"},
-    )
-    assert fetch_mock.await_count == 1
-    assert send_mock.await_count == 1
-
-    # Сбрасываем cooldown, чтобы resend прошёл (а не упёрся в 429 COOLDOWN).
-    monkeypatch.setattr(email_service.settings, "verification_code_cooldown_seconds", 0)
-
-    response = await client.post(
-        "/api/v1/auth/resend-code",
-        json={"email": "resend@example.com"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["data"]["verification_code"] is None
-    # Второе письмо ушло, но токен запрошен по-прежнему один раз — переиспользован из кэша.
-    assert send_mock.await_count == 2
-    assert fetch_mock.await_count == 1
-    # Оба запроса на отправку использовали один и тот же кэшированный токен.
-    first_token = send_mock.await_args_list[0].args[1]
-    second_token = send_mock.await_args_list[1].args[1]
-    assert first_token == second_token == "test-access-token"
-
-
-async def test_sendpulse_token_refreshed_after_401(
-    client: AsyncClient,
-    sendpulse_on: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Отправка вернула 401 (токен протух/отозван) → провайдер обновляет токен и повторяет."""
-    fetch_mock = AsyncMock(
-        side_effect=[
-            _token_payload(access_token="stale-token"),
-            _token_payload(access_token="fresh-token"),
-        ]
-    )
-    send_mock = AsyncMock(
-        side_effect=[
-            _send_response(401, {"message": "invalid token"}),
-            _send_response(200, {"result": True, "id": "abc"}),
-        ]
-    )
-    monkeypatch.setattr(email_sendpulse, "_fetch_access_token", fetch_mock)
-    monkeypatch.setattr(email_sendpulse, "_send_email_request", send_mock)
-
-    response = await client.post(
-        "/api/v1/auth/register",
-        json={"email": "refresh@example.com", "password": "Password1", "name": "Refresh"},
-    )
-
-    assert response.status_code == 201
-    assert response.json()["data"]["verification_code"] is None
-
-    assert fetch_mock.await_count == 2
-    assert send_mock.await_count == 2
-    first_token = send_mock.await_args_list[0].args[1]
-    second_token = send_mock.await_args_list[1].args[1]
-    assert first_token == "stale-token"
-    assert second_token == "fresh-token"
 
 
 async def test_code_never_logged_when_sendpulse_on(
@@ -301,9 +276,6 @@ async def test_code_never_logged_when_sendpulse_on(
     monkeypatch.setattr(email_service.logger, "error", log_error)
 
     # Успех.
-    monkeypatch.setattr(
-        email_sendpulse, "_fetch_access_token", AsyncMock(return_value=_token_payload())
-    )
     monkeypatch.setattr(
         email_sendpulse,
         "_send_email_request",

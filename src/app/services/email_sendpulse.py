@@ -1,22 +1,25 @@
 """SendPulse REST API — доставка кода подтверждения (transactional email).
 
-Аутентификация — OAuth `client_credentials` (`POST /oauth/access_token`),
-access-токен живёт ~час; отправка — `POST /smtp/emails`, HTML в теле запроса
-закодирован в base64 (обязательное требование SendPulse). Токен кэшируется в
-памяти инстанса (провайдер — синглтон процесса, см. `email.py`) и
-обновляется по истечении TTL или при HTTP 401 от отправки — новый токен на
-каждое письмо не запрашивается.
+Аутентификация — статический API-ключ (`settings.sendpulse_api_key`, формат
+`sp_apikey_<64 hex>`), выданный в личном кабинете SendPulse. Ключ передаётся
+напрямую в заголовке `Authorization: Bearer <key>` при каждом запросе —
+обмена на access-токен нет (в отличие от классического OAuth
+`client_credentials` у SendPulse, этот ключ уже самодостаточен). Отправка —
+`POST /smtp/emails`, HTML в теле запроса закодирован в base64 (обязательное
+требование SendPulse).
 
-Документация (актуальна на момент реализации, живой SendPulse не дёргался):
-https://sendpulse.com/integrations/api/smtp — формат `POST /smtp/emails`
-(`email.html`/`email.text` обязательны, `html` — base64); OAuth-эндпоинт и
-формат ответа токена — https://github.com/sendpulse/sendpulse-rest-api-php
-(`POST /oauth/access_token` → `{access_token, token_type, expires_in}`).
+Схема подтверждена живым запросом с прод-сервера 2026-08-27:
+`GET https://api.sendpulse.com/smtp/senders` с этим заголовком → 200.
+Неверный ключ → 401. Запрос с IP, не входящего в White List ключа (ограничение
+включено в личном кабинете SendPulse) → 403 `{"error":"IP address is not
+allowed"}` — реальный и вероятный сбой при смене IP прод-сервера, поэтому
+разбирается отдельно понятным сообщением в `send_verification_code`.
+
+Документация: https://sendpulse.com/integrations/api/smtp — формат
+`POST /smtp/emails` (`email.html`/`email.text` обязательны, `html` — base64).
 """
 
 import base64
-import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -29,18 +32,7 @@ from src.app.services.email_template import (
     render_verification_code_text,
 )
 
-_TOKEN_URL = "https://api.sendpulse.com/oauth/access_token"  # noqa: S105 — эндпоинт, не секрет
 _SEND_URL = "https://api.sendpulse.com/smtp/emails"
-
-# Обновлять токен чуть раньше формального истечения — запас на время самого
-# HTTP-запроса отправки письма (не хотим словить 401 из-за секундной гонки).
-_TOKEN_EXPIRY_MARGIN_SECONDS = 60.0
-
-
-@dataclass
-class _CachedToken:
-    access_token: str
-    expires_at: float  # time.monotonic()
 
 
 class SendPulseEmailProvider:
@@ -48,16 +40,24 @@ class SendPulseEmailProvider:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._token: _CachedToken | None = None
 
     async def send_verification_code(self, *, to_email: str, code: str, ttl_minutes: int) -> None:
         payload = self._build_payload(to_email, code, ttl_minutes)
 
-        response = await self._send(payload, force_new_token=False)
-        if response.status_code == 401:
-            # Токен протух или отозван между запросами — обновляем один раз и
-            # повторяем, не роняя письмо из-за естественного истечения TTL.
-            response = await self._send(payload, force_new_token=True)
+        try:
+            response = await _send_email_request(self._settings, payload)
+        except httpx.HTTPError as exc:
+            raise EmailDeliveryError(f"SendPulse HTTP error: {exc!r}") from exc
+
+        if response.status_code == 403:
+            # Наиболее вероятная причина именно этого статуса у SendPulse — IP
+            # сервера не входит в White List API-ключа (ограничение включено
+            # в личном кабинете). Без явного текста диагностика уходит в часы.
+            raise EmailDeliveryError(
+                "SendPulse отклонил запрос (403): IP-адрес сервера не в белом "
+                "списке (White List) API-ключа SendPulse. Проверьте настройки "
+                f"ключа в личном кабинете SendPulse. Тело ответа: {response.text}"
+            )
 
         if not _is_success(response):
             raise EmailDeliveryError(
@@ -80,58 +80,13 @@ class SendPulseEmailProvider:
             }
         }
 
-    async def _send(self, payload: dict[str, Any], *, force_new_token: bool) -> httpx.Response:
-        try:
-            token = await self._get_token(force_refresh=force_new_token)
-            return await _send_email_request(self._settings, token, payload)
-        except httpx.HTTPError as exc:
-            raise EmailDeliveryError(f"SendPulse HTTP error: {exc!r}") from exc
 
-    async def _get_token(self, *, force_refresh: bool) -> str:
-        now = time.monotonic()
-        cached = self._token
-        if not force_refresh and cached is not None and now < cached.expires_at:
-            return cached.access_token
-
-        try:
-            data = await _fetch_access_token(self._settings)
-        except httpx.HTTPError as exc:
-            raise EmailDeliveryError(f"SendPulse token request failed: {exc!r}") from exc
-
-        access_token = data.get("access_token")
-        expires_in = data.get("expires_in")
-        if not isinstance(access_token, str) or not isinstance(expires_in, int):
-            raise EmailDeliveryError(f"SendPulse token response malformed: {data!r}")
-
-        expires_at = now + max(expires_in - _TOKEN_EXPIRY_MARGIN_SECONDS, 0.0)
-        self._token = _CachedToken(access_token=access_token, expires_at=expires_at)
-        return access_token
-
-
-async def _fetch_access_token(settings: Settings) -> dict[str, Any]:
-    """Изолирована для мокания в тестах."""
-    async with httpx.AsyncClient(timeout=settings.sendpulse_timeout_seconds) as client:
-        response = await client.post(
-            _TOKEN_URL,
-            json={
-                "grant_type": "client_credentials",
-                "client_id": settings.sendpulse_api_id,
-                "client_secret": settings.sendpulse_api_secret,
-            },
-        )
-        response.raise_for_status()
-        result: dict[str, Any] = response.json()
-        return result
-
-
-async def _send_email_request(
-    settings: Settings, access_token: str, payload: dict[str, Any]
-) -> httpx.Response:
+async def _send_email_request(settings: Settings, payload: dict[str, Any]) -> httpx.Response:
     """Изолирована для мокания в тестах."""
     async with httpx.AsyncClient(timeout=settings.sendpulse_timeout_seconds) as client:
         return await client.post(
             _SEND_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"Bearer {settings.sendpulse_api_key}"},
             json=payload,
         )
 
