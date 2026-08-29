@@ -4,12 +4,15 @@
 
 Исходник вёрстки — `docs/email-templates/verification-code/index.mjml` (правки
 вносить там). `templates/verification_code_email.html` — уже собранный HTML
-той же вёрстки: логотип встроен как `data:image/png;base64,...` (само письмо
-не зависит от внешнего хостинга картинки — то, ради чего шаблон и переехал в
-репозиторий), а плейсхолдеры `__VERIFICATION_CODE__` /
-`__VERIFICATION_TTL_MINUTES__` подставляются здесь простой заменой строк (не
-`str.format` — в CSS `<mj-style>` полно фигурных скобок). Инструкция по
-пересборке HTML из mjml — в шапке самого файла шаблона.
+той же вёрстки: логотип подключён внешней ссылкой
+`https://smenka.space/email/logo.png`, а не встроен как base64 — Gmail и
+часть других клиентов блокируют `data:` URI в `<img>`, из-за чего логотип не
+отображался. Картинка отдаётся с лендинга (репозиторий `smenka_landing`,
+файл `public/email/logo.png`, деплоится вместе с сайтом) — адрес постоянный.
+Плейсхолдеры `__VERIFICATION_CODE__` / `__VERIFICATION_TTL_MINUTES__`
+подставляются здесь простой заменой строк (не `str.format` — в CSS
+`<mj-style>` полно фигурных скобок). Инструкция по пересборке HTML из mjml —
+в шапке самого файла шаблона.
 """
 
 from functools import lru_cache
