@@ -24,6 +24,7 @@ FastAPI резолвил бы их ДО тела хендлера — то ес�
 порядок (см. docstring каждой функции).
 """
 
+import calendar
 import enum
 import uuid
 from dataclasses import dataclass
@@ -349,6 +350,20 @@ async def require_capacity(
             f"В тарифе {plan.name} доступно {limit} {_LIMIT_LABELS[kind]}",
             402,
         )
+
+
+# --- Календарная арифметика периодов -------------------------------------------
+def add_months(dt: datetime, months: int) -> datetime:
+    """Календарный сдвиг на N месяцев с клампом дня до конца целевого месяца
+    (31 янв + 1 месяц = 28/29 фев). Единственный источник правды для сдвига
+    периода — переиспользуется ручным продлением (`services/subscription.py::
+    extend_subscription`) и применением онлайн-оплаты (`services/billing.py::
+    apply_payment`, `online_payments`), чтобы оба пути считали срок одинаково."""
+    month_index = dt.month - 1 + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
 
 
 # --- Автосоздание подписки при создании организации ---------------------------

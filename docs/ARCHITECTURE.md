@@ -1,6 +1,74 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-08-27 (tariffs — тарифы и подписки организаций, ADR-004
+Последнее обновление: 2026-08-31 (online_payments — онлайн-оплата подписки через
+ЮKassa): владелец/admin организации оплачивают продление или апгрейд Стандарт→Премиум
+картой из кабинета, подписка продлевается автоматически по факту поступления денег —
+второй путь к тому же результату, что и ручное `POST /admin/.../subscription/extend`
+(остаётся для оплат по счёту/корректировок). Три новые сущности: `billing_periods`
+(справочник периодов продажи 1/3/6 мес со скидкой 0/5/10%, сидируется миграцией, не
+редактируется из админки — как `plans`), `payments` (финансовый след, записи не
+удаляются; `applied_at` — идемпотентность применения к подписке; `provider_payment_id`
+частичный UNIQUE), `subscription_events` получил `payment_id` (nullable FK→payments) и
+два новых значения `type`: `paid_online`/`payment_refunded`. **Расчёт сумм**
+(`services/billing_calc.py`, чистые функции без БД/сети) — `compute_extend_amount`:
+`base = price × months`, скидка считается в копейках и ЕЩЁ РАЗ округляется вниз до
+целого рубля; `compute_upgrade_amount` — доплата за Стандарт→Премиум внутри уже
+оплаченного периода: `(price(premium) − price(standard)) × months_remaining`, где
+`months_remaining = ceil((current_period_end − now) / 30 дней)`, минимум 1 (единица
+«месяц» для ceil не зафиксирована в ТЗ — выбраны calendar-независимые 30 дней, см.
+открытый вопрос в `docs/tasks/online_payments/STATUS.md`); скидка периода к доплате не
+применяется. Апгрейд доступен при эффективном статусе ∈ {`active`, `past_due`},
+`plan_code=standard`, `current_period_end` не пуст — иначе `available=false` +
+`reason` (`already_premium`/`not_applicable`/`no_paid_period`), общая функция
+`services/billing._build_upgrade_option` переиспользована и витриной, и `checkout`,
+чтобы условия доступности не могли разъехаться. **Интеграция** —
+`services/yookassa_client.py` (API v3, HTTP Basic `shopId`/`secretKey`, `httpx`):
+`create_payment`/`get_payment`, конвертация копейки↔рубль через `Decimal` (не float —
+апгрейд даёт не всегда круглые суммы), `is_trusted_webhook_ip` — официальный список
+сетей ЮKassa для вебхука, захардкожен в модуле (не ENV — это контракт провайдера, а не
+конфигурация деплоя), низкоуровневые `_create_payment_request`/`_get_payment_request`
+изолированы для мокания в тестах (паттерн `email_sendpulse._send_email_request`).
+**Применение платежа** (`services/billing.py::apply_payment`) — единая функция для
+вебхука и поллинга: `SELECT ... FOR UPDATE` по строке подписки организации, ЗАТЕМ
+`session.refresh(payment)` (перечитывание платежа ПОСЛЕ захвата лока — конкурентный
+вызов, дождавшийся снятия лока, обязан увидеть уже закоммиченный `applied_at` под
+READ COMMITTED), идемпотентный выход при уже заполненном `applied_at`; организация,
+удалённая к моменту оплаты (`is_deleted`), получает `status=succeeded` без применения
+(`applied_at` остаётся `NULL` — деньги пришли, решение ручное). **Вебхук**
+(`POST /billing/yookassa/webhook`, публичный, без JWT) проверяет IP источника ДО
+разбора тела (чужой → `403 FORBIDDEN` через переиспользованный `AccessError`, тело не
+читается), затем ВСЕГДА перезапрашивает состояние платежа напрямую у провайдера
+(`GET /v3/payments/{id}`) и сверяет `metadata.payment_id`/`organization_id`/`amount` с
+нашей записью — расхождение логируется и НЕ применяется, ответ всё равно `200` (не
+провоцировать ретраи провайдера). `refund.succeeded` помечает `payments.status=refunded`
+и пишет `subscription_events` типа `payment_refunded` (НЕ `status_changed` — период не
+трогается автоматически, отключать организацию при возврате решает super_admin вручную
+через обычный `PATCH .../subscription`). **Поллинг статуса**
+(`GET .../billing/payments/{payment_id}`) — для `pending` старше 10 секунд сервер сам
+дёргает `reconcile_payment` (та же функция, что вебхук) и применяет платёж синхронно в
+ответе на GET — страховка на случай опоздавшего/потерянного вебхука. **Read-only и
+оплата**: все эндпоинты `billing/*` НЕ проверяются на `require_active_subscription` —
+организация в `suspended` обязана иметь возможность заплатить (единственное исключение
+из read-only, добавленное этой фичей поверх списка `tariffs/backend.md`). **RBAC**:
+`org_owner`/`org_admin` — как у `GET .../subscription`; `GET .../billing/payments`
+(список и деталь) дополнительно пропускают `super_admin` сквозным доступом
+(`ensure_admin_or_owner` с дефолтным `allow_super_admin=True`); чужой платёж под
+верно авторизованным org_id → `404 PAYMENT_NOT_FOUND` (существование не раскрывается).
+**Тестовые платежи** (`YOOKASSA_MODE=test` → `payments.is_test=true`) реально
+продлевают подписку, но исключены из `totals` реестра `GET /admin/payments` (агрегат
+всегда `status=succeeded AND is_test=false`, независимо от переданных query-фильтров
+`status`/`is_test`) и из MRR (который и так не читает `payments` — считается по
+`subscriptions`/`plans`, поэтому тестовые платежи не могли бы туда попасть по
+конструкции). Новые коды ошибок — `BILLING_DISABLED` 503, `PAYMENT_PROVIDER_ERROR` 502,
+`PAYMENT_NOT_FOUND` 404, `UPGRADE_NOT_APPLICABLE` 409, `PAYMENT_AMOUNT_LIMIT` 422.
+Миграции `9273787a791d`(billing_periods+seed)/`580829a12fff`(payments)/
+`682bd9857504`(subscription_events.payment_id); `SubscriptionEvent.payment_id`
+объявлен с `use_alter=True` (тот же паттерн, что `users.created_by_org_id` ↔
+`organizations.owner_id`) — без этого `payments`↔`subscription_events` образуют
+цикл FK-метаданных, который `Base.metadata.create_all`/`drop_all` (тесты) не может
+топологически отсортировать. Подробности — `docs/tasks/online_payments/backend.md`.
+
+Предыдущее обновление: 2026-08-27 (tariffs — тарифы и подписки организаций, ADR-004
 «Доступ = роль × тариф»): два платных тарифа на организацию — Стандарт (5000 ₽/мес,
 15 сотрудников, 3 точки, без штрафов и импорта тестов) и Премиум (10000 ₽/мес, без
 лимитов, все фичи); всем предшествует бесплатный 14-дневный триал с функционалом
@@ -201,7 +269,9 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | `TestAttemptOption` | `test_attempt_options` | Снимок варианта + выбор сотрудника (attempt_question_id→CASCADE, template_option_id nullable→`test_question_options` SET NULL, text VARCHAR(500) — снимок, is_correct bool — снимок, скрыт от сотрудника до сдачи на уровне схемы ответа/не колонки, is_selected bool default false, position) |
 | `Plan` | `plans` | Справочник тарифов (`tariffs`): `code` VARCHAR(32) PK (`standard`/`premium`, не surrogate uuid — фигурирует как FK и в сидах), name, price_minor int (копейки), currency default RUB, `max_employees`/`max_locations` nullable int (NULL = без лимита), `feature_fines`/`feature_test_import` bool default false, sort_order, is_active default true. Сидируется миграцией (`standard`: 500000/15/3/false/false; `premium`: 1000000/null/null/true/true); не редактируется из админки в v1 |
 | `Subscription` | `subscriptions` | Подписка организации (`tariffs`): `organization_id` UNIQUE FK→organizations CASCADE, `plan_code` FK→plans.code RESTRICT, `status` VARCHAR(16) default `trialing` — **только ручные состояния** (`trialing`/`active`/`canceled`, обычный VARCHAR без CHECK/native enum, как `notifications.type`), `trial_ends_at`/`current_period_start`/`current_period_end` nullable timestamptz, `note` nullable VARCHAR(512), `last_expiry_notice_days` nullable int (антидубль уведомлений — сентинел `0` = subscription_suspended уже отправлен), `updated_by_user_id` nullable FK→users SET NULL. Индексы `current_period_end`, `trial_ends_at`. Эффективный статус (`past_due`/`suspended`) вычисляется на лету, не хранится — `services/entitlements.py` |
-| `SubscriptionEvent` | `subscription_events` | Append-only журнал изменений подписки (`tariffs`): organization_id→CASCADE, `type` (`created`/`extended`/`plan_changed`/`status_changed`/`auto_suspended`), `from_plan_code`/`to_plan_code`/`from_status`/`to_status`/`period_end_before`/`period_end_after` — до/после, `months`/`amount_minor` nullable (для `extended`), `note`, `actor_user_id` nullable FK→users SET NULL (`null` = системное событие). Индекс `(organization_id, created_at)`. Записи не редактируются и не удаляются |
+| `SubscriptionEvent` | `subscription_events` | Append-only журнал изменений подписки (`tariffs`): organization_id→CASCADE, `type` (`created`/`extended`/`plan_changed`/`status_changed`/`auto_suspended`, **online_payments:** `paid_online`/`payment_refunded`), `from_plan_code`/`to_plan_code`/`from_status`/`to_status`/`period_end_before`/`period_end_after` — до/после, `months`/`amount_minor` nullable (для `extended`/`paid_online`), `note`, `actor_user_id` nullable FK→users SET NULL (`null` = системное событие), **`payment_id` nullable FK→payments SET NULL (online_payments)** — какой онлайн-платёж породил событие, `NULL` у ручных операций. Индекс `(organization_id, created_at)`. Записи не редактируются и не удаляются |
+| `BillingPeriod` | `billing_periods` | Справочник периодов продажи и скидки за предоплату (`online_payments`): `months` PK (1/3/6, не surrogate — сидируется миграцией), `discount_percent` (0/5/10), `is_active`, `sort_order`. Не редактируется из админки — маркетинговый параметр меняется миграцией, как `plans` |
+| `Payment` | `payments` | Онлайн-платёж через ЮKassa (`online_payments`): organization_id→CASCADE, `kind` (`extend`/`upgrade`), `plan_code`→plans.code RESTRICT, `months` (для `upgrade` — `months_remaining`, сколько доплачено), `base_amount_minor`/`discount_percent`/`amount_minor`, `currency` default RUB, `status` (`pending`/`succeeded`/`canceled`/`refunded`, VARCHAR без CHECK), `provider` default `yookassa`, `provider_payment_id` nullable **UNIQUE частичный** (`WHERE NOT NULL`), `idempotence_key` (наш `Idempotence-Key` при создании в ЮKassa), `confirmation_url`, `is_test` (`yookassa_mode != live`), `paid_at`/`applied_at` nullable (**`applied_at` — идемпотентность применения**, см. `services/billing.py::apply_payment`), `subscription_event_id` nullable FK→subscription_events SET NULL, `cancellation_reason`, `provider_payload` JSONB (последний ответ провайдера целиком), `created_by_user_id` nullable FK→users SET NULL. Индексы `(organization_id, created_at)`, `status`. Записи не удаляются — финансовый след |
 
 ---
 
@@ -375,6 +445,13 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | PATCH | `/api/v1/admin/organizations/{id}/subscription` | Ручная правка (все поля опциональны); `status=active` требует `current_period_end` | Bearer (super_admin) |
 | POST | `/api/v1/admin/organizations/{id}/subscription/extend` | «Оплачено» — продлить на N месяцев от большей из (сегодня, конец периода); сбрасывает антидубль уведомлений | Bearer (super_admin) |
 | GET | `/api/v1/admin/organizations/{id}/subscription/events` | Append-only журнал подписки, новые сверху | Bearer (super_admin) |
+| GET | `/api/v1/billing/config` | Состояние платёжного модуля: `enabled`/`mode`/`provider` (секреты не отдаются) — online_payments | Bearer |
+| GET | `/api/v1/organizations/{id}/billing/options` | Витрина: суммы продления 1/3/6 мес (скидка 0/5/10%) по обоим тарифам + доступность/сумма апгрейда Стандарт→Премиум; работает и в `suspended` — online_payments | Bearer (owner/admin) |
+| POST | `/api/v1/organizations/{id}/billing/checkout` | Создать платёж в ЮKassa (сумма считается на сервере); pending младше 15 мин с теми же параметрами переиспользуется; работает и в `suspended` — online_payments | Bearer (owner/admin) |
+| POST | `/api/v1/billing/yookassa/webhook` | Уведомления ЮKassa (`payment.succeeded`/`payment.canceled`/`refund.succeeded`); IP сверяется со списком сетей ЮKassa до разбора тела — online_payments | Публичный (без JWT) |
+| GET | `/api/v1/organizations/{id}/billing/payments/{payment_id}` | Статус платежа; `pending` старше 10с — сервер сам опрашивает провайдера и применяет платёж — online_payments | Bearer (owner/admin + super_admin) |
+| GET | `/api/v1/organizations/{id}/billing/payments` | История платежей организации, новые сверху — online_payments | Bearer (owner/admin + super_admin) |
+| GET | `/api/v1/admin/payments` | Платёжный реестр платформы (фильтры `status`/`organization_id`/`is_test`/`date_from`/`date_to`; `totals` — succeeded, без тестовых) — online_payments | Bearer (super_admin) |
 
 > **Файловое хранилище (file_storage).** Единый слой хранения поверх S3-совместимого storage (локально MinIO, в проде managed S3 — переезд = смена `S3_*` env, без правок кода). Загрузка идёт **через бэкенд** (multipart → API → storage), доступ к объектам **приватный** — клиент качает по **presigned GET URL** с коротким TTL (`S3_PRESIGN_EXPIRE_SECONDS`), который генерирует бэк. `files` — чистый реестр блобов (`File`); привязка к бизнес-сущности делается со стороны фичи-потребителя FK на `files.id` (НЕ полиморфизм) — целостность и `ON DELETE` каскады. Категория (`FileCategory`) задаёт префикс ключа, политику (лимит размера + разрешённые MIME, таблица `CATEGORY_POLICIES` в `services/file_storage.py`) и права: `checklist_photo` — любой member org; `knowledge_base` — admin/owner org; `avatar`/`other` — персональные. Реальный MIME определяется по сигнатуре содержимого (`filetype`), а не по заголовку multipart; имя в ключе — всегда UUID (anti path-traversal/коллизии), исходное имя хранится для `Content-Disposition`. **presigned + MinIO:** бэк ходит в storage по внутреннему `S3_ENDPOINT_URL`, но presigned-ссылка генерируется клиентом на публичном `S3_PUBLIC_ENDPOINT_URL` (подпись сразу от публичного хоста; в managed-S3 оба совпадают). Прямой стрим байтов через бэк не делаем. Жизненный цикл: строка создаётся с `is_attached=false`, потребитель ставит `true` при привязке; сироты (`is_attached=false`, старше `ORPHAN_FILE_TTL_HOURS`) подбирает Celery `cleanup_orphan_files`. Ошибки — `FileError` (`FILE_NOT_FOUND`/`FILE_TOO_LARGE`/`UNSUPPORTED_FILE_TYPE`/`INVALID_FILE_CATEGORY`/`FILE_IN_USE`/`STORAGE_UNAVAILABLE`).
 
@@ -527,7 +604,10 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | `services/notification.py` | Внутриапповый центр уведомлений (`NotificationError`): `create_notification`/`bulk_create_notifications` (без `commit` — вызывается производителем события в его транзакции), `list_notifications`/`count_unread`, `mark_read` (идемпотентно)/`mark_all_read` |
 | `services/employee_test.py` | Тестирование сотрудников (`TestError`): CRUD шаблонов + инварианты (`validate_template_payload` — единый `TEST_TEMPLATE_INVALID`), `validate_template_only` (сухая проверка); назначения (`assign_template` — upsert + уведомление `test_assigned` в той же транзакции, `list_template_assignments`/`list_org_assignments`/`delete_assignment`, `get_latest_submitted_attempt_ids` — `DISTINCT ON`, для `TestAssignmentOut.last_attempt_id`); прохождение (`start_attempt`/`submit_attempt`/`compute_awarded` — all-or-nothing грейдинг); `get_attempt_review` (админский разбор попытки) |
 | `services/entitlements.py` | **tariffs:** слой энтайтлментов (`SubscriptionError`, `EffectiveStatus`, `PlanFeature`, `LimitKind`, `GRACE_DAYS`, `EXPIRING_SOON_DAYS`(7)): `compute_effective_status`/`grace_ends_at`/`days_left`/`period_reference` (чистые функции от дат через общий `_resolve`), `is_expiring_soon` (единый источник правды для «истекает в ближайшие N дней» — переиспользован в `list_admin_subscriptions` (`expiring_soon`) и `get_summary` (`expiring_in_7_days`), чтобы фильтр реестра и счётчик сводки не расходились), `get_plan`/`get_active_plan`/`get_subscription`/`get_effective_plan`, `count_employees`/`count_locations`, три проверки `require_active_subscription`/`require_feature`/`require_capacity` (вызываются из сервисов сразу после ролевых guard'ов — НЕ FastAPI `Depends()`, см. docstring модуля), `create_subscription_for_org` (автосоздание при `POST /organizations`) |
-| `services/subscription.py` | **tariffs:** `list_plans` (витрина), `build_subscription_payload` (общая нагрузка для `GET .../subscription` и additive-поля `GET /organizations/{id}`), admin-операции — `list_admin_subscriptions` (реестр, фильтр/сортировка в Python, опциональный `expiring_soon` через `entitlements.is_expiring_soon`, строка несёт `effective_plan` → `limits`), `patch_subscription`/`extend_subscription` (`_add_months` — календарный сдвиг с клампом дня), `list_events`, `get_summary` (MRR/по статусу/по тарифу, `expiring_in_7_days` через тот же `entitlements.is_expiring_soon`) |
+| `services/subscription.py` | **tariffs:** `list_plans` (витрина), `build_subscription_payload` (общая нагрузка для `GET .../subscription` и additive-поля `GET /organizations/{id}`), admin-операции — `list_admin_subscriptions` (реестр, фильтр/сортировка в Python, опциональный `expiring_soon` через `entitlements.is_expiring_soon`, строка несёт `effective_plan` → `limits`), `patch_subscription`/`extend_subscription` (`entitlements.add_months` — календарный сдвиг с клампом дня, переиспользуется `services/billing.py`), `list_events`, `get_summary` (MRR/по статусу/по тарифу, `expiring_in_7_days` через тот же `entitlements.is_expiring_soon`) |
+| `services/billing_calc.py` | **online_payments:** чистые расчётные функции без БД/сети — `compute_extend_amount` (скидка 0/5/10% за период, округление вниз до рубля), `compute_upgrade_months_remaining` (`ceil` от 30-дневного «месяца», минимум 1), `compute_upgrade_amount` (линейная разница цен × месяцы) |
+| `services/yookassa_client.py` | **online_payments:** интеграция с ЮKassa API v3 (`httpx`, HTTP Basic `shopId`/`secretKey`): `create_payment`/`get_payment`, конвертация копейки↔десятичный рубль (`Decimal`), `is_trusted_webhook_ip` (официальный список сетей ЮKassa для вебхука), `YooKassaClientError`; низкоуровневые `_create_payment_request`/`_get_payment_request` изолированы для мокания в тестах (как `email_sendpulse._send_email_request`) |
+| `services/billing.py` | **online_payments:** `PaymentError`; витрина (`get_billing_options`, `_build_upgrade_option` — переиспользуется и в `create_checkout`, единая точка правды доступности апгрейда), `create_checkout` (пересчёт суммы на сервере, переиспользование pending младше 15 мин), применение платежа — `apply_payment` (`SELECT ... FOR UPDATE` по подписке, идемпотентность по `applied_at`, перечитывание платежа ПОСЛЕ захвата лока), `reconcile_payment`/`mark_payment_canceled`/`apply_refund`, `process_webhook_event` (диспетчер `payment.succeeded`/`payment.canceled`/`refund.succeeded`), `get_payment_for_org` (поллинг статуса — reconcile для `pending` старше 10с), admin-реестр `list_admin_payments` (`totals` — succeeded и без тестовых, независимо от фильтров `status`/`is_test`) |
 | `core/storage.py` | S3-обёртка над `aioboto3` (`upload_object`/`generate_presigned_get`/`delete_object`/`ensure_bucket`); внутренний vs публичный endpoint для presigned; ошибки S3 → `StorageError` |
 | `core/celery_app.py` | Конфигурация Celery (брокер, beat schedule, task-события для мониторинга, `acks_late`, сигнал `task_failure` → structlog; Sentry в воркере) |
 | `core/rate_limit.py` | slowapi-`Limiter` (ключ = IP, Redis-хранилище, пороги из ENV) |
@@ -602,6 +682,7 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 - **Redis** — брокер Celery, хранилище rate-limit (slowapi) и счётчиков блокировки аккаунтов
 - **Sentry** — error-tracking бэка (включается при `SENTRY_DSN`; провижининг — `DEPLOY_NOTES.md`)
 - **SendPulse** — отправка кодов подтверждения по email, REST API (статический API-ключ как Bearer-токен + `/smtp/emails`; включается при `EMAIL_PROVIDER=sendpulse` + кредах; транспорт сменный — `services/email.py`/`email_provider.py`/`email_sendpulse.py`, `httpx`)
+- **ЮKassa** — онлайн-оплата подписки (`online_payments`): API v3 (`httpx`, HTTP Basic `shopId`/`secretKey`), включается при `YOOKASSA_ENABLED=true`; `YOOKASSA_MODE=test/live` определяет активную пару кредов и `payments.is_test`; вебхук `POST /billing/yookassa/webhook` принимает уведомления с проверкой IP источника по официальному списку сетей провайдера — `services/yookassa_client.py`/`services/billing.py`
 
 ---
 

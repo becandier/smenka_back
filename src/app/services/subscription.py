@@ -6,7 +6,6 @@
 `ensure_super_admin`, как и во всех остальных фичах; здесь — только данные.
 """
 
-import calendar
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -294,16 +293,6 @@ async def patch_subscription(
 
 
 # --- 6. Продление («оплачено») (super_admin) ----------------------------------
-def _add_months(dt: datetime, months: int) -> datetime:
-    """Календарный сдвиг на N месяцев с клампом дня до конца целевого месяца
-    (31 янв + 1 месяц = 28/29 фев)."""
-    month_index = dt.month - 1 + months
-    year = dt.year + month_index // 12
-    month = month_index % 12 + 1
-    day = min(dt.day, calendar.monthrange(year, month)[1])
-    return dt.replace(year=year, month=month, day=day)
-
-
 async def extend_subscription(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -338,7 +327,7 @@ async def extend_subscription(
     now = datetime.now(UTC)
     reference = sub.current_period_end if sub.current_period_end is not None else sub.trial_ends_at
     base = max(now, reference) if reference is not None else now
-    new_period_end = _add_months(base, months)
+    new_period_end = entitlements.add_months(base, months)
 
     if sub.current_period_start is None:
         sub.current_period_start = now

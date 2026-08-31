@@ -98,6 +98,15 @@ class SubscriptionEventType(enum.StrEnum):
     plan_changed = "plan_changed"
     status_changed = "status_changed"
     auto_suspended = "auto_suspended"
+    # online_payments: применение успешного онлайн-платежа к подписке
+    # (extend/upgrade через ЮKassa — вебхук или поллинг статуса).
+    paid_online = "paid_online"
+    # online_payments: возврат по онлайн-платежу (`refund.succeeded`
+    # вебхук ЮKassa). Не `status_changed` — сама подписка не трогается,
+    # только платёж помечается `status=refunded`; см. backend.md
+    # «Возвраты» — решение отключать ли организацию принимает super_admin
+    # руками через обычный PATCH .../subscription.
+    payment_refunded = "payment_refunded"
 
 
 class SubscriptionEvent(Base):
@@ -135,6 +144,26 @@ class SubscriptionEvent(Base):
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # online_payments: какой онлайн-платёж породил это событие. NULL у
+    # ручных продлений/правок супер-админа.
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        # use_alter=True — payments.subscription_event_id ссылается на
+        # subscription_events.id, а эта колонка ссылается обратно на
+        # payments.id: без use_alter это циклическая зависимость, которую
+        # `Base.metadata.create_all`/`drop_all` (тесты) не может
+        # топологически отсортировать (тот же паттерн, что
+        # `users.created_by_org_id` ↔ `organizations.owner_id`, см.
+        # `models/user.py`). Alembic саму миграцию не затрагивает — там FK
+        # создаётся отдельным `op.create_foreign_key` уже после обеих таблиц.
+        ForeignKey(
+            "payments.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_subscription_events_payment_id",
+        ),
         nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(

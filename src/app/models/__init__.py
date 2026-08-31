@@ -1,5 +1,6 @@
 from src.app.models.adjustment import PayrollAdjustment
 from src.app.models.audit_log import AuditAction, AuditLog, AuditResource
+from src.app.models.billing_period import BillingPeriod
 from src.app.models.checklist import (
     ChecklistInstance,
     ChecklistInstanceItem,
@@ -46,6 +47,7 @@ from src.app.models.oauth import (
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.organization_settings import OrganizationSettings
+from src.app.models.payment import Payment, PaymentKind, PaymentStatus
 from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
 from src.app.models.plan import Plan
 from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
@@ -73,6 +75,7 @@ __all__ = [
     "AuditAction",
     "AuditLog",
     "AuditResource",
+    "BillingPeriod",
     "ChecklistInstance",
     "ChecklistInstanceItem",
     "ChecklistInstanceStatus",
@@ -106,6 +109,9 @@ __all__ = [
     "OverrideType",
     "OvertimeRequestStatus",
     "Pause",
+    "Payment",
+    "PaymentKind",
+    "PaymentStatus",
     "PayrollAdjustment",
     "Penalty",
     "PhotoRequirement",

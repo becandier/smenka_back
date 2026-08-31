@@ -115,6 +115,22 @@ class Settings(BaseSettings):
     # Таймаут HTTP-запроса к SendPulse (сек) — чтобы зависший провайдер не держал запрос.
     sendpulse_timeout_seconds: int = 10
 
+    # ЮKassa (online_payments) — онлайн-оплата подписки. `yookassa_enabled=False`
+    # (дефолт) полностью выключает фичу: эндпоинты `billing/*` отдают
+    # `BILLING_DISABLED` 503, кнопки в админке скрыты. `yookassa_mode` определяет,
+    # какая пара shopId/secretKey активна, и проставляется в `payments.is_test`
+    # (`live` → False, иначе True — тестовый магазин продлевает подписку по-настоящему,
+    # но помечается тестовым и не считается в MRR/реестре выручки).
+    yookassa_enabled: bool = False
+    yookassa_mode: str = "test"
+    yookassa_shop_id: str = ""
+    yookassa_secret_key: str = ""
+    yookassa_return_url_base: str = ""
+    # Потолок одного платежа в копейках (100 000 ₽ по умолчанию) — страховка от
+    # отказа на стороне лимита магазина ЮKassa (100 000 ₽/мес на оборот тестового
+    # магазина).
+    billing_max_payment_minor: int = 10_000_000
+
     @property
     def email_enabled(self) -> bool:
         """Отправка писем включена, когда выбран провайдер и заданы его креды.
