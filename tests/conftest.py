@@ -26,6 +26,7 @@ from src.app.core.database import Base, get_session
 from src.app.core.rate_limit import limiter
 from src.app.core.security import hash_password
 from src.app.main import app
+from src.app.models.billing_period import BillingPeriod
 from src.app.models.plan import Plan
 from src.app.models.user import User, UserRole
 
@@ -97,6 +98,21 @@ async def _seed_plans(conn) -> None:
     )
 
 
+async def _seed_billing_periods(conn) -> None:
+    """`billing_periods` (online_payments) — тот же случай, что `plans` выше:
+    в проде сидируется миграцией (`(1,0)`/`(3,5)`/`(6,10)`), тестовая БД
+    поднимается из ORM-метаданных, поэтому сидируем вручную — иначе любой
+    `POST .../billing/checkout` с `kind=extend` падает на «период недоступен»."""
+    await conn.execute(
+        BillingPeriod.__table__.insert(),
+        [
+            {"months": 1, "discount_percent": 0, "is_active": True, "sort_order": 10},
+            {"months": 3, "discount_percent": 5, "is_active": True, "sort_order": 20},
+            {"months": 6, "discount_percent": 10, "is_active": True, "sort_order": 30},
+        ],
+    )
+
+
 @pytest.fixture(scope="session")
 async def test_engine():
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
@@ -104,6 +120,7 @@ async def test_engine():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
         await _seed_plans(conn)
+        await _seed_billing_periods(conn)
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -119,16 +136,18 @@ def test_session_factory(test_engine):
 async def _cleanup_tables(test_session_factory):
     """Truncate all tables after each test for isolation.
 
-    `plans` — исключение: статичный справочник (2 строки standard/premium),
-    в проде живёт только миграцией и не трогается рантаймом — как и в проде,
-    в тестах он сидируется один раз на сессию (`_seed_plans`) и не участвует
-    в per-test truncate, иначе следующий же тест не смог бы создать
-    организацию (FK `subscriptions.plan_code`).
+    `plans`/`billing_periods` — исключение: статичные справочники, в проде
+    живут только миграцией и не трогаются рантаймом — как и в проде, в
+    тестах сидируются один раз на сессию (`_seed_plans`/`_seed_billing_periods`)
+    и не участвуют в per-test truncate, иначе следующий же тест не смог бы
+    создать организацию (FK `subscriptions.plan_code`) или оплатить
+    продление (FK `payments.plan_code`, `billing_periods.months` в
+    `_get_active_billing_period`).
     """
     yield
     async with test_session_factory() as session:
         for table in reversed(Base.metadata.sorted_tables):
-            if table.name == "plans":
+            if table.name in ("plans", "billing_periods"):
                 continue
             await session.execute(text(f"TRUNCATE TABLE {table.name} CASCADE"))
         await session.commit()

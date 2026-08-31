@@ -21,6 +21,7 @@ from src.app.schemas.base import ApiResponse
 from src.app.services.adjustment import AdjustmentError
 from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
+from src.app.services.billing import PaymentError
 from src.app.services.checklist_template import ChecklistError
 from src.app.services.common import AccessError
 from src.app.services.employee_test import TestError
@@ -214,6 +215,21 @@ app = FastAPI(
                 "Платформенные эндпоинты super_admin: пользователи, обзор "
                 "организаций, сводная статистика."
             ),
+        },
+        {
+            "name": "billing",
+            "description": (
+                "Онлайн-оплата подписки через ЮKassa: витрина продлений/апгрейда, "
+                "создание платежа, статус и история платежей организации."
+            ),
+        },
+        {
+            "name": "billing-webhook",
+            "description": "Публичный вебхук ЮKassa (без JWT) — уведомления о статусе платежа.",
+        },
+        {
+            "name": "admin-payments",
+            "description": "Платёжный реестр платформы (super_admin).",
         },
     ],
 )
@@ -446,6 +462,14 @@ async def test_error_handler(request: Request, exc: TestError) -> JSONResponse:
 
 @app.exception_handler(AdjustmentError)
 async def adjustment_error_handler(request: Request, exc: AdjustmentError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(PaymentError)
+async def payment_error_handler(request: Request, exc: PaymentError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

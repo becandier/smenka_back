@@ -2,8 +2,11 @@ from fastapi import APIRouter
 
 from src.app.api.v1.adjustments import router as adjustments_router
 from src.app.api.v1.admin import router as admin_router
+from src.app.api.v1.admin_payments import router as admin_payments_router
 from src.app.api.v1.admin_subscriptions import router as admin_subscriptions_router
 from src.app.api.v1.auth import router as auth_router
+from src.app.api.v1.billing import router as billing_router
+from src.app.api.v1.billing_webhook import router as billing_webhook_router
 from src.app.api.v1.checklist_assignments import router as checklist_assignments_router
 from src.app.api.v1.checklist_instances import router as checklist_instances_router
 from src.app.api.v1.checklist_overrides import router as checklist_overrides_router
@@ -52,3 +55,6 @@ router.include_router(admin_router)
 router.include_router(admin_subscriptions_router)
 router.include_router(plans_router)
 router.include_router(subscription_router)
+router.include_router(billing_router)
+router.include_router(billing_webhook_router)
+router.include_router(admin_payments_router)
