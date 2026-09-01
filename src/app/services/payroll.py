@@ -3,10 +3,12 @@
 История ставок — источник истины: одна строка `organization_member_rates` =
 ставка, действующая с `effective_from`. Расчёты выполняются «на лету» при
 запросе и нигде не кэшируются: правка/удаление записи истории сразу отражается
-на следующих расчётах. Деньги — только целые копейки; накопление по сменам
-точным Decimal. Округление half-up: в режиме `granularity=none` — ровно один раз
-на итог сотрудника; в детальном режиме/экспорте — посуточно (атом = день), см.
-`_build_breakdown` и ADR-002.
+на следующих расчётах. Деньги — только целые копейки. Округление half-up —
+атомарно на каждой смене (ADR-005 п.5, `docs/decisions/005-earnings-calculation.md`
+в корне-оркестраторе): итоги за день/корзину/сотрудника/период — суммы уже
+округлённых сумм по сменам, поэтому построчные значения всегда сходятся с
+итогом. До ADR-005 `granularity=none` округлял один раз на итог сотрудника
+(ADR-002, теперь заменено — см. статус в `docs/decisions/002-*.md`).
 """
 
 import io
@@ -20,7 +22,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openpyxl import Workbook
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -298,6 +300,22 @@ def _rate_for_moment(
     return rates_asc[idx - 1] if idx else None
 
 
+def _shift_amount_minor(rate: OrganizationMemberRate, seconds: int) -> int:
+    """Начисление за одну смену по ставке `rate` (ADR-005 п.2), округлённое
+    half-up до целой копейки на месте (ADR-005 п.5 — атом округления — смена,
+    не итог).
+
+    `hourly`: `seconds / 3600 * rate_amount_minor`, half-up. `per_shift`:
+    фиксированная сумма ставки — `seconds` игнорируется (не зависит ни от
+    длительности, ни от переработки; тем же вызовом считается и план: для
+    `per_shift` план всегда равен факту).
+    """
+    if rate.rate_type == RateType.hourly:
+        exact = Decimal(seconds) * rate.rate_amount_minor / SECONDS_PER_HOUR
+        return int(exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return rate.rate_amount_minor
+
+
 def _calc_earnings(
     shifts: list[Shift],
     rates_asc: list[OrganizationMemberRate],
@@ -307,18 +325,19 @@ def _calc_earnings(
 ) -> dict[str, Any]:
     """Агрегаты по завершённым сменам: каждая смена — по ставке на её started_at.
 
-    Сумма накапливается точным Decimal; half-up до целой копейки — один раз
-    на итог (и для факта, и для плана — round-once применяется одинаково к
-    обеим суммам). Смены без действующей ставки в gross/planned не входят
-    (unpaid_*). `overtime_minutes_by_shift` — согласованная переработка
-    (backend.md, R6/R8): добавляется к оплачиваемому времени `hourly`-ставки,
-    `per_shift` игнорирует (план = факт, дельта 0). `late_tolerance_minutes` —
-    допуск организации для подсчёта опозданий (R5/R8).
+    Округление half-up до целой копейки — на каждой смене отдельно
+    (`_shift_amount_minor`, ADR-005 п.5); итог — сумма уже округлённых сумм
+    (одинаково для факта и плана). Смены без действующей ставки в
+    gross/planned не входят (unpaid_*). `overtime_minutes_by_shift` —
+    согласованная переработка (backend.md, R6/R8): добавляется к оплачиваемому
+    времени `hourly`-ставки, `per_shift` игнорирует (план = факт, дельта 0).
+    `late_tolerance_minutes` — допуск организации для подсчёта опозданий
+    (R5/R8).
     """
     overtime_map = overtime_minutes_by_shift or {}
 
-    amount = Decimal(0)
-    planned_amount = Decimal(0)
+    gross = 0
+    planned = 0
     worked_seconds = 0
     overtime_seconds = 0
     planned_seconds = 0
@@ -356,17 +375,9 @@ def _calc_earnings(
             unpaid_shifts_count += 1
             continue
 
-        if rate.rate_type == RateType.hourly:
-            amount += Decimal(paid_seconds) * rate.rate_amount_minor / SECONDS_PER_HOUR
-            planned_amount += (
-                Decimal(shift_planned_seconds) * rate.rate_amount_minor / (SECONDS_PER_HOUR)
-            )
-        else:  # per_shift: переработка не влияет на деньги, план = факт (дельта 0)
-            amount += Decimal(rate.rate_amount_minor)
-            planned_amount += Decimal(rate.rate_amount_minor)
+        gross += _shift_amount_minor(rate, paid_seconds)
+        planned += _shift_amount_minor(rate, shift_planned_seconds)
 
-    gross = int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    planned = int(planned_amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     return {
         "worked_seconds": worked_seconds,
         "overtime_seconds": overtime_seconds,
@@ -545,14 +556,18 @@ def _build_breakdown(
     overtime_minutes_by_shift: dict[uuid.UUID, int] | None = None,
     late_tolerance_minutes: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Суточная разбивка сотрудника: округление денег — атомарно по дню.
+    """Суточная разбивка сотрудника.
 
-    Каждая смена попадает в день по `started_at` в таймзоне `zone`. По дню сумма
-    округляется half-up один раз (факт И план — тем же правилом); корзины
-    week/month и итог сотрудника — суммы уже округлённых дневных значений
-    (день → корзина → сотрудник → всего). `delta_amount_minor` считается ПОСЛЕ
-    суммирования (простое вычитание уже округлённых целых, доп. округление не
-    нужно) — и на уровне корзины, и на уровне агрегата.
+    Каждая смена попадает в день по `started_at` в таймзоне `zone`; округление
+    денег происходит внутри `_calc_earnings` атомарно на каждой смене
+    (ADR-005 п.5) — день здесь просто группирует уже округлённые суммы смен.
+    Корзины week/month и итог сотрудника — суммы уже округлённых дневных
+    значений (смена → день → корзина → сотрудник → всего), поэтому итог
+    совпадает и с `granularity=none` (тот применяет `_calc_earnings` сразу ко
+    всем сменам сотрудника, но округление всё равно на уровне смены).
+    `delta_amount_minor` считается ПОСЛЕ суммирования (простое вычитание уже
+    округлённых целых, доп. округление не нужно) — и на уровне корзины, и на
+    уровне агрегата.
     """
     shifts_by_day: dict[date, list[Shift]] = defaultdict(list)
     for shift in user_shifts:
@@ -616,11 +631,15 @@ async def get_org_payroll(
     Owner строкой items не фигурирует (ADR-001: owner != member).
 
     При `granularity != none` к каждому сотруднику добавляется `breakdown` —
-    разбивка по дням/неделям/месяцам в таймзоне `tz`, а деньги округляются
-    посуточно (см. `_build_breakdown` и ADR-002). Фильтры `user_ids`,
+    разбивка по дням/неделям/месяцам в таймзоне `tz` (см. `_build_breakdown`).
+    Округление денег — half-up на каждой смене в обоих режимах (ADR-005 п.5),
+    поэтому `items[].gross_amount_minor` совпадает между `granularity=none` и
+    `granularity=day|week|month` для одного периода. Фильтры `user_ids`,
     `location_ids` (вкл. спец-значение none — «без точки»), `only_missing_rate`
-    сужают выборку. При `granularity == none` ответ байт-в-байт совместим с
-    прежним контрактом (поля breakdown/granularity/tz отсутствуют).
+    сужают выборку. При `granularity == none` форма ответа совместима с прежним
+    контрактом (поля breakdown/granularity/tz отсутствуют); сами суммы могли
+    сдвинуться на копейки при переходе на ADR-005 (ожидаемое разовое
+    расхождение, см. ADR-005 «Последствия»).
     `include_adjustments` (manual_time_entry) — учитывать ли ручные начисления
     (`payroll_adjustments`) в `net`; знаковая сумма — на `gross` не влияет.
     """
@@ -885,6 +904,111 @@ async def get_my_earnings(
         "late_count": earnings["late_count"],
         "late_seconds_total": earnings["late_seconds_total"],
     }
+
+
+async def get_shift_earnings_map(
+    session: AsyncSession,
+    shifts: list[Shift],
+) -> dict[uuid.UUID, dict[str, Any] | None]:
+    """shift_id → блок `earnings` (shift_history_earnings, ADR-005) для истории смен.
+
+    `None` для персональных смен (`organization_id is None`) и для смен не в
+    статусе `finished` (ADR-005 п.6/8) — суммы этим сменам не считаются вовсе.
+
+    В отличие от `get_org_payroll`/`get_my_earnings`, штрафы и корректировки
+    берутся **только привязанные к самой смене** (`shift_id`), а не все за
+    период сотрудника (ADR-005 п.4, backend.md shift_history_earnings §1).
+
+    Батчи независимо от размера страницы (до 100 смен, `GET /shifts` limit) —
+    N+1 недопустим:
+    1. member_id по парам (organization_id, user_id) — один запрос;
+    2. история ставок всех затронутых участников — один запрос
+       (`_load_rates_asc`);
+    3. согласованная переработка по всем shift_id — один запрос
+       (`overtime.get_approved_overtime_minutes_by_shift`);
+    4. штрафы по shift_id — один запрос (`penalty.aggregate_penalties_by_shift`);
+    5. корректировки по shift_id — один запрос
+       (`adjustment.aggregate_adjustments_by_shift`).
+    Итого 5 запросов на страницу, не зависящих от числа смен в ней.
+    """
+    result: dict[uuid.UUID, dict[str, Any] | None] = dict.fromkeys(s.id for s in shifts)
+
+    eligible = [
+        s for s in shifts if s.organization_id is not None and s.status == ShiftStatus.finished
+    ]
+    if not eligible:
+        return result
+
+    shift_ids = [s.id for s in eligible]
+    org_user_pairs = {(s.organization_id, s.user_id) for s in eligible}
+
+    # 1) member_id по (organization_id, user_id) — одним запросом на всю страницу.
+    member_pair = tuple_(OrganizationMember.organization_id, OrganizationMember.user_id)
+    member_rows = (
+        await session.execute(
+            select(
+                OrganizationMember.organization_id,
+                OrganizationMember.user_id,
+                OrganizationMember.id,
+            ).where(member_pair.in_(org_user_pairs))
+        )
+    ).all()
+    member_id_by_org_user: dict[tuple[uuid.UUID, uuid.UUID], uuid.UUID] = {
+        (org_id, user_id): member_id for org_id, user_id, member_id in member_rows
+    }
+
+    # 2) история ставок всех затронутых участников — одним запросом.
+    rates_by_member = await _load_rates_asc(session, list(set(member_id_by_org_user.values())))
+
+    # 3) согласованная переработка (уже учтённая в gross) — одним запросом.
+    from src.app.services import overtime as overtime_service
+
+    overtime_minutes_by_shift = await overtime_service.get_approved_overtime_minutes_by_shift(
+        session, shift_ids
+    )
+
+    # 4-5) штрафы/корректировки, привязанные именно к смене — по одному запросу.
+    from src.app.services import adjustment as adjustment_service
+    from src.app.services import penalty as penalty_service
+
+    penalties_by_shift = await penalty_service.aggregate_penalties_by_shift(session, shift_ids)
+    adjustments_by_shift = await adjustment_service.aggregate_adjustments_by_shift(
+        session, shift_ids
+    )
+
+    for shift in eligible:
+        org_id = shift.organization_id
+        if org_id is None:
+            # eligible уже отфильтрован по organization_id is not None выше;
+            # проверка здесь — только для сужения типа под mypy.
+            continue
+        member_id = member_id_by_org_user.get((org_id, shift.user_id))
+        rates_asc = rates_by_member.get(member_id, []) if member_id is not None else []
+        rate = _rate_for_moment(rates_asc, shift.started_at)
+
+        overtime_seconds = overtime_minutes_by_shift.get(shift.id, 0) * 60
+        if rate is not None:
+            paid_seconds = calculate_worked_seconds(shift) + overtime_seconds
+            gross = _shift_amount_minor(rate, paid_seconds)
+        else:
+            gross = 0
+        has_rate = rate is not None
+
+        penalty_amount, penalties_count = penalties_by_shift.get(shift.id, (0, 0))
+        adjustment_amount, adjustments_count = adjustments_by_shift.get(shift.id, (0, 0))
+
+        result[shift.id] = {
+            "currency": PAYROLL_CURRENCY,
+            "gross_amount_minor": gross,
+            "penalty_amount_minor": penalty_amount,
+            "penalties_count": penalties_count,
+            "adjustment_amount_minor": adjustment_amount,
+            "adjustments_count": adjustments_count,
+            "net_amount_minor": gross - penalty_amount + adjustment_amount,
+            "overtime_seconds": overtime_seconds,
+            "has_rate": has_rate,
+        }
+    return result
 
 
 def _hours(seconds: int) -> float:

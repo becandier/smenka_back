@@ -37,6 +37,48 @@ class ShiftChecklistsSummary(BaseModel):
     required_incomplete: int = Field(description="Обязательных экземпляров со status != completed")
 
 
+class ShiftEarnings(BaseModel):
+    """Заработок по одной смене (shift_history_earnings, ADR-005).
+
+    Единственный источник правды — payroll-сервис (`payroll._calc_earnings` /
+    `get_shift_earnings_map`); ничего здесь не пересчитывается на клиенте
+    (ADR-005 п.9). `penalty_amount_minor`/`adjustment_amount_minor` — только
+    штрафы/корректировки, привязанные к ЭТОЙ смене (`shift_id`); непривязанные
+    видны лишь в итогах периода (`GET /organizations/{org_id}/my-earnings`).
+    """
+
+    currency: str = Field(description="Валюта суммы, сейчас всегда RUB")
+    gross_amount_minor: int = Field(
+        description="Начисление по смене в копейках (ADR-005 п.2/5), округлённое "
+        "half-up. 0, если `has_rate=false` — это не факт заработка, а отсутствие ставки"
+    )
+    penalty_amount_minor: int = Field(
+        description="Сумма активных штрафов, привязанных к этой смене (`penalties.shift_id`), "
+        "в копейках. >= 0"
+    )
+    penalties_count: int = Field(description="Число активных штрафов, привязанных к смене")
+    adjustment_amount_minor: int = Field(
+        description="Знаковая сумма активных корректировок, привязанных к этой смене "
+        "(`payroll_adjustments.shift_id`), в копейках. Может быть отрицательной"
+    )
+    adjustments_count: int = Field(description="Число активных корректировок, привязанных к смене")
+    net_amount_minor: int = Field(
+        description="gross − penalty + adjustment. Может быть отрицательным — валидное "
+        "значение (ADR-005 п.1)"
+    )
+    overtime_seconds: int = Field(
+        description="Согласованная переработка, уже учтённая в gross (для per_shift на "
+        "сумму не влияет, но отображается)"
+    )
+    has_rate: bool = Field(
+        description="false — на момент started_at у сотрудника не было действующей ставки. "
+        "Тогда gross_amount_minor=0, но это ЗНАЧИТ «ставка не задана», а не «заработал 0» — "
+        "клиент обязан отличать эти состояния (ADR-005 п.3)"
+    )
+
+    model_config = {"from_attributes": True}
+
+
 class ShiftResponse(BaseModel):
     id: str = Field(description="UUID смены")
     user_id: str = Field(description="UUID пользователя")
@@ -169,6 +211,12 @@ class ShiftResponse(BaseModel):
         default=None,
         description="UUID файла-снимка (категория shift_geo_photo) — смотреть через "
         "GET /files/{file_id}. null — обычная смена либо фото уже удалено",
+    )
+    earnings: ShiftEarnings | None = Field(
+        default=None,
+        description="Заработок по этой смене (shift_history_earnings, ADR-005). null — "
+        "персональная смена (organization_id=null) либо смена не в статусе finished "
+        "(сумма ещё меняется). Заполняется только в GET /shifts и GET /shifts/{shift_id}",
     )
 
     model_config = {"from_attributes": True}

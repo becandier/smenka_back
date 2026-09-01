@@ -860,7 +860,7 @@ class TestPayrollReport:
         assert item["unpaid_shifts_count"] == 1
         assert item["has_missing_rate"] is True
 
-    async def test_rounding_half_up_once_on_employee_total(
+    async def test_rounding_half_up_per_shift(
         self,
         client: AsyncClient,
         owner_headers: dict[str, Any],
@@ -869,8 +869,9 @@ class TestPayrollReport:
         verified_user: User,
         employee_member: OrganizationMember,
     ) -> None:
-        """Две смены по 0.5 коп. дробной части: построчное округление дало бы
-        10002, единое округление итога — 10001."""
+        """ADR-005 п.5: две смены по 0.5 коп. дробной части округляются half-up
+        КАЖДАЯ (5000.5 → 5001), итог — сумма уже округлённых: 5001+5001=10002.
+        (До ADR-005 округление было один раз на итог сотрудника: 10001.)"""
         await _make_rate(db_session, employee_member.id, 10001)
         for day in (1, 3):
             await _make_finished_shift(
@@ -885,7 +886,7 @@ class TestPayrollReport:
             headers=owner_headers,
         )
         item = resp.json()["data"]["items"][0]
-        assert item["gross_amount_minor"] == 10001
+        assert item["gross_amount_minor"] == 10002
 
     async def test_pauses_reduce_paid_time(
         self,
@@ -1542,7 +1543,7 @@ class TestPayrollDetailed:
         assert sum(b["gross_amount_minor"] for b in breakdown) == item["gross_amount_minor"]
         assert data["totals"]["gross_amount_minor"] == 54000
 
-    async def test_day_rounding_is_atomic_per_day(
+    async def test_day_rounding_matches_shift_atomic_rounding(
         self,
         client: AsyncClient,
         owner_headers: dict[str, Any],
@@ -1551,7 +1552,10 @@ class TestPayrollDetailed:
         verified_user: User,
         employee_member: OrganizationMember,
     ) -> None:
-        """Посуточное округление: 2×0.5коп. → 5001+5001=10002 (none даёт 10001)."""
+        """ADR-005 п.5: атом округления — смена, а не день и не итог. 2×0.5коп. →
+        5001+5001=10002 в breakdown ПО ДНЯМ (день = одна смена), и то же самое
+        в `granularity=none` — режимы больше не расходятся (до ADR-005 `none`
+        давал 10001 при едином округлении итога)."""
         await _make_rate(db_session, employee_member.id, 10001)
         for day in (1, 3):
             await _make_finished_shift(
@@ -1568,9 +1572,9 @@ class TestPayrollDetailed:
         assert [b["gross_amount_minor"] for b in item["breakdown"]] == [5001, 5001]
         assert item["gross_amount_minor"] == 10002
         assert detailed.json()["data"]["totals"]["gross_amount_minor"] == 10002
-        # режим none сохраняет единичное округление (обратная совместимость)
+        # granularity=none теперь совпадает с посуточной разбивкой (атом — смена)
         legacy = await client.get(_payroll_url(org.id), headers=owner_headers)
-        assert legacy.json()["data"]["items"][0]["gross_amount_minor"] == 10001
+        assert legacy.json()["data"]["items"][0]["gross_amount_minor"] == 10002
 
     async def test_week_granularity_groups_iso_week(
         self,

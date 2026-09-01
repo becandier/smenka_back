@@ -19,6 +19,7 @@ from src.app.schemas.shift import (
 )
 from src.app.services import audit as audit_service
 from src.app.services import overtime as overtime_service
+from src.app.services import payroll as payroll_service
 from src.app.services import shift as shift_service
 from src.app.services.checklist_instance import ShiftChecklistsSummary
 from src.app.services.organization_settings import (
@@ -54,6 +55,7 @@ def _shift_to_response(
     overtime: ShiftOvertimeRequest | None = None,
     created_by_name: str | None = None,
     edited_by_name: str | None = None,
+    earnings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Сериализовать смену.
 
@@ -67,7 +69,11 @@ def _shift_to_response(
     читаются прямо со смены — видны и в персональном, и в орг-контексте (R7).
     `created_by_name`/`edited_by_name` — имя админа, только орг-контекст.
     `geo_fallback*` (shift_geo_photo_fallback) тоже читаются со смены: у обычной
-    смены это `false`/`null`/`null`.
+    смены это `false`/`null`/`null`. `earnings` (shift_history_earnings, ADR-005) —
+    словарь из `payroll.get_shift_earnings_map` либо `None`; передаётся вызывающим
+    кодом ТОЛЬКО из `list_shifts`/`get_shift` (батч без N+1) — остальные эндпоинты
+    смены (`/start`, `/pause`, `/resume`, `/finish`) его не считают и всегда
+    сериализуют `null`.
     """
     work_location = getattr(shift, "work_location", None)
     return ShiftResponse(
@@ -136,6 +142,7 @@ def _shift_to_response(
         geo_fallback_photo_file_id=(
             str(shift.geo_fallback_photo_file_id) if shift.geo_fallback_photo_file_id else None
         ),
+        earnings=earnings,
     ).model_dump(mode="json")
 
 
@@ -223,12 +230,13 @@ async def list_shifts(
     await session.commit()
 
     # Персональная история может смешивать org-смены разных организаций
-    # пользователя — оба батча без N+1 (work_schedules: R5/R6).
+    # пользователя — все батчи без N+1 (work_schedules: R5/R6; shift_history_earnings).
     org_ids = {s.organization_id for s in shifts if s.organization_id is not None}
     tolerance_map = await get_late_tolerance_minutes_map(session, org_ids)
     overtime_map = await overtime_service.get_latest_overtime_for_shifts(
         session, [s.id for s in shifts]
     )
+    earnings_map = await payroll_service.get_shift_earnings_map(session, shifts)
     return ApiResponse.success(
         ShiftListResponse(
             items=[
@@ -238,6 +246,7 @@ async def list_shifts(
                         tolerance_map.get(s.organization_id, 0) if s.organization_id else 0
                     ),
                     overtime=overtime_map.get(s.id),
+                    earnings=earnings_map.get(s.id),
                 )
                 for s in shifts
             ],
@@ -368,8 +377,14 @@ async def get_shift(
 ) -> ApiResponse:
     shift = await shift_service.get_own_shift_detail(session, shift_id, user.id)
     late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    earnings_map = await payroll_service.get_shift_earnings_map(session, [shift])
     return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
+        _shift_to_response(
+            shift,
+            late_tolerance_minutes=late_tolerance,
+            overtime=overtime,
+            earnings=earnings_map.get(shift.id),
+        )
     )
 
 
