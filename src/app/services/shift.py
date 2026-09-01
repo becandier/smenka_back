@@ -16,6 +16,7 @@ from src.app.models.shift import (
     Pause,
     Shift,
     ShiftFinishReason,
+    ShiftHistoryScope,
     ShiftStatus,
 )
 from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOvertimeRequest
@@ -730,6 +731,88 @@ def validate_date_range(
         )
 
 
+def parse_history_scope(scope: str | None) -> ShiftHistoryScope:
+    """Распарсить query-параметр `scope` (`GET /shifts`, `GET /shifts/stats`).
+
+    `None` (параметр не передан) → `ShiftHistoryScope.all` — это и есть контракт
+    обратной совместимости (shift_history_scope): старые клиенты, не знающие
+    про параметр, получают ровно прежнее поведение. Неизвестное значение →
+    `400 INVALID_SCOPE` (по образцу `INVALID_STATUS` в этом же эндпоинте).
+    """
+    if scope is None:
+        return ShiftHistoryScope.all
+    try:
+        return ShiftHistoryScope(scope)
+    except ValueError:
+        raise ShiftError(
+            "INVALID_SCOPE",
+            f"scope должен быть: {', '.join(s.value for s in ShiftHistoryScope)}",
+            400,
+        ) from None
+
+
+def parse_history_organization_id(organization_id: str | None) -> uuid.UUID | None:
+    """Распарсить query-параметр `organization_id` (shift_history_scope).
+
+    Невалидный UUID → `400 VALIDATION_ERROR` (намеренно 400, а не стандартный
+    422 автовалидации FastAPI/Pydantic — ошибка обрабатывается вручную, чтобы
+    соответствовать явному коду ошибок фичи).
+    """
+    if organization_id is None:
+        return None
+    try:
+        return uuid.UUID(organization_id)
+    except (ValueError, AttributeError, TypeError):
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "organization_id должен быть UUID",
+            400,
+        ) from None
+
+
+def validate_history_scope(
+    scope: ShiftHistoryScope,
+    organization_id: uuid.UUID | None,
+) -> None:
+    """Проверить непротиворечивость связки `scope`/`organization_id` (shift_history_scope).
+
+    Строгая трактовка: `organization_id` обязателен ровно при `scope=organization`
+    и запрещён в остальных случаях — комбинация с любым другим `scope` считается
+    ошибкой клиента, а не тихо игнорируется (backend.md, «Бизнес-правила»).
+    """
+    if scope == ShiftHistoryScope.organization and organization_id is None:
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "organization_id обязателен при scope=organization",
+            400,
+        )
+    if scope != ShiftHistoryScope.organization and organization_id is not None:
+        raise ShiftError(
+            "VALIDATION_ERROR",
+            "organization_id передаётся только вместе с scope=organization",
+            400,
+        )
+
+
+def _history_scope_condition(
+    scope: ShiftHistoryScope,
+    organization_id: uuid.UUID | None,
+) -> Any | None:
+    """WHERE-условие среза истории смен, либо `None` — без дополнительного фильтра.
+
+    Членство пользователя в `organization_id` не проверяется (backend.md,
+    «Членство не проверяется и 403 не возвращается»): выборка и так ограничена
+    `user_id = <текущий пользователь>` вызывающим кодом, поэтому фильтр
+    физически не может отдать чужую смену — только пустой список для
+    незнакомой/бывшей организации.
+    """
+    if scope == ShiftHistoryScope.personal:
+        return Shift.organization_id.is_(None)
+    if scope == ShiftHistoryScope.organization:
+        return Shift.organization_id == organization_id
+    return None
+
+
 VALID_CHECKLISTS_FILTERS = {"none", "all_completed", "has_incomplete", "required_incomplete"}
 
 
@@ -855,12 +938,21 @@ async def get_shifts(
     status: ShiftStatus | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    scope: ShiftHistoryScope = ShiftHistoryScope.all,
+    organization_id: uuid.UUID | None = None,
     limit: int = 20,
     offset: int = 0,
     sort: str = "started_at",
     order: str = "desc",
 ) -> tuple[list[Shift], int]:
-    """Get paginated shift list with optional filters. Returns (shifts, total_count)."""
+    """Get paginated shift list with optional filters. Returns (shifts, total_count).
+
+    `scope`/`organization_id` (shift_history_scope) — срез истории: `all`
+    (по умолчанию) без изменений, `personal` — только `organization_id IS NULL`,
+    `organization_id` — только смены указанной организации. Комбинируется с
+    остальными фильтрами через AND, членство не проверяется (см.
+    `_history_scope_condition`).
+    """
     conditions = [Shift.user_id == user_id, Shift.is_deleted.is_(False)]
 
     if status is not None:
@@ -869,6 +961,9 @@ async def get_shifts(
         conditions.append(Shift.started_at >= ensure_utc(date_from))
     if date_to is not None:
         conditions.append(Shift.started_at <= ensure_utc(date_to))
+    scope_condition = _history_scope_condition(scope, organization_id)
+    if scope_condition is not None:
+        conditions.append(scope_condition)
 
     count_query = select(func.count()).select_from(Shift).where(*conditions)
     total = (await session.execute(count_query)).scalar_one()
@@ -894,8 +989,15 @@ async def get_shift_stats(
     *,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
+    scope: ShiftHistoryScope = ShiftHistoryScope.all,
+    organization_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    """Статистика смен за пресет (day/week/month) либо кастомный диапазон."""
+    """Статистика смен за пресет (day/week/month) либо кастомный диапазон.
+
+    `scope`/`organization_id` (shift_history_scope) — тот же срез, что и в
+    `get_shifts`: при одинаковых фильтрах оба эндпоинта обязаны описывать одно
+    и то же множество смен (backend.md, «Требование»).
+    """
     window = resolve_stats_window(period, date_from, date_to)
 
     conditions = [Shift.user_id == user_id, Shift.is_deleted.is_(False)]
@@ -903,6 +1005,9 @@ async def get_shift_stats(
         conditions.append(Shift.started_at >= window.filter_from)
     if window.filter_to is not None:
         conditions.append(Shift.started_at <= window.filter_to)
+    scope_condition = _history_scope_condition(scope, organization_id)
+    if scope_condition is not None:
+        conditions.append(scope_condition)
 
     result = await session.execute(
         select(Shift).options(selectinload(Shift.pauses)).where(*conditions)
