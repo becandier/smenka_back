@@ -1,8 +1,15 @@
 # tests/test_shifts.py
+import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.app.core.security import hash_password
+from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.models.shift import Shift, ShiftStatus
+from src.app.models.user import User
 
 
 class TestStartShift:
@@ -267,6 +274,319 @@ class TestListShifts:
         assert response.status_code in (401, 403)
 
 
+# --- shift_history_scope: scope/organization_id у GET /shifts и GET /shifts/stats ---
+
+
+@pytest.fixture
+async def scope_org_owner_a(db_session: AsyncSession) -> User:
+    """Отдельный владелец org A — owner != member (ADR-001), нужен только для FK."""
+    user = User(
+        id=uuid.uuid4(),
+        email="scope-org-owner-a@example.com",
+        password_hash=hash_password("Test1234"),
+        name="Scope Org A Owner",
+        is_verified=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    return user
+
+
+@pytest.fixture
+async def scope_org_owner_b(db_session: AsyncSession) -> User:
+    user = User(
+        id=uuid.uuid4(),
+        email="scope-org-owner-b@example.com",
+        password_hash=hash_password("Test1234"),
+        name="Scope Org B Owner",
+        is_verified=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    return user
+
+
+@pytest.fixture
+async def scope_org_a(db_session: AsyncSession, scope_org_owner_a: User) -> Organization:
+    org = Organization(name="Scope Org A", owner_id=scope_org_owner_a.id)
+    db_session.add(org)
+    await db_session.commit()
+    return org
+
+
+@pytest.fixture
+async def scope_org_b(db_session: AsyncSession, scope_org_owner_b: User) -> Organization:
+    org = Organization(name="Scope Org B", owner_id=scope_org_owner_b.id)
+    db_session.add(org)
+    await db_session.commit()
+    return org
+
+
+async def _make_shift(
+    db_session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    organization_id: uuid.UUID | None = None,
+    started_at: datetime | None = None,
+    finished: bool = True,
+) -> Shift:
+    start = started_at or (datetime.now(UTC) - timedelta(hours=1))
+    shift = Shift(
+        user_id=user_id,
+        organization_id=organization_id,
+        started_at=start,
+        finished_at=start + timedelta(minutes=30) if finished else None,
+        status=ShiftStatus.finished if finished else ShiftStatus.active,
+    )
+    db_session.add(shift)
+    await db_session.commit()
+    return shift
+
+
+async def _current_user_id(client: AsyncClient, auth_headers: dict[str, str]) -> uuid.UUID:
+    me_resp = await client.get("/api/v1/users/me", headers=auth_headers)
+    return uuid.UUID(me_resp.json()["data"]["id"])
+
+
+class TestListShiftsScope:
+    async def test_scope_omitted_returns_previous_behavior(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        """Отсутствие `scope` = прежнее поведение: персональные и организационные
+        смены вперемешку, без изменений."""
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        response = await client.get("/api/v1/shifts", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 2
+
+    async def test_scope_all_explicit_same_as_omitted(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        response = await client.get(
+            "/api/v1/shifts", headers=auth_headers, params={"scope": "all"}
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["total"] == 2
+
+    async def test_scope_personal_only_organization_id_null(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        response = await client.get(
+            "/api/v1/shifts", headers=auth_headers, params={"scope": "personal"}
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["organization_id"] is None
+
+    async def test_scope_organization_only_that_org(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+        scope_org_b: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        await _make_shift(db_session, user_id, organization_id=scope_org_b.id)
+
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"scope": "organization", "organization_id": str(scope_org_a.id)},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["organization_id"] == str(scope_org_a.id)
+
+    async def test_scope_combines_with_status_filter(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id, finished=True)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id, finished=False)
+
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={
+                "scope": "organization",
+                "organization_id": str(scope_org_a.id),
+                "status": "finished",
+            },
+        )
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["items"][0]["status"] == "finished"
+
+    async def test_scope_combines_with_date_range(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        old_start = datetime.now(UTC) - timedelta(days=3)
+        recent_start = datetime.now(UTC) - timedelta(hours=1)
+        await _make_shift(
+            db_session, user_id, organization_id=scope_org_a.id, started_at=old_start
+        )
+        await _make_shift(
+            db_session, user_id, organization_id=scope_org_a.id, started_at=recent_start
+        )
+
+        date_from = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={
+                "scope": "organization",
+                "organization_id": str(scope_org_a.id),
+                "date_from": date_from,
+            },
+        )
+        data = response.json()["data"]
+        assert data["total"] == 1
+
+    async def test_scope_pagination_total_reflects_filtered_set(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        for _ in range(3):
+            await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        for _ in range(2):
+            await _make_shift(db_session, user_id, organization_id=None)
+
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"scope": "personal", "limit": 1, "offset": 0},
+        )
+        data = response.json()["data"]
+        assert data["total"] == 2  # общий набор персональных, не всей истории (5)
+        assert len(data["items"]) == 1
+        assert data["limit"] == 1
+        assert data["offset"] == 0
+
+    async def test_scope_organization_after_membership_removed(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        """Членство не проверяется: смены исключённого сотрудника продолжают открываться."""
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        member = OrganizationMember(
+            organization_id=scope_org_a.id,
+            user_id=user_id,
+            role=MemberRole.employee,
+        )
+        db_session.add(member)
+        await db_session.commit()
+        # Сотрудника исключили из организации.
+        await db_session.delete(member)
+        await db_session.commit()
+
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"scope": "organization", "organization_id": str(scope_org_a.id)},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 1
+
+    async def test_scope_organization_unknown_org_empty_result(
+        self, client: AsyncClient, auth_headers
+    ):
+        """`scope=organization` для организации, где пользователь никогда не был —
+        валидный запрос с пустым результатом, не ошибка (backend.md, бизнес-правило 4)."""
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"scope": "organization", "organization_id": str(uuid.uuid4())},
+        )
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["items"] == []
+        assert data["total"] == 0
+
+    async def test_invalid_scope_returns_400(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts", headers=auth_headers, params={"scope": "bogus"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_SCOPE"
+
+    async def test_scope_organization_without_organization_id_returns_400(
+        self, client: AsyncClient, auth_headers
+    ):
+        response = await client.get(
+            "/api/v1/shifts", headers=auth_headers, params={"scope": "organization"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    @pytest.mark.parametrize("scope_value", ["all", "personal", None])
+    async def test_organization_id_forbidden_outside_organization_scope_returns_400(
+        self, client: AsyncClient, auth_headers, scope_value
+    ):
+        params: dict[str, str] = {"organization_id": str(uuid.uuid4())}
+        if scope_value is not None:
+            params["scope"] = scope_value
+        response = await client.get("/api/v1/shifts", headers=auth_headers, params=params)
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_organization_id_not_uuid_returns_400(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts",
+            headers=auth_headers,
+            params={"scope": "organization", "organization_id": "not-a-uuid"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 class TestShiftStats:
     async def test_stats_empty(self, client: AsyncClient, auth_headers):
         response = await client.get(
@@ -318,6 +638,154 @@ class TestShiftStats:
     async def test_stats_unauthorized(self, client: AsyncClient):
         response = await client.get("/api/v1/shifts/stats", params={"period": "day"})
         assert response.status_code in (401, 403)
+
+
+class TestShiftStatsScope:
+    """shift_history_scope: те же `scope`/`organization_id`, что у GET /shifts."""
+
+    async def test_stats_scope_omitted_counts_all_shifts(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"date_from": (datetime.now(UTC) - timedelta(days=1)).isoformat()},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["shift_count"] == 2
+
+    async def test_stats_scope_personal_counts_only_personal(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={
+                "date_from": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                "scope": "personal",
+            },
+        )
+        assert response.json()["data"]["shift_count"] == 1
+
+    async def test_stats_scope_organization_counts_only_that_org(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+        scope_org_b: Organization,
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        await _make_shift(db_session, user_id, organization_id=scope_org_b.id)
+        await _make_shift(db_session, user_id, organization_id=None)
+
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={
+                "date_from": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                "scope": "organization",
+                "organization_id": str(scope_org_a.id),
+            },
+        )
+        assert response.json()["data"]["shift_count"] == 1
+
+    async def test_stats_invalid_scope_returns_400(self, client: AsyncClient, auth_headers):
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day", "scope": "bogus"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_SCOPE"
+
+    async def test_stats_scope_organization_without_id_returns_400(
+        self, client: AsyncClient, auth_headers
+    ):
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day", "scope": "organization"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    async def test_stats_organization_id_forbidden_at_scope_personal_returns_400(
+        self, client: AsyncClient, auth_headers
+    ):
+        response = await client.get(
+            "/api/v1/shifts/stats",
+            headers=auth_headers,
+            params={"period": "day", "scope": "personal", "organization_id": str(uuid.uuid4())},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+class TestShiftHistoryScopeConsistency:
+    """При одинаковых scope/organization_id/окне GET /shifts и GET /shifts/stats
+    обязаны описывать одно и то же множество смен (backend.md, «Требование»)."""
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {},
+            {"scope": "all"},
+            {"scope": "personal"},
+            {"scope": "organization"},  # organization_id подставляется в тесте
+        ],
+    )
+    async def test_list_and_stats_agree_on_same_filters(
+        self,
+        client: AsyncClient,
+        auth_headers,
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+        scope_org_b: Organization,
+        params: dict[str, str],
+    ):
+        user_id = await _current_user_id(client, auth_headers)
+        await _make_shift(db_session, user_id, organization_id=None)
+        await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        await _make_shift(db_session, user_id, organization_id=scope_org_b.id)
+
+        query = dict(params)
+        if query.get("scope") == "organization":
+            query["organization_id"] = str(scope_org_a.id)
+        query["date_from"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        query["limit"] = 100
+
+        list_resp = await client.get("/api/v1/shifts", headers=auth_headers, params=query)
+        list_data = list_resp.json()["data"]
+
+        stats_query = {k: v for k, v in query.items() if k != "limit"}
+        stats_resp = await client.get(
+            "/api/v1/shifts/stats", headers=auth_headers, params=stats_query
+        )
+        stats_data = stats_resp.json()["data"]
+
+        assert list_data["total"] == stats_data["shift_count"]
+        assert (
+            sum(item["worked_seconds"] for item in list_data["items"])
+            == (stats_data["total_worked_seconds"])
+        )
 
 
 class TestShiftLifecycle:

@@ -157,8 +157,9 @@ async def _enrich_single_shift(
 @router.get(
     "",
     summary="История смен",
-    description="Список персональных смен текущего пользователя с пагинацией. "
-    "Поддерживает фильтрацию по статусу и дате.",
+    description="История смен текущего пользователя с пагинацией — персональные и "
+    "организационные вперемешку (или срез через `scope`/`organization_id`). "
+    "Поддерживает фильтрацию по статусу, дате и контексту.",
 )
 async def list_shifts(
     user: CurrentUserDep,
@@ -169,6 +170,17 @@ async def list_shifts(
     ),
     date_to: dt_datetime | None = Query(
         None, description="Filter shifts started before this datetime"
+    ),
+    scope: str | None = Query(
+        None,
+        description="Срез истории: all (по умолчанию, прежнее поведение) | personal "
+        "(organization_id IS NULL) | organization (нужен organization_id)",
+    ),
+    organization_id: str | None = Query(
+        None,
+        description="UUID организации, обязателен при scope=organization, запрещён "
+        "при остальных scope. Членство не проверяется — фильтр применяется к "
+        "собственным сменам пользователя",
     ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -191,12 +203,18 @@ async def list_shifts(
 
     shift_service.validate_date_range(date_from, date_to)
 
+    scope_enum = shift_service.parse_history_scope(scope)
+    organization_id_uuid = shift_service.parse_history_organization_id(organization_id)
+    shift_service.validate_history_scope(scope_enum, organization_id_uuid)
+
     shifts, total = await shift_service.get_shifts(
         session,
         user.id,
         status=status_enum,
         date_from=date_from,
         date_to=date_to,
+        scope=scope_enum,
+        organization_id=organization_id_uuid,
         limit=limit,
         offset=offset,
         sort=sort,
@@ -233,10 +251,13 @@ async def list_shifts(
 @router.get(
     "/stats",
     summary="Статистика смен",
-    description="Агрегированная статистика персональных смен: суммарное время, "
-    "количество, среднее. Окно — пресет `period` (день/неделя/месяц) ЛИБО "
-    "произвольный диапазон `date_from`/`date_to` (UTC, включительно по началу "
-    "смены). Источники окна взаимоисключающи.",
+    description="Агрегированная статистика смен пользователя — персональных и "
+    "организационных вперемешку (или срез через `scope`/`organization_id`): "
+    "суммарное время, количество, среднее. Окно — пресет `period` "
+    "(день/неделя/месяц) ЛИБО произвольный диапазон `date_from`/`date_to` (UTC, "
+    "включительно по началу смены). Источники окна взаимоисключающи. При "
+    "одинаковых `scope`/`organization_id`/окне описывает то же множество смен, "
+    "что и `GET /shifts`.",
 )
 async def shift_stats(
     user: CurrentUserDep,
@@ -250,13 +271,30 @@ async def shift_stats(
     date_to: dt_datetime | None = Query(
         None, description="Верхняя граница окна по started_at, включительно (UTC)"
     ),
+    scope: str | None = Query(
+        None,
+        description="Срез истории: all (по умолчанию, прежнее поведение) | personal "
+        "(organization_id IS NULL) | organization (нужен organization_id)",
+    ),
+    organization_id: str | None = Query(
+        None,
+        description="UUID организации, обязателен при scope=organization, запрещён "
+        "при остальных scope. Членство не проверяется — фильтр применяется к "
+        "собственным сменам пользователя",
+    ),
 ) -> ApiResponse:
+    scope_enum = shift_service.parse_history_scope(scope)
+    organization_id_uuid = shift_service.parse_history_organization_id(organization_id)
+    shift_service.validate_history_scope(scope_enum, organization_id_uuid)
+
     stats = await shift_service.get_shift_stats(
         session,
         user.id,
         period,
         date_from=date_from,
         date_to=date_to,
+        scope=scope_enum,
+        organization_id=organization_id_uuid,
     )
     await session.commit()
     return ApiResponse.success(ShiftStatsResponse(**stats).model_dump(mode="json"))

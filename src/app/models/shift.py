@@ -48,6 +48,19 @@ class ShiftFinishReason(enum.StrEnum):
     auto_schedule = "auto_schedule"
 
 
+class ShiftHistoryScope(enum.StrEnum):
+    """Срез истории смен для `GET /shifts` и `GET /shifts/stats` (shift_history_scope).
+
+    Не персистится в БД — только query-параметр запроса. `all` — прежнее
+    поведение без изменений (обязательное требование обратной совместимости:
+    отсутствие параметра = `all`).
+    """
+
+    all = "all"
+    personal = "personal"
+    organization = "organization"
+
+
 class Shift(Base):
     __tablename__ = "shifts"
     __table_args__ = (

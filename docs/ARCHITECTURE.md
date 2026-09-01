@@ -1,6 +1,30 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-08-31 (online_payments — онлайн-оплата подписки через
+Последнее обновление: 2026-09-01 (shift_history_scope — фильтр контекста в истории
+смен): `GET /shifts` и `GET /shifts/stats` получили два новых query-параметра —
+`scope` (`all`/`personal`/`organization`, default `all`) и `organization_id` (UUID,
+обязателен ровно при `scope=organization`) — клиент может запросить срез истории:
+только персональные смены (`organization_id IS NULL`), только смены конкретной
+организации, либо всё вперемешку как раньше. Обратная совместимость абсолютна:
+параметр не передан ⇒ `scope=all` ⇒ поведение byte-for-byte прежнее — контракт для
+мобильных билдов, которые о параметре не знают. Новый enum `ShiftHistoryScope`
+(`models/shift.py`) — не персистится, только форма query-параметра. Членство в
+организации НЕ проверяется и `403` не возвращается: выборка и так ограничена
+`user_id = current_user`, поэтому чужую смену фильтр физически не может отдать —
+`organization_id` без действующего членства (в т.ч. сотрудника, исключённого из
+организации) просто даёт пустой список, а не ошибку — прошлые смены остаются
+историей уволенного/исключённого сотрудника. `scope`/`organization_id` строго
+комбинируются (по AND) с существующими `status`/`date_from`/`date_to`, формат
+элемента ответа и `total`/`limit`/`offset` не менялись. Новый код `400 INVALID_SCOPE`
+(по образцу соседнего `INVALID_STATUS`); связка `organization_id` без
+`scope=organization` (или наоборот) — `400 VALIDATION_ERROR`, намеренно 400, а не
+обычные 422 этого кода в других доменах. Оба эндпоинта переиспользуют один и тот же
+сервисный хелпер (`services/shift._history_scope_condition`) для WHERE-условия — это
+и есть гарантия, что `GET /shifts` и `GET /shifts/stats` при одинаковых фильтрах
+описывают одно и то же множество смен. Домен не меняется, миграций нет. Подробности —
+`docs/tasks/shift_history_scope/backend.md`.
+
+Предыдущее обновление: 2026-08-31 (online_payments — онлайн-оплата подписки через
 ЮKassa): владелец/admin организации оплачивают продление или апгрейд Стандарт→Премиум
 картой из кабинета, подписка продлевается автоматически по факту поступления денег —
 второй путь к тому же результату, что и ручное `POST /admin/.../subscription/extend`
@@ -293,8 +317,8 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | PUT | `/api/v1/admin/oauth-providers/{provider}/{client_type}` | Upsert client_id/enabled одной комбинации | Bearer (super_admin) |
 | GET | `/api/v1/users/me` | Текущий пользователь | Bearer |
 | PATCH | `/api/v1/users/me` | Обновление профиля (name, phone) | Bearer |
-| GET | `/api/v1/shifts` | История смен (пагинация, фильтры) | Bearer |
-| GET | `/api/v1/shifts/stats` | Статистика: пресет `period` ЛИБО диапазон `date_from`/`date_to` | Bearer |
+| GET | `/api/v1/shifts` | История смен (пагинация, фильтры; `scope`=`all`/`personal`/`organization`+`organization_id` — срез контекста, default `all`, `shift_history_scope`) | Bearer |
+| GET | `/api/v1/shifts/stats` | Статистика: пресет `period` ЛИБО диапазон `date_from`/`date_to`; тот же `scope`/`organization_id`, что и у списка (`shift_history_scope`) | Bearer |
 | POST | `/api/v1/shifts/start` | Начать смену (org-смена — резолвит график по R1/R3, опц. `work_schedule_id`; опц. `geo_fallback_photo_id`+`geo_fallback_reason` вместо координат — старт по фото при недоступной геолокации, `shift_geo_photo_fallback`) | Bearer |
 | GET | `/api/v1/shifts/{shift_id}` | Деталь СВОЕЙ смены по id (персональная или своя org-смена; чужая/несуществующая/удалённая → 404 SHIFT_NOT_FOUND). Объявлен после `/stats`/`/start` (shift_self_detail) | Bearer |
 | POST | `/api/v1/shifts/{id}/pause` | Поставить на паузу | Bearer |
