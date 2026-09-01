@@ -546,3 +546,32 @@ async def aggregate_member_adjustments(
         )
     ).one()
     return int(row[0]), int(row[1])
+
+
+async def aggregate_adjustments_by_shift(
+    session: AsyncSession,
+    shift_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[int, int]]:
+    """shift_id → (знаковая сумма активных начислений в копейках, число), привязанных
+    именно к этой смене (`payroll_adjustments.shift_id`).
+
+    Одним запросом для всей страницы смен (shift_history_earnings, ADR-005 п.4) —
+    непривязанные к смене начисления сюда не попадают (они видны только в
+    `aggregate_*_by_user`/`aggregate_member_adjustments` за период). Только
+    is_deleted=false.
+    """
+    if not shift_ids:
+        return {}
+    result = await session.execute(
+        select(
+            PayrollAdjustment.shift_id,
+            func.coalesce(func.sum(PayrollAdjustment.amount_minor), 0),
+            func.count(PayrollAdjustment.id),
+        )
+        .where(
+            PayrollAdjustment.shift_id.in_(shift_ids),
+            PayrollAdjustment.is_deleted.is_(False),
+        )
+        .group_by(PayrollAdjustment.shift_id)
+    )
+    return {shift_id: (int(total), int(count)) for shift_id, total, count in result.all()}

@@ -563,3 +563,29 @@ async def aggregate_member_penalties(
         )
     ).one()
     return int(row[0]), int(row[1])
+
+
+async def aggregate_penalties_by_shift(
+    session: AsyncSession,
+    shift_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple[int, int]]:
+    """shift_id → (сумма active-штрафов в копейках, число), привязанных именно к
+    этой смене (`penalties.shift_id`).
+
+    Одним запросом для всей страницы смен (shift_history_earnings, ADR-005 п.4) —
+    непривязанные к смене штрафы сюда не попадают (они видны только в
+    `aggregate_penalties_by_user`/`aggregate_member_penalties` за период). Только
+    is_deleted=false.
+    """
+    if not shift_ids:
+        return {}
+    result = await session.execute(
+        select(
+            Penalty.shift_id,
+            func.coalesce(func.sum(Penalty.amount_minor), 0),
+            func.count(Penalty.id),
+        )
+        .where(Penalty.shift_id.in_(shift_ids), Penalty.is_deleted.is_(False))
+        .group_by(Penalty.shift_id)
+    )
+    return {shift_id: (int(total), int(count)) for shift_id, total, count in result.all()}
