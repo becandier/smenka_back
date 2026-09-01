@@ -67,7 +67,6 @@ async def create_member(
     org_id: uuid.UUID,
     actor_id: uuid.UUID,
     *,
-    actor_is_super_admin: bool,
     name: str,
     login: str | None,
     email: str | None,
@@ -84,17 +83,15 @@ async def create_member(
     логируется.
     """
     org = await get_organization(session, org_id)
+    # Владелец, admin-участник организации и super_admin (admin_grants_admin_
+    # role) — все, кто прошёл эту проверку, могут завести сотрудника с любой
+    # ролью, включая role=admin: отдельного запрета на выбор роли больше нет
+    # (зеркалит правило update_member_role).
     await ensure_admin_or_owner(session, org, actor_id)
     await entitlements.require_active_subscription(session, org, actor_id)
     await entitlements.require_capacity(session, org, entitlements.LimitKind.employees)
 
     role_enum = MemberRole(role)
-    # Владелец может назначить admin, обычный admin-участник — только employee
-    # (зеркалит правило update_member_role: role=admin разрешена только
-    # owner/super_admin).
-    is_owner_or_super = org.owner_id == actor_id or actor_is_super_admin
-    if role_enum == MemberRole.admin and not is_owner_or_super:
-        raise OrgError("FORBIDDEN", "Только владелец может назначать роль admin", 403)
 
     if login is not None:
         await _ensure_login_free(session, login)

@@ -373,9 +373,23 @@ async def update_member_role(
 ) -> OrganizationMember:
     org = await get_organization(session, org_id)
 
-    # Only owner or super_admin can change roles
-    if not is_super_admin and org.owner_id != requester_id:
-        raise OrgError("FORBIDDEN", "Только владелец или super_admin может менять роли", 403)
+    # Владелец, admin-участник организации и super_admin могут менять роли
+    # (admin_grants_admin_role: раньше это было доступно только владельцу).
+    if not is_super_admin:
+        await ensure_admin_or_owner(
+            session,
+            org,
+            requester_id,
+            message="Только владелец, админ организации или super_admin может менять роли",
+        )
+
+    # Участнику нельзя сменить роль самому себе: понижение случайно отберёт
+    # у него собственные права без возможности их вернуть (потребуется
+    # владелец). super_admin — исключение: он не участник организации и
+    # действует сквозным доступом (см. backend.md admin_grants_admin_role).
+    if not is_super_admin and requester_id == member_user_id:
+        raise OrgError("FORBIDDEN", "Нельзя изменить собственную роль", 403)
+
     await entitlements.require_active_subscription(session, org, requester_id)
 
     try:

@@ -487,6 +487,24 @@ class TestReadOnly:
         assert resp.status_code == 402
         assert _err(resp) == "SUBSCRIPTION_INACTIVE"
 
+    async def test_role_update_blocked_in_suspended_org(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """admin_grants_admin_role: require_active_subscription сохранился в update_member_role
+        после расширения авторизации на admin-участника."""
+        _owner, org = await self._suspended_org(db_session, "ro-owner6@example.com", "ROOrg6")
+        emp = await _make_user(db_session, "ro-emp6@example.com", "Employee")
+        await _add_member(db_session, org.id, emp.id)
+
+        headers = await _login(client, "ro-owner6@example.com")
+        resp = await client.patch(
+            f"/api/v1/organizations/{org.id}/members/{emp.id}/role",
+            headers=headers,
+            json={"role": "admin"},
+        )
+        assert resp.status_code == 402
+        assert _err(resp) == "SUBSCRIPTION_INACTIVE"
+
     async def test_member_leave_allowed_in_suspended_org(
         self, client: AsyncClient, db_session: AsyncSession
     ):

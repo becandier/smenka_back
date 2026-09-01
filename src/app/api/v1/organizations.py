@@ -372,8 +372,8 @@ async def join_organization(
         "login/email (хотя бы одно обязательно), пароль (не передан — сервер "
         "генерирует). Учётка сразу is_verified — письмо не отправляется. "
         "Пароль возвращается один раз в ответе и нигде больше не сохраняется. "
-        "Доступно владельцу (Owner) и admin-участнику; роль admin при создании "
-        "может назначить только владелец."
+        "Доступно владельцу (Owner) и admin-участнику, оба могут назначить "
+        "любую роль, включая admin."
     ),
 )
 async def create_member(
@@ -388,7 +388,6 @@ async def create_member(
         session,
         org_id,
         user.id,
-        actor_is_super_admin=user.role == UserRole.super_admin,
         name=body.name,
         login=body.login,
         email=body.email,
@@ -549,7 +548,9 @@ async def reset_member_password(
     "/{org_id}/members/{member_user_id}/role",
     summary="Изменить роль участника",
     description=(
-        "Назначает или снимает роль admin у участника. Доступно владельцу (Owner) и super_admin."
+        "Назначает или снимает роль admin у участника. Доступно владельцу "
+        "(Owner), admin-участнику организации и super_admin. Нельзя изменить "
+        "собственную роль (кроме super_admin) — 403 FORBIDDEN."
     ),
 )
 async def update_member_role(
@@ -580,7 +581,7 @@ async def update_member_role(
     )
     await session.commit()
 
-    # Эндпоинт доступен только owner/super_admin — ставку показываем всегда
+    # Эндпоинт доступен только owner/admin/super_admin — ставку показываем всегда
     from src.app.services import payroll as payroll_service
 
     current_rates = await payroll_service.get_current_rates(session, [member.id])
