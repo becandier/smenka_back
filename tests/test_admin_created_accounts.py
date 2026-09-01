@@ -266,20 +266,22 @@ class TestCreateMember:
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "EMAIL_TAKEN"
 
-    async def test_admin_cannot_create_admin_role(
+    async def test_admin_can_create_admin_role(
         self,
         client: AsyncClient,
         admin_headers: dict[str, str],
         org: Organization,
         admin_member: OrganizationMember,
     ):
+        """admin_grants_admin_role: админ организации тоже может завести учётку с role=admin
+        (раньше это было доступно только владельцу — 403 FORBIDDEN)."""
         response = await client.post(
             f"/api/v1/organizations/{org.id}/members",
             headers=admin_headers,
             json={"name": "Новый Админ", "login": "newadmin", "role": "admin"},
         )
-        assert response.status_code == 403
-        assert response.json()["error"]["code"] == "FORBIDDEN"
+        assert response.status_code == 201, response.text
+        assert response.json()["data"]["member"]["role"] == "admin"
 
     async def test_owner_can_create_admin_role(
         self, client: AsyncClient, owner_headers: dict[str, str], org: Organization
