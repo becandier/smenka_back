@@ -174,6 +174,17 @@ additive-поля (`geo_fallback`/`geo_fallback_reason`/`geo_fallback_photo_file
 но остаётся). Миграций нет. Подробности —
 `docs/tasks/test_assignment_unassign/backend.md`.
 
+Обновление 2026-09-02 (`optional_schedule_start`): семантика
+`organization_settings.require_schedule=false` применяется и к явно переданному
+`work_schedule_id`. После обязательных проверок существования, принадлежности организации и
+доступности сотруднику/точке закрытый по времени график отбрасывается, смена создаётся без
+графика (`work_schedule_id`, `schedule_name`, `scheduled_start_at`, `scheduled_end_at = null`).
+При `require_schedule=true` сохраняется `422 SCHEDULE_WINDOW_CLOSED`; стартуемый явный график
+по-прежнему привязывается. Fallback выполняется внутри `_resolve_org_shift_schedule`, поэтому
+одинаков для обычного и geo-fallback старта, и пишет info-событие
+`optional_schedule_fallback` с `org_id`, `work_schedule_id` и причиной
+`window_closed_optional_schedule`. Модель данных и API-контракт не менялись, миграции нет.
+
 Предыдущее обновление: 2026-08-16 (schedule_window_enforcement — запрет старта смены вне
 окна графика): фикс бага с прода (график 21:48–21:52, старт в 21:53 создавал смену с
 плановым окном на завтра и висел активной ~сутки) — `_resolve_org_shift_schedule` (R3,

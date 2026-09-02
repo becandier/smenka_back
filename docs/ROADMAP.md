@@ -6,6 +6,16 @@
 
 ---
 
+## Фича — Старт без графика при отключённом требовании (`optional_schedule_start`) `[x]`
+ТЗ: `../../docs/tasks/optional_schedule_start/backend.md`  STATUS: `../../docs/tasks/optional_schedule_start/STATUS.md`
+- [x] Явный доступный, но закрытый по времени график при `require_schedule=false` отбрасывается; смена создаётся без снимка графика
+- [x] Строгий режим `require_schedule=true`, проверки существования/доступности и автоподбор без явного id не ослаблены
+- [x] Структурированное событие `optional_schedule_fallback` с причиной `window_closed_optional_schedule`
+- [x] Регрессионные сервисный и API-тесты; миграции и новые коды ошибок не требуются
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Старт смены по фото при недоступной геолокации (`shift_geo_photo_fallback`) `[~]`
 ТЗ: `../../docs/tasks/shift_geo_photo_fallback/backend.md`  STATUS: `../../docs/tasks/shift_geo_photo_fallback/STATUS.md`
 - [x] Категория файла `FileCategory.shift_geo_photo` + политика (`shift-geo-photos/`, 10 МБ, image-MIME, org-scoped): загрузка — любой участник org, чтение — владелец/admin/owner org/super_admin. Схема категорий не мигрируется — `files.category` не native PG enum, а VARCHAR(32) без CHECK
