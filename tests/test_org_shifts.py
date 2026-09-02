@@ -704,6 +704,8 @@ class TestShiftOwnerVisibility:
         data = resp.json()["data"]
         assert data["id"] == shift_id
         assert data["user_id"] == str(employee_user.id)
+        assert data["organization_id"] == str(org_no_geo.id)
+        assert data["organization_timezone"] == "Europe/Moscow"
         assert data["user_name"] == "Employee"
         assert data["user_email"] == "employee@example.com"
         assert data["role"] == "employee"
@@ -863,6 +865,8 @@ class TestShiftOwnerVisibility:
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]
         assert len(items) == 1
+        assert items[0]["organization_id"] == str(org_no_geo.id)
+        assert items[0]["organization_timezone"] == "Europe/Moscow"
         assert items[0]["user_name"] == "Employee"
         assert items[0]["role"] is None
 

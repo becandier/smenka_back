@@ -201,6 +201,7 @@ async def _single_shift_response(
 
 @router.get(
     "",
+    response_model=ApiResponse[ShiftListResponse],
     summary="История смен",
     description="История смен текущего пользователя с пагинацией — персональные и "
     "организационные вперемешку (или срез через `scope`/`organization_id`). "
@@ -355,6 +356,7 @@ async def shift_stats(
 
 @router.post(
     "/start",
+    response_model=ApiResponse[ShiftResponse],
     status_code=201,
     summary="Начать смену",
     description="Начинает новую смену. Без `organization_id` — персональная смена. "
@@ -404,6 +406,7 @@ async def start_shift(
 
 @router.get(
     "/{shift_id}",
+    response_model=ApiResponse[ShiftResponse],
     summary="Деталь своей смены",
     description="Деталь собственной смены текущего пользователя по id — персональной "
     "(`organization_id=null`) или организационной, где пользователь является её владельцем. "
@@ -425,6 +428,7 @@ async def get_shift(
 
 @router.post(
     "/{shift_id}/pause",
+    response_model=ApiResponse[ShiftResponse],
     summary="Поставить на паузу",
     description="Ставит активную смену на паузу. Для организационных смен может быть "
     "ограничено настройкой `max_pauses_per_shift`.",
@@ -441,6 +445,7 @@ async def pause_shift(
 
 @router.post(
     "/{shift_id}/resume",
+    response_model=ApiResponse[ShiftResponse],
     summary="Возобновить смену",
     description="Снимает смену с паузы и возвращает в статус active.",
 )
@@ -509,6 +514,7 @@ async def delete_overtime_request(
 
 @router.post(
     "/{shift_id}/finish",
+    response_model=ApiResponse[ShiftResponse],
     summary="Завершить смену",
     description="Завершает активную или стоящую на паузе смену. Все открытые паузы "
     "автоматически закрываются.",

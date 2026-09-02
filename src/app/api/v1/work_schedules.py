@@ -9,6 +9,7 @@ from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.organization import OrganizationMember
 from src.app.models.work_schedule import WorkSchedule
 from src.app.schemas.base import ApiResponse
+from src.app.schemas.shift import ShiftResponse
 from src.app.schemas.work_schedule import (
     EffectiveSchedulesResponse,
     MySchedulesResponse,
@@ -379,6 +380,7 @@ async def get_my_schedules(
 
 @router.patch(
     "/shifts/{shift_id}/schedule",
+    response_model=ApiResponse[ShiftResponse],
     summary="Сменить график у смены",
     description="Owner/admin меняет график у смены (активной или завершённой), если "
     "сотрудник выбрал не тот. `scheduled_*` пересчитываются от неизменного `started_at`; "

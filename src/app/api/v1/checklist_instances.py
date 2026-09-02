@@ -3,8 +3,10 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter
+from sqlalchemy import select
 
 from src.app.api.deps import CurrentUserDep, SessionDep
+from src.app.api.v1.shifts import get_organization_timezones
 from src.app.core.config import get_settings
 from src.app.models.checklist import (
     ChecklistInstance,
@@ -12,6 +14,7 @@ from src.app.models.checklist import (
     ChecklistItemPhoto,
 )
 from src.app.models.file import File
+from src.app.models.shift import Shift
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import (
     ChecklistInstanceDetailResponse,
@@ -31,6 +34,15 @@ from src.app.services import file_storage
 router = APIRouter(prefix="/shifts/{shift_id}/checklists", tags=["checklist-instances"])
 
 settings = get_settings()
+
+
+async def _shift_organization_timezone(session: SessionDep, shift_id: uuid.UUID) -> str | None:
+    organization_id = await session.scalar(
+        select(Shift.organization_id).where(Shift.id == shift_id)
+    )
+    if organization_id is None:
+        return None
+    return (await get_organization_timezones(session, {organization_id})).get(organization_id)
 
 
 # url_map: file_id -> (presigned url | None, url_expires_at | None)
@@ -163,6 +175,7 @@ async def _instance_detail_to_response(instance: ChecklistInstance) -> dict[str,
 
 @router.get(
     "",
+    response_model=ApiResponse[ChecklistInstanceListResponse],
     summary="Чек-листы смены",
     description="Список экземпляров чек-листов смены со сводкой. Доступно владельцу "
     "смены, владельцу и админам организации.",
@@ -173,8 +186,10 @@ async def list_shift_checklists(
     session: SessionDep,
 ) -> ApiResponse:
     rows = await instance_service.get_shift_checklists(session, shift_id, user.id)
+    organization_timezone = await _shift_organization_timezone(session, shift_id)
     return ApiResponse.success(
         ChecklistInstanceListResponse(
+            organization_timezone=organization_timezone,
             items=[
                 _instance_to_response(inst, total, completed, satisfied, missing)
                 for inst, total, completed, satisfied, missing in rows
@@ -185,6 +200,7 @@ async def list_shift_checklists(
 
 @router.get(
     "/{instance_id}",
+    response_model=ApiResponse[ChecklistInstanceDetailResponse],
     summary="Детали экземпляра чек-листа",
     description="Экземпляр с упорядоченными пунктами.",
 )
@@ -200,7 +216,9 @@ async def get_instance(
         instance_id,
         user.id,
     )
-    return ApiResponse.success(await _instance_detail_to_response(instance))
+    detail = await _instance_detail_to_response(instance)
+    detail["organization_timezone"] = await _shift_organization_timezone(session, shift_id)
+    return ApiResponse.success(detail)
 
 
 @router.patch(

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
+from src.app.main import app
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
 
@@ -151,6 +152,7 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists",
             headers=ctx["member_headers"],
         )
+        assert resp.json()["data"]["organization_timezone"] == "Europe/Moscow"
         items = resp.json()["data"]["items"]
         assert len(items) == 2
         names = {i["name"] for i in items}
@@ -178,6 +180,7 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists",
             headers=ctx["member_headers"],
         )
+        assert r.json()["data"]["organization_timezone"] is None
         assert r.json()["data"]["items"] == []
 
     async def test_snapshot_includes_items(
@@ -205,9 +208,66 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
             headers=ctx["member_headers"],
         )
+        assert detail.json()["data"]["organization_timezone"] == "Europe/Moscow"
         items = detail.json()["data"]["items"]
         assert [it["text"] for it in items] == ["P1", "P2", "P3"]
         assert all(it["is_completed"] is False for it in items)
+
+
+def test_timezone_contract_is_represented_in_openapi() -> None:
+    schema = app.openapi()
+    shift_schema = schema["components"]["schemas"]["ShiftResponse"]
+    timezone_schema = shift_schema["properties"]["organization_timezone"]["anyOf"]
+    assert {item.get("type") for item in timezone_schema} == {"string", "null"}
+
+    expected_shift_responses = {
+        ("/api/v1/shifts", "get"): "ApiResponse_ShiftListResponse_",
+        ("/api/v1/shifts/start", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}", "get"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/pause", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/resume", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/finish", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/organizations/{org_id}/shifts", "get"): "ApiResponse_ShiftListResponse_",
+        ("/api/v1/organizations/{org_id}/shifts", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/organizations/{org_id}/shifts/{shift_id}", "get"): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}",
+            "patch",
+        ): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}/restore",
+            "post",
+        ): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}/schedule",
+            "patch",
+        ): "ApiResponse_ShiftResponse_",
+    }
+    for (path, method), component in expected_shift_responses.items():
+        status_code = (
+            "201"
+            if (method, path)
+            in {
+                ("post", "/api/v1/shifts/start"),
+                ("post", "/api/v1/organizations/{org_id}/shifts"),
+            }
+            else "200"
+        )
+        response_schema = schema["paths"][path][method]["responses"][status_code]["content"][
+            "application/json"
+        ]["schema"]
+        assert response_schema["$ref"] == f"#/components/schemas/{component}"
+
+    assert schema["paths"]["/api/v1/shifts/{shift_id}/checklists"]["get"]["responses"]["200"][
+        "content"
+    ]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ApiResponse_ChecklistInstanceListResponse_"
+    )
+    assert schema["paths"]["/api/v1/shifts/{shift_id}/checklists/{instance_id}"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ApiResponse_ChecklistInstanceDetailResponse_"
+    )
 
 
 class TestItemUpdates:

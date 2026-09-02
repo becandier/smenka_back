@@ -35,7 +35,7 @@ from src.app.schemas.organization_settings import (
     OrganizationSettingsUpdate,
 )
 from src.app.schemas.organization_stats import OrgStatsResponse
-from src.app.schemas.shift import ShiftListResponse
+from src.app.schemas.shift import ShiftListResponse, ShiftResponse
 from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
 from src.app.services import entitlements
@@ -741,6 +741,7 @@ async def update_org_settings(
 
 @router.get(
     "/{org_id}/shifts",
+    response_model=ApiResponse[ShiftListResponse],
     summary="Смены сотрудников",
     description=(
         "Список смен сотрудников организации с пагинацией и фильтрами. "
@@ -871,6 +872,7 @@ async def list_org_shifts(
 
 @router.get(
     "/{org_id}/shifts/{shift_id}",
+    response_model=ApiResponse[ShiftResponse],
     summary="Деталь смены сотрудника",
     description=(
         "Деталь конкретной смены сотрудника организации для обзора владельцем "
