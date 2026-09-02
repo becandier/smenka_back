@@ -457,6 +457,14 @@ async def _resolve_org_shift_schedule(
             )
         start_utc, end_utc, startable = _window(chosen)
         if not startable:
+            if not require_schedule:
+                logger.info(
+                    "optional_schedule_fallback",
+                    org_id=str(organization_id),
+                    work_schedule_id=str(chosen.id),
+                    reason="window_closed_optional_schedule",
+                )
+                return None, None, None, None
             raise ShiftError(
                 "SCHEDULE_WINDOW_CLOSED",
                 f"График «{chosen.name}» сейчас не действует",

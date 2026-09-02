@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from src.app.core.security import hash_password
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
@@ -803,6 +804,60 @@ class TestStartShiftWithSchedule:
         assert resp.status_code == 201
         assert resp.json()["data"]["work_schedule_id"] == schedule_a["id"]
 
+    async def test_explicit_closed_schedule_optional_creates_shift_without_schedule(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(client, db_session, super_admin_headers)
+        start_hhmm, end_hhmm = _closed_window()
+        schedule = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            start_time=start_hhmm,
+            end_time=end_hhmm,
+        )
+
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={"organization_id": ctx["org_id"], "work_schedule_id": schedule["id"]},
+        )
+
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["work_schedule_id"] is None
+        assert data["schedule_name"] is None
+        assert data["scheduled_start_at"] is None
+        assert data["scheduled_end_at"] is None
+
+    async def test_explicit_closed_schedule_required_returns_window_closed(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(client, db_session, super_admin_headers)
+        start_hhmm, end_hhmm = _closed_window()
+        schedule = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            start_time=start_hhmm,
+            end_time=end_hhmm,
+        )
+        settings_resp = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"require_schedule": True},
+        )
+        assert settings_resp.status_code == 200
+
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={"organization_id": ctx["org_id"], "work_schedule_id": schedule["id"]},
+        )
+
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "SCHEDULE_WINDOW_CLOSED"
+
     async def test_explicit_schedule_not_in_org_returns_not_found(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
@@ -974,7 +1029,7 @@ class TestResolveOrgShiftScheduleWindowEnforcement:
     ):
         """Явный `work_schedule_id`, доступный сотруднику, но сейчас не действующий ->
         422 SCHEDULE_WINDOW_CLOSED, а не 403 SCHEDULE_NOT_AVAILABLE."""
-        org, member = await self._make_org_member(db_session)
+        org, member = await self._make_org_member(db_session, require_schedule=True)
         schedule = WorkSchedule(
             organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
         )
@@ -989,6 +1044,35 @@ class TestResolveOrgShiftScheduleWindowEnforcement:
         assert exc_info.value.code == "SCHEDULE_WINDOW_CLOSED"
         assert exc_info.value.status_code == 422
         assert "Ночная" in exc_info.value.message
+
+    async def test_explicit_closed_schedule_optional_starts_without_schedule(
+        self, db_session: AsyncSession
+    ):
+        """Явно переданный доступный, но закрытый график при необязательном выборе
+        отбрасывается целиком, включая снимок планового окна."""
+        org, member = await self._make_org_member(db_session, require_schedule=False)
+        schedule = WorkSchedule(
+            organization_id=org.id, name="Ночная", start_time=time(21, 48), end_time=time(21, 52)
+        )
+        db_session.add(schedule)
+        await db_session.commit()
+
+        started_at = datetime(2026, 7, 20, 18, 53, tzinfo=UTC)  # 21:53 MSK — окно закрылось
+        with capture_logs() as logs:
+            result = await _resolve_org_shift_schedule(
+                db_session, org.id, member, None, str(schedule.id), started_at
+            )
+
+        assert result == (None, None, None, None)
+        assert logs == [
+            {
+                "event": "optional_schedule_fallback",
+                "log_level": "info",
+                "org_id": str(org.id),
+                "reason": "window_closed_optional_schedule",
+                "work_schedule_id": str(schedule.id),
+            }
+        ]
 
     async def test_explicit_schedule_within_window_ok(self, db_session: AsyncSession):
         org, member = await self._make_org_member(db_session)
