@@ -349,6 +349,29 @@ async def _current_user_id(client: AsyncClient, auth_headers: dict[str, str]) ->
 
 
 class TestListShiftsScope:
+    async def test_mixed_history_includes_each_organization_timezone(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+        scope_org_b: Organization,
+    ) -> None:
+        scope_org_a.timezone = "Europe/Moscow"
+        scope_org_b.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        user_id = await _current_user_id(client, auth_headers)
+        org_a_shift = await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        org_b_shift = await _make_shift(db_session, user_id, organization_id=scope_org_b.id)
+        personal_shift = await _make_shift(db_session, user_id)
+
+        response = await client.get("/api/v1/shifts", headers=auth_headers)
+        assert response.status_code == 200
+        items = {item["id"]: item for item in response.json()["data"]["items"]}
+        assert items[str(org_a_shift.id)]["organization_timezone"] == "Europe/Moscow"
+        assert items[str(org_b_shift.id)]["organization_timezone"] == "Asia/Vladivostok"
+        assert items[str(personal_shift.id)]["organization_timezone"] is None
+
     async def test_scope_omitted_returns_previous_behavior(
         self,
         client: AsyncClient,

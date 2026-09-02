@@ -393,7 +393,11 @@ async def change_shift_schedule(
     session: SessionDep,
     request: Request,
 ) -> ApiResponse:
-    from src.app.api.v1.shifts import _enrich_single_shift, _shift_to_response
+    from src.app.api.v1.shifts import (
+        _enrich_single_shift,
+        _shift_to_response,
+        get_organization_timezones,
+    )
 
     new_schedule_id = uuid.UUID(body.work_schedule_id) if body.work_schedule_id else None
 
@@ -425,6 +429,7 @@ async def change_shift_schedule(
     )
     await session.commit()
     late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    timezone_map = await get_organization_timezones(session, {org_id})
     # Орг-контекст (manual_time_entry): created_by_name/edited_by_name должны
     # заполняться и здесь, как в остальных орг-эндпоинтах смен.
     actor_names = await shift_service.build_manual_actor_names(session, [shift])
@@ -439,5 +444,6 @@ async def change_shift_schedule(
             edited_by_name=(
                 actor_names.get(shift.edited_by_user_id) if shift.edited_by_user_id else None
             ),
+            organization_timezone=timezone_map.get(org_id),
         )
     )

@@ -852,6 +852,7 @@ async def list_org_shifts(
                     summaries.get(s.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
                     late_tolerance_minutes=late_tolerance,
                     overtime=overtime_map.get(s.id),
+                    organization_timezone=org.timezone,
                     created_by_name=(
                         actor_names.get(s.created_by_user_id) if s.created_by_user_id else None
                     ),
@@ -914,6 +915,7 @@ async def get_org_shift(
             summaries.get(shift.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
             late_tolerance_minutes=late_tolerance,
             overtime=overtime_map.get(shift.id),
+            organization_timezone=org.timezone,
             created_by_name=(
                 actor_names.get(shift.created_by_user_id) if shift.created_by_user_id else None
             ),

@@ -117,6 +117,35 @@ async def org_no_geo(
 
 
 class TestOrgShiftStart:
+    async def test_org_shift_mutations_return_organization_timezone(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        org_no_geo: Organization,
+        db_session: AsyncSession,
+    ) -> None:
+        org_no_geo.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+
+        start = await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={"organization_id": str(org_no_geo.id)},
+        )
+        assert start.status_code == 201
+        started_at = start.json()["data"]["started_at"]
+        shift_id = start.json()["data"]["id"]
+
+        for endpoint in ("pause", "resume", "finish"):
+            response = await client.post(
+                f"/api/v1/shifts/{shift_id}/{endpoint}", headers=employee_headers
+            )
+            assert response.status_code == 200
+            payload = response.json()["data"]
+            assert payload["organization_id"] == str(org_no_geo.id)
+            assert payload["organization_timezone"] == "Asia/Vladivostok"
+            assert payload["started_at"] == started_at
+
     async def test_start_org_shift_within_radius(
         self,
         client: AsyncClient,
