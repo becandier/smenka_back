@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
@@ -108,6 +108,27 @@ async def _make_org(
     return org
 
 
+async def _get_nearby(
+    client: AsyncClient,
+    org: Organization,
+    headers: dict[str, str],
+    latitude: float | None = 55.7558,
+    longitude: float | None = 37.6173,
+) -> Response:
+    """GET .../work-locations/nearby. `latitude`/`longitude=None` опускает параметр
+    (для проверки обязательности query)."""
+    params: dict[str, float] = {}
+    if latitude is not None:
+        params["latitude"] = latitude
+    if longitude is not None:
+        params["longitude"] = longitude
+    return await client.get(
+        f"/api/v1/organizations/{org.id}/work-locations/nearby",
+        headers=headers,
+        params=params,
+    )
+
+
 class TestNearbyMatchedAndSorting:
     async def test_two_overlapping_zones_sorted_with_nearest_flag(
         self,
@@ -121,13 +142,12 @@ class TestNearbyMatchedAndSorting:
         loc_b = WorkLocation(name="B", latitude=55.7600, longitude=37.6173, radius_meters=500)
         org = await _make_org(db_session, owner, employee_user, locations=[loc_a, loc_b])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7565, "longitude": 37.6173},
+        resp = await _get_nearby(
+            client, org, employee_headers, latitude=55.7565, longitude=37.6173
         )
         assert resp.status_code == 200
-        items = resp.json()["data"]["items"]
+        data = resp.json()["data"]
+        items = data["items"]
         assert len(items) == 2
         assert items[0]["id"] == str(loc_a.id)
         assert items[0]["is_nearest"] is True
@@ -135,7 +155,7 @@ class TestNearbyMatchedAndSorting:
         assert items[1]["is_nearest"] is False
         assert items[0]["distance_meters"] < items[1]["distance_meters"]
         assert isinstance(items[0]["distance_meters"], int)
-        assert resp.json()["data"]["nearest_outside"] is None
+        assert data["nearest_outside"] is None
 
     async def test_single_matching_zone(
         self,
@@ -148,11 +168,7 @@ class TestNearbyMatchedAndSorting:
         loc = WorkLocation(name="A", latitude=55.7558, longitude=37.6173, radius_meters=200)
         org = await _make_org(db_session, owner, employee_user, locations=[loc])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, employee_headers)
         assert resp.status_code == 200
         items = resp.json()["data"]["items"]
         assert len(items) == 1
@@ -190,11 +206,7 @@ class TestNearbyTieBreak:
         # чтобы исключить случайное совпадение с порядком выдачи БД.
         org = await _make_org(db_session, owner, employee_user, locations=[loc_later, loc_earlier])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, employee_headers)
         items = resp.json()["data"]["items"]
         assert [it["id"] for it in items] == [str(loc_earlier.id), str(loc_later.id)]
         assert items[0]["is_nearest"] is True
@@ -229,11 +241,7 @@ class TestNearbyTieBreak:
         )
         org = await _make_org(db_session, owner, employee_user, locations=[loc_large, loc_small])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, employee_headers)
         items = resp.json()["data"]["items"]
         assert [it["id"] for it in items] == [str(id_small), str(id_large)]
 
@@ -262,14 +270,9 @@ class TestNearbyTieBreak:
         )
         org = await _make_org(db_session, owner, employee_user, locations=[loc_1, loc_2])
 
-        params = {"latitude": 55.7558, "longitude": 37.6173}
         orders = []
         for _ in range(5):
-            resp = await client.get(
-                f"/api/v1/organizations/{org.id}/work-locations/nearby",
-                headers=employee_headers,
-                params=params,
-            )
+            resp = await _get_nearby(client, org, employee_headers)
             orders.append([it["id"] for it in resp.json()["data"]["items"]])
 
         assert all(order == [str(loc_1.id), str(loc_2.id)] for order in orders)
@@ -289,12 +292,8 @@ class TestNearbyOutsideAllZones:
         )
         org = await _make_org(db_session, owner, employee_user, locations=[loc_office])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            # достаточно далеко, чтобы гарантированно оказаться вне 100 м радиуса
-            params={"latitude": 55.76, "longitude": 37.6173},
-        )
+        # достаточно далеко, чтобы гарантированно оказаться вне 100 м радиуса
+        resp = await _get_nearby(client, org, employee_headers, latitude=55.76)
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["items"] == []
@@ -313,11 +312,7 @@ class TestNearbyOutsideAllZones:
     ) -> None:
         org = await _make_org(db_session, owner, employee_user, locations=[])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, employee_headers)
         assert resp.status_code == 200
         data = resp.json()["data"]
         assert data["items"] == []
@@ -336,11 +331,7 @@ class TestNearbyAccess:
         loc = WorkLocation(name="A", latitude=55.7558, longitude=37.6173, radius_meters=200)
         org = await _make_org(db_session, owner, employee_user, locations=[loc])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=outsider_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, outsider_headers)
         assert resp.status_code == 403
         assert resp.json()["error"]["code"] == "FORBIDDEN"
 
@@ -355,11 +346,7 @@ class TestNearbyAccess:
         org = await _make_org(db_session, owner, employee_user, locations=[loc])
         owner_headers = await _headers(client, "owner@example.com")
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=owner_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        resp = await _get_nearby(client, org, owner_headers)
         assert resp.status_code == 200
         assert len(resp.json()["data"]["items"]) == 1
 
@@ -369,11 +356,8 @@ class TestNearbyAccess:
         employee_headers: dict[str, Any],
         employee_user: User,
     ) -> None:
-        resp = await client.get(
-            f"/api/v1/organizations/{uuid.uuid4()}/work-locations/nearby",
-            headers=employee_headers,
-            params={"latitude": 55.7558, "longitude": 37.6173},
-        )
+        fake_org = Organization(id=uuid.uuid4(), name="Ghost", owner_id=employee_user.id)
+        resp = await _get_nearby(client, fake_org, employee_headers)
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "ORG_NOT_FOUND"
 
@@ -387,8 +371,5 @@ class TestNearbyAccess:
     ) -> None:
         org = await _make_org(db_session, owner, employee_user, locations=[])
 
-        resp = await client.get(
-            f"/api/v1/organizations/{org.id}/work-locations/nearby",
-            headers=employee_headers,
-        )
+        resp = await _get_nearby(client, org, employee_headers, latitude=None, longitude=None)
         assert resp.status_code == 422
