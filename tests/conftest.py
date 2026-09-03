@@ -33,6 +33,33 @@ from src.app.models.user import User, UserRole
 settings = get_settings()
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Шардирование для CI-матрицы (см. `.github/workflows/checks.yml`).
+
+    Активна только когда заданы ОБЕ переменные `TEST_SHARD_INDEX`/
+    `TEST_SHARD_TOTAL` (каждая задача матрицы выставляет их себе перед
+    запуском pytest) — иначе `make test`/`make test-fast` локально видят
+    полный набор, без фильтрации.
+
+    Делим по ПОЗИЦИИ в уже собранном списке (`i % total == index`), а не по
+    хешу/имени теста: часть параметризованных тестов (например,
+    `test_ooxml_upload_success` в `test_files.py`) заново генерирует свои
+    байтовые фикстуры при каждом импорте модуля, и их node id меняется от
+    запуска к запуску — хеш такого id был бы нестабилен и мог бы то ронять
+    тест из всех шардов, то дублировать в нескольких. Позиция в списке этой
+    проблемы не имеет: она стабильна в пределах одного процесса сборки.
+    Round-robin по позиции даёт точный, равномерный разбор (не «первые N
+    файлов — в шард 1»), не зависит от порядка файлов и сам перебалансируется
+    при добавлении/удалении тестов — поддерживать вручную нечего.
+    """
+    total = os.environ.get("TEST_SHARD_TOTAL")
+    index = os.environ.get("TEST_SHARD_INDEX")
+    if not total or index is None:
+        return
+    total_n, index_n = int(total), int(index)
+    items[:] = [item for i, item in enumerate(items) if i % total_n == index_n]
+
+
 @pytest.fixture(autouse=True)
 async def _fake_redis() -> AsyncGenerator[None]:
     """Подменяет общий Redis-клиент на fakeredis (lockout) — сеть не нужна.
@@ -56,10 +83,57 @@ def rate_limit_on() -> Generator[None]:
     limiter.reset()
 
 
+# Под pytest-xdist (`make test-fast`) каждый воркер получает СВОЮ базу
+# (`..._test_gw0`, `..._test_gw1`, ...) — иначе воркеры дерутся за одну схему
+# (параллельные CREATE/DROP TABLE). pytest-xdist сам выставляет
+# PYTEST_XDIST_WORKER (gw0/gw1/...) в окружении каждого воркера-процесса; без
+# xdist переменной нет — имя базы не меняется, `make test`/`test-db` продолжают
+# работать как раньше.
+_XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
+TEST_DB_NAME = f"{settings.postgres_db}_test" + (f"_{_XDIST_WORKER}" if _XDIST_WORKER else "")
+
 TEST_DATABASE_URL = (
     f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
-    f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}_test"
+    f"@{settings.postgres_host}:{settings.postgres_port}/{TEST_DB_NAME}"
 )
+# Синхронный URL той же базы — переиспользуют test_tasks.py/test_tariffs.py/
+# test_security_hardening.py для sync-подключения, которым они прогоняют
+# Celery-таски (см. db_session/REAL_COMMIT_MARKER ниже): им обязательно
+# смотреть в ТУ ЖЕ базу, что и db_session этого воркера, а не в постоянно
+# одно и то же имя без суффикса.
+TEST_DATABASE_URL_SYNC = (
+    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
+    f"@{settings.postgres_host}:{settings.postgres_port}/{TEST_DB_NAME}"
+)
+
+
+async def _ensure_test_database_exists() -> None:
+    """Создаёт БД воркера, если её ещё нет (идемпотентно).
+
+    Без xdist (`_XDIST_WORKER` пуст) ничего не делает — `make test-db` уже
+    создал `<postgres_db>_test` заранее, как и раньше. Под xdist же новых
+    имён (`_gw0`, `_gw1`, ...) в кластере ещё может не быть — создаём сами.
+    CREATE DATABASE нельзя выполнить внутри транзакции, поэтому отдельный
+    engine с isolation_level="AUTOCOMMIT". Гонки между воркерами за ОДНО имя
+    исключены: pytest-xdist выдаёт каждому воркеру уникальный PYTEST_XDIST_WORKER.
+    """
+    if not _XDIST_WORKER:
+        return
+    admin_url = (
+        f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
+        f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+    )
+    admin_engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with admin_engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"),
+                {"name": TEST_DB_NAME},
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
+    finally:
+        await admin_engine.dispose()
 
 
 async def _seed_plans(conn) -> None:
@@ -115,6 +189,7 @@ async def _seed_billing_periods(conn) -> None:
 
 @pytest.fixture(scope="session")
 async def test_engine():
+    await _ensure_test_database_exists()
     engine = create_async_engine(TEST_DATABASE_URL, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
