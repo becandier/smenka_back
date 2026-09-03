@@ -103,7 +103,9 @@ async def _get_organization_timezone(
     return result.scalar_one_or_none()
 
 
-def _attempt_to_fill(attempt: TestAttempt) -> TestAttemptForFill:
+def _attempt_to_fill(
+    attempt: TestAttempt, *, organization_timezone: str | None
+) -> TestAttemptForFill:
     questions = sorted(attempt.questions, key=lambda q: q.position)
     template = attempt.assignment.template
     return TestAttemptForFill(
@@ -113,6 +115,7 @@ def _attempt_to_fill(attempt: TestAttempt) -> TestAttemptForFill:
         attempts_used=attempt.assignment.attempts_used,
         shuffle_questions=template.shuffle_questions,
         started_at=attempt.started_at,
+        organization_timezone=organization_timezone,
         questions=[
             FillQuestion(
                 id=str(q.id),
@@ -249,7 +252,14 @@ async def start_attempt(
 ) -> ApiResponse:
     attempt = await test_service.start_attempt(session, user.id, assignment_id)
     await session.commit()
-    return ApiResponse.success(_attempt_to_fill(attempt).model_dump(mode="json"))
+    organization_timezone = await _get_organization_timezone(
+        session, attempt.assignment.template.organization_id
+    )
+    return ApiResponse.success(
+        _attempt_to_fill(attempt, organization_timezone=organization_timezone).model_dump(
+            mode="json"
+        )
+    )
 
 
 @router.get(

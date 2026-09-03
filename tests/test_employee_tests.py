@@ -1894,3 +1894,42 @@ class TestMyAssignmentsOrganizationTimezone:
         )
         assert attempt_detail["id"] == fill["id"]
         assert attempt_detail["organization_timezone"] == "Europe/Moscow"
+
+    async def test_start_attempt_carries_organization_timezone_without_n_plus_1(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        org.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        timezone_queries = 0
+
+        def on_execute(conn, cursor, statement, *args):
+            nonlocal timezone_queries
+            statement_lower = statement.lower()
+            if "organizations" in statement_lower and "timezone" in statement_lower:
+                timezone_queries += 1
+
+        sync_engine = db_session.bind.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", on_execute)
+        try:
+            resp = await client.post(
+                f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
+                headers=employee_headers,
+            )
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", on_execute)
+
+        fill = _data(resp)
+        assert fill["organization_timezone"] == "Asia/Vladivostok"
+        # Ровно один запрос зоны на ответ — без лишних обращений к БД.
+        assert timezone_queries == 1
