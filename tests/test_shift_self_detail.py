@@ -54,7 +54,11 @@ async def owner(db_session: AsyncSession) -> User:
 
 @pytest.fixture
 async def org(db_session: AsyncSession, owner: User) -> Organization:
-    organization = Organization(name="Shift Self Detail Org", owner_id=owner.id)
+    organization = Organization(
+        name="Shift Self Detail Org",
+        owner_id=owner.id,
+        timezone="Asia/Yekaterinburg",
+    )
     db_session.add(organization)
     await db_session.commit()
     return organization
@@ -118,6 +122,7 @@ class TestOwnShiftDetail:
         data = _data(response)
         assert data["id"] == shift_id
         assert data["organization_id"] is None
+        assert data["organization_timezone"] is None
         assert data["status"] == "active"
         # Персональный контекст: как в GET /shifts — идентификация сотрудника null
         assert data["user_name"] is None
@@ -152,6 +157,9 @@ class TestOwnShiftDetail:
         data = _data(response)
         assert data["id"] == str(shift.id)
         assert data["organization_id"] == str(org.id)
+        assert data["organization_timezone"] == "Asia/Yekaterinburg"
+        response_started_at = datetime.fromisoformat(data["started_at"].replace("Z", "+00:00"))
+        assert response_started_at == shift.started_at
         # Ручные поля видны сотруднику (R7)
         assert data["is_manual"] is True
         assert data["is_edited"] is False
@@ -205,9 +213,7 @@ class TestOwnShiftDetail:
         assert _err(response) == "SHIFT_NOT_FOUND"
 
     async def test_nonexistent_shift_returns_404(self, client: AsyncClient, auth_headers):
-        response = await client.get(
-            f"/api/v1/shifts/{uuid.uuid4()}", headers=auth_headers
-        )
+        response = await client.get(f"/api/v1/shifts/{uuid.uuid4()}", headers=auth_headers)
         assert response.status_code == 404
         assert _err(response) == "SHIFT_NOT_FOUND"
 
@@ -238,9 +244,7 @@ class TestRouteOrderingRegression:
     """Новый GET /{shift_id} объявлен после статических /stats и /start — не должен
     их перехватывать."""
 
-    async def test_stats_not_shadowed_by_shift_id_route(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_stats_not_shadowed_by_shift_id_route(self, client: AsyncClient, auth_headers):
         response = await client.get(
             "/api/v1/shifts/stats", headers=auth_headers, params={"period": "day"}
         )
@@ -249,9 +253,7 @@ class TestRouteOrderingRegression:
         assert data["period"] == "day"
         assert data["shift_count"] == 0
 
-    async def test_start_not_shadowed_by_shift_id_route(
-        self, client: AsyncClient, auth_headers
-    ):
+    async def test_start_not_shadowed_by_shift_id_route(self, client: AsyncClient, auth_headers):
         response = await client.post("/api/v1/shifts/start", headers=auth_headers)
         assert response.status_code == 201
         assert _data(response)["status"] == "active"

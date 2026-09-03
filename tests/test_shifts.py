@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
@@ -349,6 +350,44 @@ async def _current_user_id(client: AsyncClient, auth_headers: dict[str, str]) ->
 
 
 class TestListShiftsScope:
+    async def test_mixed_history_includes_each_organization_timezone(
+        self,
+        client: AsyncClient,
+        auth_headers: dict[str, str],
+        db_session: AsyncSession,
+        scope_org_a: Organization,
+        scope_org_b: Organization,
+    ) -> None:
+        scope_org_a.timezone = "Europe/Moscow"
+        scope_org_b.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        user_id = await _current_user_id(client, auth_headers)
+        org_a_shift = await _make_shift(db_session, user_id, organization_id=scope_org_a.id)
+        org_b_shift = await _make_shift(db_session, user_id, organization_id=scope_org_b.id)
+        personal_shift = await _make_shift(db_session, user_id)
+
+        timezone_queries = 0
+
+        def on_execute(conn, cursor, statement, *args):
+            nonlocal timezone_queries
+            statement_lower = statement.lower()
+            if "organizations" in statement_lower and "timezone" in statement_lower:
+                timezone_queries += 1
+
+        sync_engine = db_session.bind.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", on_execute)
+        try:
+            response = await client.get("/api/v1/shifts", headers=auth_headers)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", on_execute)
+
+        assert response.status_code == 200
+        items = {item["id"]: item for item in response.json()["data"]["items"]}
+        assert items[str(org_a_shift.id)]["organization_timezone"] == "Europe/Moscow"
+        assert items[str(org_b_shift.id)]["organization_timezone"] == "Asia/Vladivostok"
+        assert items[str(personal_shift.id)]["organization_timezone"] is None
+        assert timezone_queries == 1
+
     async def test_scope_omitted_returns_previous_behavior(
         self,
         client: AsyncClient,

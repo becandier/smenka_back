@@ -6,10 +6,19 @@ from typing import Any
 from fastapi import APIRouter, Query
 
 from src.app.api.deps import CurrentUserDep, SessionDep
-from src.app.api.v1.shifts import _enrich_single_shift, _shift_to_response
+from src.app.api.v1.shifts import (
+    _enrich_single_shift,
+    _shift_to_response,
+    get_organization_timezones,
+)
 from src.app.models.shift import Shift
 from src.app.schemas.base import ApiResponse
-from src.app.schemas.shift import ManualShiftCreate, ManualShiftUpdate, ShiftDeletedResponse
+from src.app.schemas.shift import (
+    ManualShiftCreate,
+    ManualShiftUpdate,
+    ShiftDeletedResponse,
+    ShiftResponse,
+)
 from src.app.services import manual_shift as manual_shift_service
 from src.app.services import shift as shift_service
 
@@ -21,6 +30,9 @@ async def _manual_shift_response(session: SessionDep, shift: Shift) -> dict[str,
     админов created_by/edited_by, без N+1 на единичный объект."""
     late_tolerance, overtime = await _enrich_single_shift(session, shift)
     actor_names = await shift_service.build_manual_actor_names(session, [shift])
+    timezone_map = await get_organization_timezones(
+        session, {shift.organization_id} if shift.organization_id is not None else set()
+    )
     return _shift_to_response(
         shift,
         late_tolerance_minutes=late_tolerance,
@@ -31,11 +43,15 @@ async def _manual_shift_response(session: SessionDep, shift: Shift) -> dict[str,
         edited_by_name=(
             actor_names.get(shift.edited_by_user_id) if shift.edited_by_user_id else None
         ),
+        organization_timezone=(
+            timezone_map.get(shift.organization_id) if shift.organization_id is not None else None
+        ),
     )
 
 
 @router.post(
     "/shifts",
+    response_model=ApiResponse[ShiftResponse],
     status_code=201,
     summary="Создать смену вручную",
     description=(
@@ -68,6 +84,7 @@ async def create_manual_shift(
 
 @router.patch(
     "/shifts/{shift_id}",
+    response_model=ApiResponse[ShiftResponse],
     summary="Изменить смену вручную",
     description=(
         "Правит существующую смену. Для смены finished — можно менять всё. Для "
@@ -125,6 +142,7 @@ async def delete_manual_shift(
 
 @router.post(
     "/shifts/{shift_id}/restore",
+    response_model=ApiResponse[ShiftResponse],
     summary="Восстановить удалённую смену",
     description=(
         "Восстановление уже неудалённой смены идемпотентно — возвращает её как "

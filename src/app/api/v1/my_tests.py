@@ -52,13 +52,19 @@ async def _build_my_assignment_list(
 
     org_ids = {a.template.organization_id for a in assignments}
     orgs_result = await session.execute(
-        select(Organization.id, Organization.name).where(Organization.id.in_(org_ids))
+        select(Organization.id, Organization.name, Organization.timezone).where(
+            Organization.id.in_(org_ids)
+        )
     )
-    org_names = dict(orgs_result.tuples().all())
+    # {organization_id: (name, timezone)} — соседний список смешивает несколько
+    # организаций сотрудника, поэтому оба поля денормализуются построчно тем же
+    # batch-запросом (без дополнительных обращений к БД, без N+1).
+    org_info = {row[0]: (row[1], row[2]) for row in orgs_result.tuples().all()}
 
     items: list[MyTestAssignmentOut] = []
     for a in assignments:
         template = a.template
+        org_name, org_timezone = org_info.get(template.organization_id, ("", None))
         items.append(
             MyTestAssignmentOut(
                 id=str(a.id),
@@ -78,14 +84,28 @@ async def _build_my_assignment_list(
                 due_at=a.due_at,
                 organization=MyOrgSummary(
                     id=str(template.organization_id),
-                    name=org_names.get(template.organization_id, ""),
+                    name=org_name,
                 ),
+                organization_timezone=org_timezone,
             )
         )
     return items
 
 
-def _attempt_to_fill(attempt: TestAttempt) -> TestAttemptForFill:
+async def _get_organization_timezone(
+    session: AsyncSession, organization_id: uuid.UUID
+) -> str | None:
+    """Текущая IANA-зона одной организации, одним запросом (включая soft-deleted —
+    историческая попытка/назначение продолжает иметь валидный контекст)."""
+    result = await session.execute(
+        select(Organization.timezone).where(Organization.id == organization_id)
+    )
+    return result.scalar_one_or_none()
+
+
+def _attempt_to_fill(
+    attempt: TestAttempt, *, organization_timezone: str | None
+) -> TestAttemptForFill:
     questions = sorted(attempt.questions, key=lambda q: q.position)
     template = attempt.assignment.template
     return TestAttemptForFill(
@@ -95,6 +115,7 @@ def _attempt_to_fill(attempt: TestAttempt) -> TestAttemptForFill:
         attempts_used=attempt.assignment.attempts_used,
         shuffle_questions=template.shuffle_questions,
         started_at=attempt.started_at,
+        organization_timezone=organization_timezone,
         questions=[
             FillQuestion(
                 id=str(q.id),
@@ -112,7 +133,9 @@ def _attempt_to_fill(attempt: TestAttempt) -> TestAttemptForFill:
     )
 
 
-def _attempt_to_my_detail(attempt: TestAttempt, *, reveal: bool) -> MyAttemptDetail:
+def _attempt_to_my_detail(
+    attempt: TestAttempt, *, reveal: bool, organization_timezone: str | None
+) -> MyAttemptDetail:
     """`reveal` — показывать is_correct/awarded. При in_progress всегда False
     (независимо от reveal_answers шаблона — отвечать ещё рано)."""
     submitted = attempt.status == TestAttemptStatus.submitted
@@ -130,6 +153,7 @@ def _attempt_to_my_detail(attempt: TestAttempt, *, reveal: bool) -> MyAttemptDet
         pass_threshold_percent=attempt.pass_threshold_percent,
         started_at=attempt.started_at,
         submitted_at=attempt.submitted_at,
+        organization_timezone=organization_timezone,
         questions=[
             MyAttemptQuestionResult(
                 id=str(q.id),
@@ -228,7 +252,14 @@ async def start_attempt(
 ) -> ApiResponse:
     attempt = await test_service.start_attempt(session, user.id, assignment_id)
     await session.commit()
-    return ApiResponse.success(_attempt_to_fill(attempt).model_dump(mode="json"))
+    organization_timezone = await _get_organization_timezone(
+        session, attempt.assignment.template.organization_id
+    )
+    return ApiResponse.success(
+        _attempt_to_fill(attempt, organization_timezone=organization_timezone).model_dump(
+            mode="json"
+        )
+    )
 
 
 @router.get(
@@ -246,8 +277,13 @@ async def get_my_attempt(
 ) -> ApiResponse:
     attempt = await test_service.get_my_attempt(session, user.id, attempt_id)
     reveal = attempt.assignment.template.reveal_answers
+    organization_timezone = await _get_organization_timezone(
+        session, attempt.assignment.template.organization_id
+    )
     return ApiResponse.success(
-        _attempt_to_my_detail(attempt, reveal=reveal).model_dump(mode="json")
+        _attempt_to_my_detail(
+            attempt, reveal=reveal, organization_timezone=organization_timezone
+        ).model_dump(mode="json")
     )
 
 

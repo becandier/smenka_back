@@ -217,6 +217,9 @@ async def test_create_manual_shift_success(
     )
     assert resp.status_code == 201, resp.text
     data = _data(resp)
+    assert data["organization_id"] == str(org.id)
+    assert data["organization_timezone"] == "Europe/Moscow"
+    assert data["started_at"] == BASE.isoformat().replace("+00:00", "Z")
     assert data["status"] == "finished"
     assert data["finish_reason"] == "manual"
     assert data["is_manual"] is True
@@ -641,6 +644,8 @@ async def test_update_finished_shift_full_fields(
     )
     assert resp.status_code == 200, resp.text
     data = _data(resp)
+    assert data["organization_id"] == str(org.id)
+    assert data["organization_timezone"] == "Europe/Moscow"
     assert data["started_at"] == (BASE + timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
     assert data["work_location_id"] == str(work_location.id)
     assert len(data["pauses"]) == 1
@@ -1076,6 +1081,8 @@ async def test_restore_deleted_shift(
     )
     assert resp.status_code == 200, resp.text
     data = _data(resp)
+    assert data["organization_id"] == str(org.id)
+    assert data["organization_timezone"] == "Europe/Moscow"
     assert data["is_deleted"] is False
 
     row = (await db_session.execute(select(Shift).where(Shift.id == shift.id))).scalar_one()
@@ -1395,4 +1402,6 @@ async def test_change_shift_schedule_returns_manual_actor_names(
         json={"work_schedule_id": None},
     )
     assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["organization_id"] == str(org.id)
+    assert resp.json()["data"]["organization_timezone"] == "Europe/Moscow"
     assert resp.json()["data"]["created_by_name"] == "Owner"

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
@@ -1776,3 +1776,160 @@ class TestMyAssignmentsList:
         )
         assert resp.status_code == 404
         assert _err(resp) == "TEST_ASSIGNMENT_NOT_FOUND"
+
+
+# --- /my/* организационный timezone-контекст (не scoped по {org_id}) --------------
+class TestMyAssignmentsOrganizationTimezone:
+    """`/my/test-assignments*` и `/my/test-attempts/{id}` отдают назначения/попытки
+    по всем организациям сотрудника вперемешку — в отличие от `/organizations/{org_id}/...`
+    у клиента нет гарантированного org-контекста, поэтому каждый ответ обязан нести
+    свою `organization_timezone` (docs/tasks/shift_timezone_display/backend.md)."""
+
+    async def test_list_returns_each_organizations_own_timezone_without_n_plus_1(
+        self,
+        client: AsyncClient,
+        owner,
+        owner_headers,
+        employee_headers,
+        employee_user,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        org.timezone = "Europe/Moscow"
+        await db_session.commit()
+        tpl_a = await _create_template(client, owner_headers, org.id)
+        assign_a = _data(
+            await _assign(client, owner_headers, org.id, tpl_a["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        # Тот же сотрудник — член второй организации с другой зоной (см.
+        # test_filter_org_and_status_with_pagination выше для аналогичной настройки).
+        org2 = Organization(name="Org Two", owner_id=owner.id)
+        db_session.add(org2)
+        await db_session.commit()
+        org2.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        member2 = OrganizationMember(
+            organization_id=org2.id, user_id=employee_user.id, role=MemberRole.employee
+        )
+        db_session.add(member2)
+        await db_session.commit()
+        tpl_b = await _create_template(
+            client, owner_headers, org2.id, {**TWO_QUESTION_BODY, "title": "B"}
+        )
+        assign_b = _data(
+            await _assign(client, owner_headers, org2.id, tpl_b["id"], [str(member2.id)])
+        )["items"][0]
+
+        timezone_queries = 0
+
+        def on_execute(conn, cursor, statement, *args):
+            nonlocal timezone_queries
+            statement_lower = statement.lower()
+            if "organizations" in statement_lower and "timezone" in statement_lower:
+                timezone_queries += 1
+
+        sync_engine = db_session.bind.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", on_execute)
+        try:
+            resp = await client.get("/api/v1/my/test-assignments", headers=employee_headers)
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", on_execute)
+
+        assert resp.status_code == 200
+        items = {item["id"]: item for item in _data(resp)["items"]}
+        assert items[assign_a["id"]]["organization_timezone"] == "Europe/Moscow"
+        assert items[assign_b["id"]]["organization_timezone"] == "Asia/Vladivostok"
+        # Один batch-запрос зоны по обеим организациям сразу — без N+1 по числу назначений.
+        assert timezone_queries == 1
+
+    async def test_assignment_detail_carries_organization_timezone(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        org.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        detail = _data(
+            await client.get(
+                f"/api/v1/my/test-assignments/{assignment['id']}", headers=employee_headers
+            )
+        )
+        assert detail["organization_timezone"] == "Asia/Vladivostok"
+
+    async def test_attempt_detail_carries_organization_timezone(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        org.timezone = "Europe/Moscow"
+        await db_session.commit()
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+        fill = _data(
+            await client.post(
+                f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
+                headers=employee_headers,
+            )
+        )
+
+        attempt_detail = _data(
+            await client.get(f"/api/v1/my/test-attempts/{fill['id']}", headers=employee_headers)
+        )
+        assert attempt_detail["id"] == fill["id"]
+        assert attempt_detail["organization_timezone"] == "Europe/Moscow"
+
+    async def test_start_attempt_carries_organization_timezone_without_n_plus_1(
+        self,
+        client: AsyncClient,
+        owner_headers,
+        employee_headers,
+        org,
+        employee_member,
+        db_session: AsyncSession,
+    ):
+        org.timezone = "Asia/Vladivostok"
+        await db_session.commit()
+        tpl = await _create_template(client, owner_headers, org.id)
+        assignment = _data(
+            await _assign(client, owner_headers, org.id, tpl["id"], [str(employee_member.id)])
+        )["items"][0]
+
+        timezone_queries = 0
+
+        def on_execute(conn, cursor, statement, *args):
+            nonlocal timezone_queries
+            statement_lower = statement.lower()
+            if "organizations" in statement_lower and "timezone" in statement_lower:
+                timezone_queries += 1
+
+        sync_engine = db_session.bind.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", on_execute)
+        try:
+            resp = await client.post(
+                f"/api/v1/my/test-assignments/{assignment['id']}/attempts",
+                headers=employee_headers,
+            )
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", on_execute)
+
+        fill = _data(resp)
+        assert fill["organization_timezone"] == "Asia/Vladivostok"
+        # Ровно один запрос зоны на ответ — без лишних обращений к БД.
+        assert timezone_queries == 1

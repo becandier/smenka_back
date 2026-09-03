@@ -85,6 +85,10 @@ class ShiftResponse(BaseModel):
     organization_id: str | None = Field(
         default=None, description="UUID организации (null для персональной смены)"
     )
+    organization_timezone: str | None = Field(
+        default=None,
+        description="Текущая IANA-таймзона организации; null для персональной смены",
+    )
     started_at: datetime = Field(description="Начало смены")
     finished_at: datetime | None = Field(
         default=None, description="Конец смены (null если активна)"

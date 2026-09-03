@@ -237,6 +237,13 @@ class MyTestAssignmentOut(BaseModel):
     passed: bool
     due_at: datetime | None
     organization: MyOrgSummary
+    organization_timezone: str | None = Field(
+        default=None,
+        description=(
+            "Текущая IANA-таймзона организации назначения; список смешивает "
+            "несколько организаций сотрудника, поэтому зона указывается на каждом элементе"
+        ),
+    )
 
 
 class MyTestAssignmentListResponse(BaseModel):
@@ -280,6 +287,13 @@ class TestAttemptForFill(BaseModel):
     attempts_used: int
     shuffle_questions: bool
     started_at: datetime
+    organization_timezone: str | None = Field(
+        default=None,
+        description=(
+            "Текущая IANA-таймзона организации назначения этой попытки; "
+            "эндпоинт не scoped по {org_id} — зона нужна клиенту явно"
+        ),
+    )
     questions: list[FillQuestion]
 
 
@@ -314,6 +328,13 @@ class MyAttemptDetail(BaseModel):
     started_at: datetime
     submitted_at: datetime | None
     questions: list[MyAttemptQuestionResult]
+    organization_timezone: str | None = Field(
+        default=None,
+        description=(
+            "Текущая IANA-таймзона организации назначения этой попытки; "
+            "эндпоинт не scoped по {org_id} — зона нужна клиенту явно"
+        ),
+    )
 
 
 # --- Сдача попытки ----------------------------------------------------------------

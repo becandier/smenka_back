@@ -1,11 +1,14 @@
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
+from src.app.main import app
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
 
@@ -151,6 +154,7 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists",
             headers=ctx["member_headers"],
         )
+        assert resp.json()["data"]["organization_timezone"] == "Europe/Moscow"
         items = resp.json()["data"]["items"]
         assert len(items) == 2
         names = {i["name"] for i in items}
@@ -178,6 +182,7 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists",
             headers=ctx["member_headers"],
         )
+        assert r.json()["data"]["organization_timezone"] is None
         assert r.json()["data"]["items"] == []
 
     async def test_snapshot_includes_items(
@@ -205,9 +210,183 @@ class TestInstanceCreation:
             f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
             headers=ctx["member_headers"],
         )
+        assert detail.json()["data"]["organization_timezone"] == "Europe/Moscow"
         items = detail.json()["data"]["items"]
         assert [it["text"] for it in items] == ["P1", "P2", "P3"]
         assert all(it["is_completed"] is False for it in items)
+
+
+def test_timezone_contract_is_represented_in_openapi() -> None:
+    runtime_schema = app.openapi()
+    snapshot_schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs" / "openapi.json").read_text()
+    )
+    shift_schema = runtime_schema["components"]["schemas"]["ShiftResponse"]
+    timezone_schema = shift_schema["properties"]["organization_timezone"]["anyOf"]
+    assert {item.get("type") for item in timezone_schema} == {"string", "null"}
+    snapshot_timezone_schema = snapshot_schema["components"]["schemas"]["ShiftResponse"][
+        "properties"
+    ]["organization_timezone"]["anyOf"]
+    assert {item.get("type") for item in snapshot_timezone_schema} == {"string", "null"}
+    assert (
+        snapshot_schema["components"]["schemas"]["ShiftResponse"]
+        == runtime_schema["components"]["schemas"]["ShiftResponse"]
+    )
+
+    timestamp_fields = {
+        "ShiftResponse": [
+            "started_at",
+            "finished_at",
+            "scheduled_start_at",
+            "scheduled_end_at",
+            "edited_at",
+        ],
+        "PauseResponse": ["started_at", "finished_at"],
+        "ChecklistInstanceResponse": ["completed_at", "created_at"],
+        "ChecklistInstanceDetailResponse": ["completed_at", "created_at"],
+        "InstanceItemResponse": ["completed_at"],
+        "PhotoResponse": ["captured_at", "url_expires_at"],
+    }
+    for component, fields in timestamp_fields.items():
+        for field in fields:
+            runtime_property = runtime_schema["components"]["schemas"][component]["properties"][
+                field
+            ]
+            snapshot_property = snapshot_schema["components"]["schemas"][component]["properties"][
+                field
+            ]
+            runtime_formats = {
+                item.get("format")
+                for item in runtime_property.get("anyOf", [runtime_property])
+                if item.get("format") is not None
+            }
+            snapshot_formats = {
+                item.get("format")
+                for item in snapshot_property.get("anyOf", [snapshot_property])
+                if item.get("format") is not None
+            }
+            assert runtime_formats == {"date-time"}
+            assert snapshot_formats == {"date-time"}
+
+    expected_shift_responses = {
+        ("/api/v1/shifts", "get"): "ApiResponse_ShiftListResponse_",
+        ("/api/v1/shifts/start", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}", "get"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/pause", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/resume", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/shifts/{shift_id}/finish", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/organizations/{org_id}/shifts", "get"): "ApiResponse_ShiftListResponse_",
+        ("/api/v1/organizations/{org_id}/shifts", "post"): "ApiResponse_ShiftResponse_",
+        ("/api/v1/organizations/{org_id}/shifts/{shift_id}", "get"): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}",
+            "patch",
+        ): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}/restore",
+            "post",
+        ): "ApiResponse_ShiftResponse_",
+        (
+            "/api/v1/organizations/{org_id}/shifts/{shift_id}/schedule",
+            "patch",
+        ): "ApiResponse_ShiftResponse_",
+    }
+    for (path, method), component in expected_shift_responses.items():
+        status_code = (
+            "201"
+            if (method, path)
+            in {
+                ("post", "/api/v1/shifts/start"),
+                ("post", "/api/v1/organizations/{org_id}/shifts"),
+            }
+            else "200"
+        )
+        response_schema = runtime_schema["paths"][path][method]["responses"][status_code][
+            "content"
+        ]["application/json"]["schema"]
+        assert response_schema["$ref"] == f"#/components/schemas/{component}"
+
+    affected_components = {
+        "ApiResponse_ChecklistInstanceDetailResponse_",
+        "ApiResponse_ChecklistInstanceListResponse_",
+        "ApiResponse_ShiftListResponse_",
+        "ApiResponse_ShiftResponse_",
+        "ChecklistInstanceDetailResponse",
+        "ChecklistInstanceListResponse",
+        "ChecklistInstanceResponse",
+        "InstanceItemResponse",
+        "ItemsSummary",
+        "OvertimeInfo",
+        "PauseResponse",
+        "PhotoResponse",
+        "ShiftChecklistsSummary",
+        "ShiftEarnings",
+        "ShiftListResponse",
+        "ShiftResponse",
+        "ShiftWorkLocation",
+    }
+    for component in affected_components:
+        assert (
+            snapshot_schema["components"]["schemas"][component]
+            == runtime_schema["components"]["schemas"][component]
+        )
+
+    snapshot_shift_responses = {
+        (path, method): component
+        for (path, method), component in expected_shift_responses.items()
+        if (path, method)
+        in {
+            ("/api/v1/shifts", "get"),
+            ("/api/v1/shifts/start", "post"),
+            ("/api/v1/shifts/{shift_id}/pause", "post"),
+            ("/api/v1/shifts/{shift_id}/resume", "post"),
+            ("/api/v1/shifts/{shift_id}/finish", "post"),
+            ("/api/v1/organizations/{org_id}/shifts", "get"),
+        }
+    }
+    for (path, method), component in snapshot_shift_responses.items():
+        status_code = (
+            "201"
+            if (method, path)
+            in {
+                ("post", "/api/v1/shifts/start"),
+            }
+            else "200"
+        )
+        snapshot_ref = snapshot_schema["paths"][path][method]["responses"][status_code]["content"][
+            "application/json"
+        ]["schema"]
+        runtime_ref = runtime_schema["paths"][path][method]["responses"][status_code]["content"][
+            "application/json"
+        ]["schema"]
+        assert snapshot_ref == runtime_ref == {"$ref": f"#/components/schemas/{component}"}
+
+    assert snapshot_schema["paths"]["/api/v1/shifts/{shift_id}/checklists"]["get"]["responses"][
+        "200"
+    ]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ApiResponse_ChecklistInstanceListResponse_"
+    )
+    assert (
+        runtime_schema["paths"]["/api/v1/shifts/{shift_id}/checklists"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]
+        == snapshot_schema["paths"]["/api/v1/shifts/{shift_id}/checklists"]["get"]["responses"][
+            "200"
+        ]["content"]["application/json"]["schema"]
+    )
+    assert snapshot_schema["paths"]["/api/v1/shifts/{shift_id}/checklists/{instance_id}"]["get"][
+        "responses"
+    ]["200"]["content"]["application/json"]["schema"]["$ref"] == (
+        "#/components/schemas/ApiResponse_ChecklistInstanceDetailResponse_"
+    )
+    assert (
+        runtime_schema["paths"]["/api/v1/shifts/{shift_id}/checklists/{instance_id}"]["get"][
+            "responses"
+        ]["200"]["content"]["application/json"]["schema"]
+        == snapshot_schema["paths"]["/api/v1/shifts/{shift_id}/checklists/{instance_id}"]["get"][
+            "responses"
+        ]["200"]["content"]["application/json"]["schema"]
+    )
 
 
 class TestItemUpdates:

@@ -1,6 +1,27 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-09-01 (shift_history_scope — фильтр контекста в истории
+Последнее обновление: 2026-09-02 (shift_timezone_display — единый контекст времени
+смен). Все моменты времени в БД и API остаются timezone-aware UTC (`date-time`);
+`ShiftResponse.organization_timezone: string | null` аддитивно передаёт текущую IANA-зону
+организации для каждой организационной смены, а для персональной смены всегда `null`.
+Сериализатор не обращается к БД: `GET /shifts` строит один batch-map
+`organization_id → timezone` для смешанной страницы, `{org_id}`-маршруты используют уже
+загруженную `Organization.timezone`, одиночные/mutation-маршруты разрешают одну зону на
+смену. Снимок зоны в `shifts` не хранится; soft-deleted организация остаётся источником
+контекста исторической смены. Клиент обязан отображать `started_at`/`finished_at`, паузы,
+`scheduled_start_at`/`scheduled_end_at` и `edited_at` в этой IANA-зоне, не меняя UTC-момент.
+
+| Семейство ответа | Timestamp-поля | IANA-контекст клиента | Стратегия запроса |
+|---|---|---|---|
+| `ShiftResponse` в `GET /shifts` | `started_at`, `finished_at`, pauses, `scheduled_*`, `edited_at` | `organization_timezone` строки; `null` → device для персональной смены | один batch по уникальным org id |
+| `ShiftResponse` в self/detail/lifecycle | те же | `organization_timezone` строки | не более одного запроса зоны на org-смену |
+| `{org_id}/shifts` list/detail | те же | текущая `Organization.timezone` и дублирующее поле строки | переиспользуется уже загруженная организация |
+| manual shift / schedule change | те же | `organization_timezone` строки | один запрос зоны по route org |
+| `/shifts/{shift_id}/checklists` list/detail | `created_at`, `completed_at`, item/photo `completed_at`/`captured_at`/`url_expires_at` | верхнее `organization_timezone`; `null` у персональной смены | один запрос shift→org и один запрос зоны, не по item/photo |
+| org-scoped checklist registry, штрафы, корректировки, ставки/payroll, employee tests (`/organizations/{org_id}/...`, `employee_tests.py`) | их организационные моменты | `{org_id}`-контекст уже загруженной организации | один org-context на endpoint; строковый дубль не нужен |
+| `/my/test-assignments`, `/my/test-assignments/{id}`, `/my/test-attempts/{id}` (`my_tests.py`, сотрудник — НЕ scoped по `{org_id}`, смешивает организации) | `due_at`, `started_at`, `submitted_at` | построчный `organization_timezone` на каждом `MyTestAssignmentOut`/`MyAttemptDetail` | список — один batch по уникальным `template.organization_id`; деталь назначения/попытки — один запрос зоны на ответ |
+
+Предыдущее обновление: 2026-09-01 (shift_history_scope — фильтр контекста в истории
 смен): `GET /shifts` и `GET /shifts/stats` получили два новых query-параметра —
 `scope` (`all`/`personal`/`organization`, default `all`) и `organization_id` (UUID,
 обязателен ровно при `scope=organization`) — клиент может запросить срез истории:

@@ -1,6 +1,7 @@
-from typing import Any
+from typing import Any, Generic
 
 from pydantic import BaseModel, Field
+from typing_extensions import TypeVar
 
 
 class ApiError(BaseModel):
@@ -11,8 +12,11 @@ class ApiError(BaseModel):
     )
 
 
-class ApiResponse(BaseModel):
-    data: Any | None = Field(
+ResponseDataT = TypeVar("ResponseDataT", default=Any)
+
+
+class ApiResponse(BaseModel, Generic[ResponseDataT]):
+    data: ResponseDataT | None = Field(
         default=None, description="Полезная нагрузка ответа (null при ошибке)"
     )
     error: ApiError | None = Field(default=None, description="Описание ошибки (null при успехе)")

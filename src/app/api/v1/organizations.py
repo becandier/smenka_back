@@ -35,7 +35,7 @@ from src.app.schemas.organization_settings import (
     OrganizationSettingsUpdate,
 )
 from src.app.schemas.organization_stats import OrgStatsResponse
-from src.app.schemas.shift import ShiftListResponse
+from src.app.schemas.shift import ShiftListResponse, ShiftResponse
 from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
 from src.app.services import entitlements
@@ -741,6 +741,7 @@ async def update_org_settings(
 
 @router.get(
     "/{org_id}/shifts",
+    response_model=ApiResponse[ShiftListResponse],
     summary="Смены сотрудников",
     description=(
         "Список смен сотрудников организации с пагинацией и фильтрами. "
@@ -852,6 +853,7 @@ async def list_org_shifts(
                     summaries.get(s.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
                     late_tolerance_minutes=late_tolerance,
                     overtime=overtime_map.get(s.id),
+                    organization_timezone=org.timezone,
                     created_by_name=(
                         actor_names.get(s.created_by_user_id) if s.created_by_user_id else None
                     ),
@@ -870,6 +872,7 @@ async def list_org_shifts(
 
 @router.get(
     "/{org_id}/shifts/{shift_id}",
+    response_model=ApiResponse[ShiftResponse],
     summary="Деталь смены сотрудника",
     description=(
         "Деталь конкретной смены сотрудника организации для обзора владельцем "
@@ -914,6 +917,7 @@ async def get_org_shift(
             summaries.get(shift.id, checklist_instance_service.ZERO_SHIFT_CHECKLISTS_SUMMARY),
             late_tolerance_minutes=late_tolerance,
             overtime=overtime_map.get(shift.id),
+            organization_timezone=org.timezone,
             created_by_name=(
                 actor_names.get(shift.created_by_user_id) if shift.created_by_user_id else None
             ),

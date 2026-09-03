@@ -198,6 +198,10 @@ class ChecklistInstanceResponse(BaseModel):
 
 class ChecklistInstanceListResponse(BaseModel):
     items: list[ChecklistInstanceResponse]
+    organization_timezone: str | None = Field(
+        default=None,
+        description="Текущая IANA-таймзона организации смены; null для персональной смены",
+    )
 
 
 class PhotoResponse(BaseModel):
@@ -241,6 +245,10 @@ class ChecklistInstanceDetailResponse(BaseModel):
         description="Лимит фото на пункт (= CHECKLIST_MAX_PHOTOS_PER_ITEM)",
     )
     items: list[InstanceItemResponse]
+    organization_timezone: str | None = Field(
+        default=None,
+        description="Текущая IANA-таймзона организации смены; null для персональной смены",
+    )
 
 
 class InstanceItemUpdate(BaseModel):

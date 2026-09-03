@@ -6,6 +6,16 @@
 
 ---
 
+## Фича — Таймзона организации в контракте смены (`shift_timezone_display`) `[x]`
+ТЗ: `../../docs/tasks/shift_timezone_display/backend.md`  STATUS: `../../docs/tasks/shift_timezone_display/STATUS.md`
+- [x] `ShiftResponse.organization_timezone` — nullable IANA-контекст: организация получает текущую зону, персональная смена — `null`
+- [x] Все ответные пути смены: mixed list/self detail/lifecycle, org list/detail, manual mutations и смена графика
+- [x] Mixed list загружает зоны организаций одним batch-запросом; UTC timestamps и схема БД не менялись
+- [x] Контрактные тесты: орг-контекст, персональный `null`, lifecycle и сохранение UTC-момента
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Старт без графика при отключённом требовании (`optional_schedule_start`) `[x]`
 ТЗ: `../../docs/tasks/optional_schedule_start/backend.md`  STATUS: `../../docs/tasks/optional_schedule_start/STATUS.md`
 - [x] Явный доступный, но закрытый по времени график при `require_schedule=false` отбрасывается; смена создаётся без снимка графика

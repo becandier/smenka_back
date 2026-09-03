@@ -4,9 +4,11 @@ from datetime import datetime as dt_datetime
 from typing import Any
 
 from fastapi import APIRouter, Query, Request
+from sqlalchemy import select
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.audit_log import AuditAction, AuditResource
+from src.app.models.organization import Organization
 from src.app.models.shift import Shift
 from src.app.models.shift_overtime_request import ShiftOvertimeRequest
 from src.app.schemas.base import ApiResponse
@@ -56,6 +58,7 @@ def _shift_to_response(
     created_by_name: str | None = None,
     edited_by_name: str | None = None,
     earnings: dict[str, Any] | None = None,
+    organization_timezone: str | None = None,
 ) -> dict[str, Any]:
     """Сериализовать смену.
 
@@ -80,6 +83,7 @@ def _shift_to_response(
         id=str(shift.id),
         user_id=str(shift.user_id),
         organization_id=str(shift.organization_id) if shift.organization_id else None,
+        organization_timezone=organization_timezone,
         started_at=shift.started_at,
         finished_at=shift.finished_at,
         status=shift.status.value,
@@ -146,6 +150,18 @@ def _shift_to_response(
     ).model_dump(mode="json")
 
 
+async def get_organization_timezones(
+    session: SessionDep, organization_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Текущие IANA-зоны организаций одним запросом, включая soft-deleted org."""
+    if not organization_ids:
+        return {}
+    rows = await session.execute(
+        select(Organization.id, Organization.timezone).where(Organization.id.in_(organization_ids))
+    )
+    return dict(rows.tuples().all())
+
+
 async def _enrich_single_shift(
     session: SessionDep,
     shift: Shift,
@@ -161,8 +177,31 @@ async def _enrich_single_shift(
     return late_tolerance, overtime_map.get(shift.id)
 
 
+async def _single_shift_response(
+    session: SessionDep,
+    shift: Shift,
+    *,
+    earnings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Сериализовать одну смену с ровно одним запросом IANA-контекста при наличии org."""
+    late_tolerance, overtime = await _enrich_single_shift(session, shift)
+    timezone_map = await get_organization_timezones(
+        session, {shift.organization_id} if shift.organization_id is not None else set()
+    )
+    return _shift_to_response(
+        shift,
+        late_tolerance_minutes=late_tolerance,
+        overtime=overtime,
+        earnings=earnings,
+        organization_timezone=(
+            timezone_map.get(shift.organization_id) if shift.organization_id is not None else None
+        ),
+    )
+
+
 @router.get(
     "",
+    response_model=ApiResponse[ShiftListResponse],
     summary="История смен",
     description="История смен текущего пользователя с пагинацией — персональные и "
     "организационные вперемешку (или срез через `scope`/`organization_id`). "
@@ -232,6 +271,7 @@ async def list_shifts(
     # Персональная история может смешивать org-смены разных организаций
     # пользователя — все батчи без N+1 (work_schedules: R5/R6; shift_history_earnings).
     org_ids = {s.organization_id for s in shifts if s.organization_id is not None}
+    timezone_map = await get_organization_timezones(session, org_ids)
     tolerance_map = await get_late_tolerance_minutes_map(session, org_ids)
     overtime_map = await overtime_service.get_latest_overtime_for_shifts(
         session, [s.id for s in shifts]
@@ -247,6 +287,11 @@ async def list_shifts(
                     ),
                     overtime=overtime_map.get(s.id),
                     earnings=earnings_map.get(s.id),
+                    organization_timezone=(
+                        timezone_map.get(s.organization_id)
+                        if s.organization_id is not None
+                        else None
+                    ),
                 )
                 for s in shifts
             ],
@@ -311,6 +356,7 @@ async def shift_stats(
 
 @router.post(
     "/start",
+    response_model=ApiResponse[ShiftResponse],
     status_code=201,
     summary="Начать смену",
     description="Начинает новую смену. Без `organization_id` — персональная смена. "
@@ -355,14 +401,12 @@ async def start_shift(
         geo_fallback_reason=geo_fallback_reason,
     )
     await session.commit()
-    late_tolerance, overtime = await _enrich_single_shift(session, shift)
-    return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
-    )
+    return ApiResponse.success(await _single_shift_response(session, shift))
 
 
 @router.get(
     "/{shift_id}",
+    response_model=ApiResponse[ShiftResponse],
     summary="Деталь своей смены",
     description="Деталь собственной смены текущего пользователя по id — персональной "
     "(`organization_id=null`) или организационной, где пользователь является её владельцем. "
@@ -376,20 +420,15 @@ async def get_shift(
     session: SessionDep,
 ) -> ApiResponse:
     shift = await shift_service.get_own_shift_detail(session, shift_id, user.id)
-    late_tolerance, overtime = await _enrich_single_shift(session, shift)
     earnings_map = await payroll_service.get_shift_earnings_map(session, [shift])
     return ApiResponse.success(
-        _shift_to_response(
-            shift,
-            late_tolerance_minutes=late_tolerance,
-            overtime=overtime,
-            earnings=earnings_map.get(shift.id),
-        )
+        await _single_shift_response(session, shift, earnings=earnings_map.get(shift.id))
     )
 
 
 @router.post(
     "/{shift_id}/pause",
+    response_model=ApiResponse[ShiftResponse],
     summary="Поставить на паузу",
     description="Ставит активную смену на паузу. Для организационных смен может быть "
     "ограничено настройкой `max_pauses_per_shift`.",
@@ -401,14 +440,12 @@ async def pause_shift(
 ) -> ApiResponse:
     shift = await shift_service.pause_shift(session, shift_id, user.id)
     await session.commit()
-    late_tolerance, overtime = await _enrich_single_shift(session, shift)
-    return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
-    )
+    return ApiResponse.success(await _single_shift_response(session, shift))
 
 
 @router.post(
     "/{shift_id}/resume",
+    response_model=ApiResponse[ShiftResponse],
     summary="Возобновить смену",
     description="Снимает смену с паузы и возвращает в статус active.",
 )
@@ -419,10 +456,7 @@ async def resume_shift(
 ) -> ApiResponse:
     shift = await shift_service.resume_shift(session, shift_id, user.id)
     await session.commit()
-    late_tolerance, overtime = await _enrich_single_shift(session, shift)
-    return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
-    )
+    return ApiResponse.success(await _single_shift_response(session, shift))
 
 
 @router.post(
@@ -480,6 +514,7 @@ async def delete_overtime_request(
 
 @router.post(
     "/{shift_id}/finish",
+    response_model=ApiResponse[ShiftResponse],
     summary="Завершить смену",
     description="Завершает активную или стоящую на паузе смену. Все открытые паузы "
     "автоматически закрываются.",
@@ -502,7 +537,4 @@ async def finish_shift(
         ip_address=get_client_ip(request),
     )
     await session.commit()
-    late_tolerance, overtime = await _enrich_single_shift(session, shift)
-    return ApiResponse.success(
-        _shift_to_response(shift, late_tolerance_minutes=late_tolerance, overtime=overtime)
-    )
+    return ApiResponse.success(await _single_shift_response(session, shift))

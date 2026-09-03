@@ -358,7 +358,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftListResponse_"
                 }
               }
             }
@@ -457,7 +457,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftResponse_"
                 }
               }
             }
@@ -511,7 +511,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftResponse_"
                 }
               }
             }
@@ -560,7 +560,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftResponse_"
                 }
               }
             }
@@ -609,7 +609,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftResponse_"
                 }
               }
             }
@@ -1464,7 +1464,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ShiftListResponse_"
                 }
               }
             }
@@ -2916,7 +2916,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ChecklistInstanceListResponse_"
                 }
               }
             }
@@ -2975,7 +2975,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiResponse"
+                  "$ref": "#/components/schemas/ApiResponse_ChecklistInstanceDetailResponse_"
                 }
               }
             }
@@ -4139,6 +4139,1119 @@
         },
         "type": "object",
         "title": "WorkLocationUpdate"
+      },
+      "ApiResponse_ChecklistInstanceDetailResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChecklistInstanceDetailResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[ChecklistInstanceDetailResponse]"
+      },
+      "ApiResponse_ChecklistInstanceListResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChecklistInstanceListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[ChecklistInstanceListResponse]"
+      },
+      "ApiResponse_ShiftListResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftListResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[ShiftListResponse]"
+      },
+      "ApiResponse_ShiftResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[ShiftResponse]"
+      },
+      "ChecklistInstanceDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "is_required": {
+            "type": "boolean",
+            "title": "Is Required"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "max_photos_per_item": {
+            "type": "integer",
+            "title": "Max Photos Per Item",
+            "description": "Лимит фото на пункт (= CHECKLIST_MAX_PHOTOS_PER_ITEM)"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InstanceItemResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "organization_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Timezone",
+            "description": "Текущая IANA-таймзона организации смены; null для персональной смены"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "is_required",
+          "status",
+          "completed_at",
+          "created_at",
+          "max_photos_per_item",
+          "items"
+        ],
+        "title": "ChecklistInstanceDetailResponse"
+      },
+      "ChecklistInstanceListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChecklistInstanceResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "organization_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Timezone",
+            "description": "Текущая IANA-таймзона организации смены; null для персональной смены"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "ChecklistInstanceListResponse"
+      },
+      "ChecklistInstanceResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "is_required": {
+            "type": "boolean",
+            "title": "Is Required"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "pending | completed | incomplete"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "items_summary": {
+            "$ref": "#/components/schemas/ItemsSummary"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "type",
+          "is_required",
+          "status",
+          "completed_at",
+          "items_summary",
+          "created_at"
+        ],
+        "title": "ChecklistInstanceResponse"
+      },
+      "InstanceItemResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "is_required": {
+            "type": "boolean",
+            "title": "Is Required"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "is_completed": {
+            "type": "boolean",
+            "title": "Is Completed"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "change_count": {
+            "type": "integer",
+            "title": "Change Count"
+          },
+          "photo_requirement": {
+            "type": "string",
+            "title": "Photo Requirement"
+          },
+          "photo_source": {
+            "type": "string",
+            "title": "Photo Source"
+          },
+          "photos_count": {
+            "type": "integer",
+            "title": "Photos Count",
+            "default": 0
+          },
+          "photos": {
+            "items": {
+              "$ref": "#/components/schemas/PhotoResponse"
+            },
+            "type": "array",
+            "title": "Photos"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "text",
+          "is_required",
+          "position",
+          "is_completed",
+          "comment",
+          "completed_at",
+          "change_count",
+          "photo_requirement",
+          "photo_source"
+        ],
+        "title": "InstanceItemResponse"
+      },
+      "ItemsSummary": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "description": "Пунктов с is_completed=true (без учёта фото)"
+          },
+          "satisfied_count": {
+            "type": "integer",
+            "title": "Satisfied Count",
+            "description": "Пунктов, прошедших критерий satisfied (с учётом обязательных фото)"
+          },
+          "photos_required_missing": {
+            "type": "integer",
+            "title": "Photos Required Missing",
+            "description": "Пунктов с photo_requirement=required и без фото (бейдж «нужно фото»)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "completed",
+          "satisfied_count",
+          "photos_required_missing"
+        ],
+        "title": "ItemsSummary"
+      },
+      "OvertimeInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "minutes": {
+            "type": "integer",
+            "title": "Minutes"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "pending | approved | rejected"
+          },
+          "comment": {
+            "type": "string",
+            "title": "Comment"
+          },
+          "review_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Comment"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "minutes",
+          "status",
+          "comment",
+          "created_at"
+        ],
+        "title": "OvertimeInfo",
+        "description": "Встраивается в `ShiftResponse.overtime` (последняя заявка смены)."
+      },
+      "PauseResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "UUID паузы"
+          },
+          "shift_id": {
+            "type": "string",
+            "title": "Shift Id",
+            "description": "UUID смены"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At",
+            "description": "Начало паузы"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At",
+            "description": "Конец паузы (null если активна)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "shift_id",
+          "started_at"
+        ],
+        "title": "PauseResponse"
+      },
+      "PhotoResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "file_id": {
+            "type": "string",
+            "title": "File Id"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url",
+            "description": "Свежий presigned GET URL; null при недоступности storage"
+          },
+          "url_expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url Expires At"
+          },
+          "captured_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Captured At"
+          },
+          "latitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latitude"
+          },
+          "longitude": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Longitude"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "file_id",
+          "position"
+        ],
+        "title": "PhotoResponse"
+      },
+      "ShiftChecklistsSummary": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Всего экземпляров чек-листов в смене"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "description": "Экземпляров со status=completed"
+          },
+          "required_total": {
+            "type": "integer",
+            "title": "Required Total",
+            "description": "Обязательных экземпляров (is_required=true)"
+          },
+          "required_incomplete": {
+            "type": "integer",
+            "title": "Required Incomplete",
+            "description": "Обязательных экземпляров со status != completed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "completed",
+          "required_total",
+          "required_incomplete"
+        ],
+        "title": "ShiftChecklistsSummary",
+        "description": "Сводка по чек-листам смены (checklist_reports). Только для орг-эндпоинтов."
+      },
+      "ShiftEarnings": {
+        "properties": {
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "description": "Валюта суммы, сейчас всегда RUB"
+          },
+          "gross_amount_minor": {
+            "type": "integer",
+            "title": "Gross Amount Minor",
+            "description": "Начисление по смене в копейках (ADR-005 п.2/5), округлённое half-up. 0, если `has_rate=false` — это не факт заработка, а отсутствие ставки"
+          },
+          "penalty_amount_minor": {
+            "type": "integer",
+            "title": "Penalty Amount Minor",
+            "description": "Сумма активных штрафов, привязанных к этой смене (`penalties.shift_id`), в копейках. >= 0"
+          },
+          "penalties_count": {
+            "type": "integer",
+            "title": "Penalties Count",
+            "description": "Число активных штрафов, привязанных к смене"
+          },
+          "adjustment_amount_minor": {
+            "type": "integer",
+            "title": "Adjustment Amount Minor",
+            "description": "Знаковая сумма активных корректировок, привязанных к этой смене (`payroll_adjustments.shift_id`), в копейках. Может быть отрицательной"
+          },
+          "adjustments_count": {
+            "type": "integer",
+            "title": "Adjustments Count",
+            "description": "Число активных корректировок, привязанных к смене"
+          },
+          "net_amount_minor": {
+            "type": "integer",
+            "title": "Net Amount Minor",
+            "description": "gross − penalty + adjustment. Может быть отрицательным — валидное значение (ADR-005 п.1)"
+          },
+          "overtime_seconds": {
+            "type": "integer",
+            "title": "Overtime Seconds",
+            "description": "Согласованная переработка, уже учтённая в gross (для per_shift на сумму не влияет, но отображается)"
+          },
+          "has_rate": {
+            "type": "boolean",
+            "title": "Has Rate",
+            "description": "false — на момент started_at у сотрудника не было действующей ставки. Тогда gross_amount_minor=0, но это ЗНАЧИТ «ставка не задана», а не «заработал 0» — клиент обязан отличать эти состояния (ADR-005 п.3)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "currency",
+          "gross_amount_minor",
+          "penalty_amount_minor",
+          "penalties_count",
+          "adjustment_amount_minor",
+          "adjustments_count",
+          "net_amount_minor",
+          "overtime_seconds",
+          "has_rate"
+        ],
+        "title": "ShiftEarnings",
+        "description": "Заработок по одной смене (shift_history_earnings, ADR-005).\n\nЕдинственный источник правды — payroll-сервис (`payroll._calc_earnings` /\n`get_shift_earnings_map`); ничего здесь не пересчитывается на клиенте\n(ADR-005 п.9). `penalty_amount_minor`/`adjustment_amount_minor` — только\nштрафы/корректировки, привязанные к ЭТОЙ смене (`shift_id`); непривязанные\nвидны лишь в итогах периода (`GET /organizations/{org_id}/my-earnings`)."
+      },
+      "ShiftListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShiftResponse"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Список смен"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "description": "Общее количество смен (без учёта пагинации)"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "Размер страницы"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "description": "Смещение"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "ShiftListResponse"
+      },
+      "ShiftResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "UUID смены"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id",
+            "description": "UUID пользователя"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id",
+            "description": "UUID организации (null для персональной смены)"
+          },
+          "organization_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Timezone",
+            "description": "Текущая IANA-таймзона организации; null для персональной смены"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At",
+            "description": "Начало смены"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At",
+            "description": "Конец смены (null если активна)"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "description": "Статус: active, paused, finished"
+          },
+          "work_location_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Location Id",
+            "description": "UUID точки, на которой открыта смена (null — не определена / персональная смена)"
+          },
+          "work_location": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftWorkLocation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Денормализованная точка смены {id, name, address} (null — нет точки)"
+          },
+          "pauses": {
+            "items": {
+              "$ref": "#/components/schemas/PauseResponse"
+            },
+            "type": "array",
+            "title": "Pauses",
+            "description": "Список пауз в смене"
+          },
+          "worked_seconds": {
+            "type": "integer",
+            "title": "Worked Seconds",
+            "description": "Отработанное время в секундах (за вычетом пауз)"
+          },
+          "has_incomplete_required_checklists": {
+            "type": "boolean",
+            "title": "Has Incomplete Required Checklists",
+            "description": "После завершения смены: был ли хотя бы один обязательный чек-лист не заполнен",
+            "default": false
+          },
+          "user_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Name",
+            "description": "Настоящее имя сотрудника (User.name). Заполнено в орг-контексте, в персональном — null"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name",
+            "description": "Имя сотрудника в этой организации (organization_members.display_name); null — не задано или персональный контекст (member_display_name)"
+          },
+          "user_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Email",
+            "description": "Email сотрудника (User.email). Заполнено в орг-контексте, в персональном — null"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role",
+            "description": "Системная роль в org: admin | employee. null, если участник исключён из org или персональный контекст"
+          },
+          "custom_role_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Role Name",
+            "description": "Плоское имя кастомной роли (OrganizationRole.name). null, если кастомная роль не назначена / участник исключён / персональный контекст"
+          },
+          "checklists_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftChecklistsSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Сводка по чек-листам смены (total/completed/required_total/required_incomplete). Заполняется ТОЛЬКО в орг-эндпоинтах (GET /organizations/{org_id}/shifts и .../shifts/{shift_id}); в персональных эндпоинтах — всегда null (checklist_reports)"
+          },
+          "work_schedule_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Schedule Id",
+            "description": "UUID графика работы (null — без графика / персональная смена)"
+          },
+          "schedule_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule Name",
+            "description": "Снимок имени графика на момент старта смены; null — без графика"
+          },
+          "scheduled_start_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Start At",
+            "description": "Снимок планового начала окна (UTC); null — без графика"
+          },
+          "scheduled_end_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled End At",
+            "description": "Снимок планового конца окна (UTC); null — без графика"
+          },
+          "late_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Seconds",
+            "description": "Опоздание в секундах относительно scheduled_start_at, за вычетом допуска организации; null — без графика (work_schedules, R5)"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason",
+            "description": "manual | auto_schedule | null (активные и исторические смены до фичи work_schedules)"
+          },
+          "overtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OvertimeInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Последняя заявка на переработку по смене; null — заявки нет"
+          },
+          "is_manual": {
+            "type": "boolean",
+            "title": "Is Manual",
+            "description": "true — смена заведена админом (created_by_user_id IS NOT NULL), а не начата сотрудником (manual_time_entry)",
+            "default": false
+          },
+          "is_edited": {
+            "type": "boolean",
+            "title": "Is Edited",
+            "description": "true — смену когда-либо правил админ (edited_at IS NOT NULL)",
+            "default": false
+          },
+          "manual_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Note",
+            "description": "Комментарий/причина последней ручной операции; null — не задан"
+          },
+          "edited_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edited At",
+            "description": "Момент последней ручной правки; null — не правилась"
+          },
+          "edited_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edited By Name",
+            "description": "Имя админа, последним правившего смену. Заполнено только в орг-эндпоинтах; в персональных — всегда null"
+          },
+          "created_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By Name",
+            "description": "Имя админа, создавшего смену вручную. Заполнено только в орг-эндпоинтах; в персональных — всегда null"
+          },
+          "is_deleted": {
+            "type": "boolean",
+            "title": "Is Deleted",
+            "description": "true — смена удалена (soft-delete). В обычных выборках всегда false; возможно true только при include_deleted=true и в ответе DELETE",
+            "default": false
+          },
+          "geo_fallback": {
+            "type": "boolean",
+            "title": "Geo Fallback",
+            "description": "true — смена стартовала без геопроверки, по фото с камеры (shift_geo_photo_fallback). Derived: geo_fallback_reason IS NOT NULL",
+            "default": false
+          },
+          "geo_fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geo Fallback Reason",
+            "description": "Машинный код гео-ошибки клиента на старте: GEO_PERMISSION_DENIED, GEO_PERMISSION_DENIED_FOREVER, GEO_SERVICE_DISABLED, GEO_UNAVAILABLE, GEO_UNSUPPORTED, GEO_INSECURE_CONTEXT. null — обычная смена"
+          },
+          "geo_fallback_photo_file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geo Fallback Photo File Id",
+            "description": "UUID файла-снимка (категория shift_geo_photo) — смотреть через GET /files/{file_id}. null — обычная смена либо фото уже удалено"
+          },
+          "earnings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShiftEarnings"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Заработок по этой смене (shift_history_earnings, ADR-005). null — персональная смена (organization_id=null) либо смена не в статусе finished (сумма ещё меняется). Заполняется только в GET /shifts и GET /shifts/{shift_id}"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "started_at",
+          "status",
+          "pauses",
+          "worked_seconds"
+        ],
+        "title": "ShiftResponse"
+      },
+      "ShiftWorkLocation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "UUID рабочей точки"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Название точки"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address",
+            "description": "Читаемый адрес точки"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ShiftWorkLocation",
+        "description": "Денормализованная точка смены для отображения (текущее значение точки)."
       }
     },
     "securitySchemes": {
