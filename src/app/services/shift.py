@@ -93,17 +93,22 @@ async def _require_org_location(
     organization_id: uuid.UUID,
     work_location_id: uuid.UUID,
 ) -> uuid.UUID:
-    """Проверить, что точка существует и принадлежит организации; иначе 404."""
-    from src.app.models.work_location import WorkLocation
+    """Проверить, что точка существует и принадлежит организации; иначе 404.
 
-    result = await session.execute(
-        select(WorkLocation.id).where(
-            WorkLocation.id == work_location_id,
-            WorkLocation.organization_id == organization_id,
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404)
+    Делегирует в `work_location._get_location` — единственную реализацию поиска
+    «точка по id в этой org» (используется и CRUD-эндпоинтами точек, и
+    `get_org_location_distance` для валидации выбора при `geo_check_enabled=true`),
+    чтобы не заводить второй, независимо дрейфующий запрос с тем же смыслом.
+    """
+    from src.app.services.organization import OrgError
+    from src.app.services.work_location import _get_location
+
+    try:
+        await _get_location(session, organization_id, work_location_id)
+    except OrgError as exc:
+        if exc.code != "LOCATION_NOT_FOUND":
+            raise
+        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404) from None
     return work_location_id
 
 
@@ -283,12 +288,15 @@ async def _resolve_org_shift_start(
                 400,
             )
 
+        from src.app.services.work_location import (
+            get_org_location_distance,
+            resolve_nearest_work_location,
+        )
+
         # Сотрудник выбрал точку явно (shift_start_location_choice) — уважаем выбор,
         # но обязаны проверить радиус: без этого геопроверка превратилась бы в
         # решето (можно было бы отметиться на любой точке организации).
         if work_location_id is not None:
-            from src.app.services.work_location import get_org_location_distance
-
             chosen = await get_org_location_distance(
                 session,
                 organization_id,
@@ -305,8 +313,6 @@ async def _resolve_org_shift_start(
                     403,
                 )
             return chosen.location.id
-
-        from src.app.services.work_location import resolve_nearest_work_location
 
         nearest = await resolve_nearest_work_location(
             session, organization_id, latitude, longitude

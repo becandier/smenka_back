@@ -120,38 +120,6 @@ async def get_nearby_work_locations(
     return matched, nearest_outside
 
 
-async def get_org_location_distance(
-    session: AsyncSession,
-    org_id: uuid.UUID,
-    location_id: uuid.UUID,
-    latitude: float,
-    longitude: float,
-) -> LocationDistance | None:
-    """Расстояние от координат до одной точки организации.
-
-    `None`, если точка с таким id не существует или принадлежит другой
-    организации — используется при старте смены для валидации явно
-    выбранного сотрудником `work_location_id` при `geo_check_enabled=true`
-    (shift_start_location_choice/backend.md): та же формула (`haversine_distance`),
-    что и в `_sorted_org_locations`.
-    """
-    result = await session.execute(
-        select(WorkLocation).where(
-            WorkLocation.id == location_id,
-            WorkLocation.organization_id == org_id,
-        )
-    )
-    location = result.scalar_one_or_none()
-    if location is None:
-        return None
-    return LocationDistance(
-        location=location,
-        distance_meters=haversine_distance(
-            latitude, longitude, location.latitude, location.longitude
-        ),
-    )
-
-
 async def create_work_location(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -275,6 +243,37 @@ async def _get_location(
     if location is None:
         raise OrgError("LOCATION_NOT_FOUND", "Точка не найдена", 404)
     return location
+
+
+async def get_org_location_distance(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    location_id: uuid.UUID,
+    latitude: float,
+    longitude: float,
+) -> LocationDistance | None:
+    """Расстояние от координат до одной точки организации.
+
+    `None`, если точка с таким id не существует или принадлежит другой
+    организации — используется при старте смены для валидации явно
+    выбранного сотрудником `work_location_id` при `geo_check_enabled=true`
+    (shift_start_location_choice/backend.md). Переиспользует `_get_location`
+    (тот же поиск «точка по id в этой org», что и в update/delete) вместо
+    ещё одного отдельного запроса — та же формула (`haversine_distance`),
+    что и в `_sorted_org_locations`.
+    """
+    try:
+        location = await _get_location(session, org_id, location_id)
+    except OrgError as exc:
+        if exc.code != "LOCATION_NOT_FOUND":
+            raise
+        return None
+    return LocationDistance(
+        location=location,
+        distance_meters=haversine_distance(
+            latitude, longitude, location.latitude, location.longitude
+        ),
+    )
 
 
 async def _check_admin_or_owner(
