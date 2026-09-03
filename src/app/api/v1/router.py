@@ -27,6 +27,7 @@ from src.app.api.v1.shifts import router as shifts_router
 from src.app.api.v1.subscriptions import router as subscription_router
 from src.app.api.v1.users import router as users_router
 from src.app.api.v1.work_locations import router as work_locations_router
+from src.app.api.v1.work_locations_nearby import router as work_locations_nearby_router
 from src.app.api.v1.work_schedules import router as work_schedules_router
 
 router = APIRouter(prefix="/v1")
@@ -44,6 +45,7 @@ router.include_router(checklist_assignments_router)
 router.include_router(checklist_overrides_router)
 router.include_router(checklist_instances_router)
 router.include_router(work_locations_router)
+router.include_router(work_locations_nearby_router)
 router.include_router(work_schedules_router)
 router.include_router(overtime_router)
 router.include_router(files_router)

@@ -111,7 +111,47 @@ class TestStartGeoEnabled:
         employee_user: User,
         db_session: AsyncSession,
     ) -> None:
-        """Гео вкл: при попадании в несколько зон выбирается ближайшая."""
+        """Гео вкл, work_location_id не передан: при попадании в несколько зон
+        выбирается ближайшая (обратная совместимость, shift_start_location_choice)."""
+        org, locs = await _make_org(
+            db_session,
+            owner,
+            employee_user,
+            geo=True,
+            require=False,
+            locations=[
+                {"name": "A", "latitude": 55.7558, "longitude": 37.6173, "radius_meters": 500},
+                {"name": "B", "latitude": 55.7600, "longitude": 37.6173, "radius_meters": 500},
+            ],
+        )
+        loc_a, _loc_b = locs
+
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={
+                "organization_id": str(org.id),
+                "latitude": 55.7565,  # ближе к A
+                "longitude": 37.6173,
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()["data"]
+        assert data["work_location_id"] == str(loc_a.id)
+        assert data["work_location"]["id"] == str(loc_a.id)
+        assert data["work_location"]["name"] == "A"
+
+    async def test_explicit_choice_of_non_nearest_point_is_honored(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        owner: User,
+        employee_user: User,
+        db_session: AsyncSession,
+    ) -> None:
+        """Гео вкл, work_location_id передан и валиден (в радиусе) — используется он,
+        даже если ближе другая точка (shift_start_location_choice: выбор клиента
+        больше не игнорируется)."""
         org, locs = await _make_org(
             db_session,
             owner,
@@ -130,16 +170,99 @@ class TestStartGeoEnabled:
             headers=employee_headers,
             json={
                 "organization_id": str(org.id),
-                "latitude": 55.7565,  # ближе к A
+                "latitude": 55.7565,  # ближе к A, но B тоже в радиусе
                 "longitude": 37.6173,
-                "work_location_id": str(loc_b.id),  # должен игнорироваться
+                "work_location_id": str(loc_b.id),
             },
         )
         assert resp.status_code == 201
         data = resp.json()["data"]
-        assert data["work_location_id"] == str(loc_a.id)
-        assert data["work_location"]["id"] == str(loc_a.id)
-        assert data["work_location"]["name"] == "A"
+        assert data["work_location_id"] == str(loc_b.id)
+        assert data["work_location"]["id"] == str(loc_b.id)
+        assert data["work_location"]["name"] == "B"
+        assert str(loc_a.id) != data["work_location_id"]
+
+    async def test_explicit_choice_outside_radius_rejected(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        owner: User,
+        employee_user: User,
+        db_session: AsyncSession,
+    ) -> None:
+        """Гео вкл, work_location_id передан, но координаты вне её радиуса —
+        403 WORK_LOCATION_OUT_OF_RANGE (без него геопроверка была бы дырявой)."""
+        org, locs = await _make_org(
+            db_session,
+            owner,
+            employee_user,
+            geo=True,
+            require=False,
+            locations=[
+                {"name": "A", "latitude": 55.7558, "longitude": 37.6173, "radius_meters": 200},
+                {"name": "Far", "latitude": 10.0, "longitude": 10.0, "radius_meters": 100},
+            ],
+        )
+        _loc_a, loc_far = locs
+
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={
+                "organization_id": str(org.id),
+                "latitude": 55.7558,  # в радиусе A, не в радиусе Far
+                "longitude": 37.6173,
+                "work_location_id": str(loc_far.id),
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "WORK_LOCATION_OUT_OF_RANGE"
+
+    async def test_explicit_choice_foreign_location_404(
+        self,
+        client: AsyncClient,
+        employee_headers: dict[str, Any],
+        owner: User,
+        employee_user: User,
+        db_session: AsyncSession,
+    ) -> None:
+        """Гео вкл, work_location_id передан, но точка чужой организации —
+        404 WORK_LOCATION_NOT_FOUND (тот же код, что и в ручном режиме, R4)."""
+        org, _locs = await _make_org(
+            db_session,
+            owner,
+            employee_user,
+            geo=True,
+            require=False,
+            locations=[
+                {"name": "A", "latitude": 55.7558, "longitude": 37.6173, "radius_meters": 500},
+            ],
+        )
+        other_org = Organization(name="Other", owner_id=owner.id)
+        db_session.add(other_org)
+        await db_session.flush()
+        foreign = WorkLocation(
+            organization_id=other_org.id,
+            name="Foreign",
+            latitude=55.7558,
+            longitude=37.6173,
+            radius_meters=500,
+        )
+        db_session.add(foreign)
+        await db_session.commit()
+
+        resp = await client.post(
+            "/api/v1/shifts/start",
+            headers=employee_headers,
+            json={
+                "organization_id": str(org.id),
+                "latitude": 55.7558,
+                "longitude": 37.6173,
+                "work_location_id": str(foreign.id),
+            },
+        )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "WORK_LOCATION_NOT_FOUND"
 
     async def test_outside_zones_still_rejected(
         self,

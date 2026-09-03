@@ -55,3 +55,39 @@ class WorkLocationResponse(BaseModel):
 
 class WorkLocationListResponse(BaseModel):
     items: list[WorkLocationResponse] = Field(description="Список рабочих точек")
+
+
+class WorkLocationNearbyItem(BaseModel):
+    """Точка организации, в чей радиус попали переданные координаты."""
+
+    id: str = Field(description="UUID рабочей точки")
+    name: str = Field(description="Название")
+    address: str | None = Field(default=None, description="Читаемый адрес точки (или null)")
+    latitude: float = Field(description="Широта")
+    longitude: float = Field(description="Долгота")
+    radius_meters: int = Field(description="Радиус зоны в метрах")
+    distance_meters: int = Field(description="Расстояние до координат, метры (округление вниз)")
+    is_nearest: bool = Field(description="true у первого элемента списка (ближайшая точка)")
+
+
+class WorkLocationNearestOutside(BaseModel):
+    """Ближайшая точка организации вне радиуса — подсказка «до точки ~N м»."""
+
+    id: str = Field(description="UUID рабочей точки")
+    name: str = Field(description="Название")
+    address: str | None = Field(default=None, description="Читаемый адрес точки (или null)")
+    distance_meters: int = Field(description="Расстояние до координат, метры (округление вниз)")
+    radius_meters: int = Field(description="Радиус зоны в метрах")
+
+
+class WorkLocationNearbyResponse(BaseModel):
+    items: list[WorkLocationNearbyItem] = Field(
+        description="Точки, подходящие по радиусу, отсортированные по расстоянию"
+    )
+    nearest_outside: WorkLocationNearestOutside | None = Field(
+        default=None,
+        description=(
+            "Ближайшая точка организации вне радиуса, или null, если таких нет "
+            "(все точки организации уже в items либо у организации нет точек)"
+        ),
+    )

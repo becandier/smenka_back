@@ -93,17 +93,22 @@ async def _require_org_location(
     organization_id: uuid.UUID,
     work_location_id: uuid.UUID,
 ) -> uuid.UUID:
-    """Проверить, что точка существует и принадлежит организации; иначе 404."""
-    from src.app.models.work_location import WorkLocation
+    """Проверить, что точка существует и принадлежит организации; иначе 404.
 
-    result = await session.execute(
-        select(WorkLocation.id).where(
-            WorkLocation.id == work_location_id,
-            WorkLocation.organization_id == organization_id,
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404)
+    Делегирует в `work_location._get_location` — единственную реализацию поиска
+    «точка по id в этой org» (используется и CRUD-эндпоинтами точек, и
+    `get_org_location_distance` для валидации выбора при `geo_check_enabled=true`),
+    чтобы не заводить второй, независимо дрейфующий запрос с тем же смыслом.
+    """
+    from src.app.services.organization import OrgError
+    from src.app.services.work_location import _get_location
+
+    try:
+        await _get_location(session, organization_id, work_location_id)
+    except OrgError as exc:
+        if exc.code != "LOCATION_NOT_FOUND":
+            raise
+        raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404) from None
     return work_location_id
 
 
@@ -216,7 +221,12 @@ async def _resolve_org_shift_start(
     """Проверить членство/гео и определить точку смены по матрице гео×обязательность.
 
     Возвращает `work_location_id` для сохранения в смене (или `None`).
-    - гео вкл: точку определяет сервер (ближайшая из совпавших зон), присланное игнорируется;
+    - гео вкл + `work_location_id` передан: точка валидируется — принадлежит org
+      (иначе `404 WORK_LOCATION_NOT_FOUND`) И координаты попадают в её радиус
+      (иначе `403 WORK_LOCATION_OUT_OF_RANGE`) — выбор сотрудника уважается, но
+      не в обход геопроверки (shift_start_location_choice);
+    - гео вкл + `work_location_id` не передан: точку определяет сервер (ближайшая
+      из совпавших зон, детерминированный тай-брейк при равном расстоянии);
     - гео вкл + фолбэк по фото: координат нет, точку выбирает сотрудник — она
       обязательна и валидируется на org (shift_geo_photo_fallback);
     - гео выкл + require: точка обязательна (422 если не передана), валидируется на org;
@@ -256,7 +266,7 @@ async def _resolve_org_shift_start(
     geo_enabled = org_settings is not None and org_settings.geo_check_enabled
     require_location = org_settings is not None and org_settings.require_work_location
 
-    # Гео вкл: точка определяется сервером, присланный work_location_id игнорируется.
+    # Гео вкл: точка либо валидируется по выбору сотрудника, либо определяется сервером.
     if geo_enabled:
         # Фолбэк по фото: координат нет вообще, ближайшую зону подобрать нечем —
         # точку смены называет сам сотрудник, поэтому она обязательна.
@@ -278,7 +288,31 @@ async def _resolve_org_shift_start(
                 400,
             )
 
-        from src.app.services.work_location import resolve_nearest_work_location
+        from src.app.services.work_location import (
+            get_org_location_distance,
+            resolve_nearest_work_location,
+        )
+
+        # Сотрудник выбрал точку явно (shift_start_location_choice) — уважаем выбор,
+        # но обязаны проверить радиус: без этого геопроверка превратилась бы в
+        # решето (можно было бы отметиться на любой точке организации).
+        if work_location_id is not None:
+            chosen = await get_org_location_distance(
+                session,
+                organization_id,
+                _parse_work_location_id(work_location_id),
+                latitude,
+                longitude,
+            )
+            if chosen is None:
+                raise ShiftError("WORK_LOCATION_NOT_FOUND", "Рабочая точка не найдена", 404)
+            if not chosen.within_radius:
+                raise ShiftError(
+                    "WORK_LOCATION_OUT_OF_RANGE",
+                    "Вы находитесь вне выбранной рабочей точки",
+                    403,
+                )
+            return chosen.location.id
 
         nearest = await resolve_nearest_work_location(
             session, organization_id, latitude, longitude

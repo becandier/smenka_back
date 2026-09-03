@@ -3304,6 +3304,81 @@
         }
       }
     },
+    "/api/v1/organizations/{org_id}/work-locations/nearby": {
+      "get": {
+        "tags": [
+          "work-locations"
+        ],
+        "summary": "Точки организации рядом с координатами",
+        "description": "Точки, в чей радиус попадают переданные координаты, отсортированные по возрастанию расстояния (`is_nearest=true` у первой). Пустой `items` — штатный случай «сотрудник вне всех зон», не ошибка. `nearest_outside` — ближайшая точка организации ВНЕ радиуса, если такая есть. Тот же расчёт попадания в радиус, что и при `POST /shifts/start`, — список не может разойтись с тем, что примет старт смены. Доступно владельцу, admin и участникам организации.",
+        "operationId": "get_nearby_locations_api_v1_organizations__org_id__work_locations_nearby_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "latitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 90,
+              "minimum": -90,
+              "description": "Широта",
+              "title": "Latitude"
+            },
+            "description": "Широта"
+          },
+          {
+            "name": "longitude",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 180,
+              "minimum": -180,
+              "description": "Долгота",
+              "title": "Longitude"
+            },
+            "description": "Долгота"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_WorkLocationNearbyResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -5252,6 +5327,170 @@
         ],
         "title": "ShiftWorkLocation",
         "description": "Денормализованная точка смены для отображения (текущее значение точки)."
+      },
+      "WorkLocationNearbyItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "UUID рабочей точки"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Название"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address",
+            "description": "Читаемый адрес точки (или null)"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude",
+            "description": "Широта"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude",
+            "description": "Долгота"
+          },
+          "radius_meters": {
+            "type": "integer",
+            "title": "Radius Meters",
+            "description": "Радиус зоны в метрах"
+          },
+          "distance_meters": {
+            "type": "integer",
+            "title": "Distance Meters",
+            "description": "Расстояние до координат, метры (округление вниз)"
+          },
+          "is_nearest": {
+            "type": "boolean",
+            "title": "Is Nearest",
+            "description": "true у первого элемента списка (ближайшая точка)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "latitude",
+          "longitude",
+          "radius_meters",
+          "distance_meters",
+          "is_nearest"
+        ],
+        "title": "WorkLocationNearbyItem",
+        "description": "Точка организации, в чей радиус попали переданные координаты."
+      },
+      "WorkLocationNearestOutside": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "description": "UUID рабочей точки"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Название"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address",
+            "description": "Читаемый адрес точки (или null)"
+          },
+          "distance_meters": {
+            "type": "integer",
+            "title": "Distance Meters",
+            "description": "Расстояние до координат, метры (округление вниз)"
+          },
+          "radius_meters": {
+            "type": "integer",
+            "title": "Radius Meters",
+            "description": "Радиус зоны в метрах"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "distance_meters",
+          "radius_meters"
+        ],
+        "title": "WorkLocationNearestOutside",
+        "description": "Ближайшая точка организации вне радиуса — подсказка «до точки ~N м»."
+      },
+      "WorkLocationNearbyResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkLocationNearbyItem"
+            },
+            "type": "array",
+            "title": "Items",
+            "description": "Точки, подходящие по радиусу, отсортированные по расстоянию"
+          },
+          "nearest_outside": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkLocationNearestOutside"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ближайшая точка организации вне радиуса, или null, если таких нет (все точки организации уже в items либо у организации нет точек)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "WorkLocationNearbyResponse"
+      },
+      "ApiResponse_WorkLocationNearbyResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkLocationNearbyResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[WorkLocationNearbyResponse]"
       }
     },
     "securitySchemes": {
