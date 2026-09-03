@@ -156,9 +156,7 @@ async def test_google_registers_new_user_with_name_from_token(
 
     assert response.status_code == 200
 
-    user_result = await db_session.execute(
-        select(User).where(User.email == "named@example.com")
-    )
+    user_result = await db_session.execute(select(User).where(User.email == "named@example.com"))
     user = user_result.scalar_one()
     assert user.name == "Иван Иванов"
 
@@ -203,9 +201,7 @@ async def test_google_email_not_verified_returns_400(
     mock_google: Callable[..., AsyncMock],
 ) -> None:
     await _configure_provider(db_session, "google", "web")
-    mock_google(
-        side_effect=AuthError("OAUTH_EMAIL_NOT_VERIFIED", "Email не подтверждён", 400)
-    )
+    mock_google(side_effect=AuthError("OAUTH_EMAIL_NOT_VERIFIED", "Email не подтверждён", 400))
 
     response = await client.post(
         "/api/v1/auth/oauth/google",
@@ -384,9 +380,7 @@ async def test_apple_registers_new_user_with_token_email_and_body_name(
 
     assert response.status_code == 200
 
-    result = await db_session.execute(
-        select(User).where(User.email == "appleuser@example.com")
-    )
+    result = await db_session.execute(select(User).where(User.email == "appleuser@example.com"))
     user = result.scalar_one()
     assert user.name == "Apple User"
     assert user.password_hash is None

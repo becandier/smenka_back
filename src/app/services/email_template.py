@@ -31,8 +31,10 @@ def _load_template() -> str:
 
 
 def render_verification_code_html(code: str, ttl_minutes: int) -> str:
-    return _load_template().replace(_CODE_PLACEHOLDER, code).replace(
-        _TTL_PLACEHOLDER, str(ttl_minutes)
+    return (
+        _load_template()
+        .replace(_CODE_PLACEHOLDER, code)
+        .replace(_TTL_PLACEHOLDER, str(ttl_minutes))
     )
 
 

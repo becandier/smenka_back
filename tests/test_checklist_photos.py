@@ -88,9 +88,7 @@ async def _drill_to_item(
     """Возвращает (instance_id, item_id) первого экземпляра/пункта смены."""
     listing = await client.get(f"/api/v1/shifts/{shift_id}/checklists", headers=headers)
     inst_id = listing.json()["data"]["items"][0]["id"]
-    detail = await client.get(
-        f"/api/v1/shifts/{shift_id}/checklists/{inst_id}", headers=headers
-    )
+    detail = await client.get(f"/api/v1/shifts/{shift_id}/checklists/{inst_id}", headers=headers)
     item_id = detail.json()["data"]["items"][0]["id"]
     return inst_id, item_id
 
@@ -120,8 +118,12 @@ class TestTemplatePhotoFields:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            photo_requirement="required", photo_source="camera_or_gallery",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="required",
+            photo_source="camera_or_gallery",
         )
         # photo_source сохранён как есть при requirement != none.
         tpl_list = await client.get(
@@ -165,8 +167,12 @@ class TestTemplatePhotoFields:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         tpl_id, item_id = await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            photo_requirement="optional", photo_source="camera_or_gallery",
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="optional",
+            photo_source="camera_or_gallery",
         )
         patch = await client.patch(
             f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl_id}/items/{item_id}",
@@ -200,7 +206,10 @@ class TestSnapshot:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         tpl_id, item_id = await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -235,7 +244,10 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -257,9 +269,7 @@ class TestAttachPhoto:
         assert summary["items_summary"]["photos_required_missing"] == 1
 
         # Привязать фото → satisfied → completed.
-        file_id = await _upload_photo(
-            client, ctx["member_headers"], organization_id=ctx["org_id"]
-        )
+        file_id = await _upload_photo(client, ctx["member_headers"], organization_id=ctx["org_id"])
         resp = await client.post(
             f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos",
             headers=ctx["member_headers"],
@@ -295,14 +305,16 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            photo_requirement="none", is_required=False,
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="none",
+            is_required=False,
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
         inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
-        file_id = await _upload_photo(
-            client, ctx["member_headers"], organization_id=ctx["org_id"]
-        )
+        file_id = await _upload_photo(client, ctx["member_headers"], organization_id=ctx["org_id"])
         resp = await client.post(
             f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos",
             headers=ctx["member_headers"],
@@ -321,8 +333,12 @@ class TestAttachPhoto:
         monkeypatch.setattr(instance_service.settings, "checklist_max_photos_per_item", 1)
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            photo_requirement="optional", is_required=False,
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="optional",
+            is_required=False,
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
         inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
@@ -348,7 +364,10 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -368,7 +387,10 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -386,8 +408,12 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
-            photo_requirement="optional", is_required=False,
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="optional",
+            is_required=False,
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
         inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
@@ -404,7 +430,10 @@ class TestAttachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -436,7 +465,10 @@ class TestDetachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -463,9 +495,7 @@ class TestDetachPhoto:
         ).scalar_one_or_none() is None
         assert (
             await db_session.execute(
-                select(ChecklistItemPhoto).where(
-                    ChecklistItemPhoto.id == uuid.UUID(photo_id)
-                )
+                select(ChecklistItemPhoto).where(ChecklistItemPhoto.id == uuid.UUID(photo_id))
             )
         ).scalar_one_or_none() is None
         assert len(mock_storage) == 0
@@ -481,7 +511,10 @@ class TestDetachPhoto:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -504,7 +537,10 @@ class TestStorageDegradation:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
@@ -542,7 +578,10 @@ class TestCleanupHook:
     ):
         ctx = await _setup(client, db_session, super_admin_headers)
         await _make_template(
-            client, super_admin_headers, ctx["org_id"], ctx["role_id"],
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
             photo_requirement="required",
         )
         shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])

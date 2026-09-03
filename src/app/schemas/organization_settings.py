@@ -70,6 +70,5 @@ class OrganizationSettingsUpdate(BaseModel):
         default=None,
         ge=0,
         le=240,
-        description="За сколько минут до планового начала графика разрешено начать смену "
-        "(0–240)",
+        description="За сколько минут до планового начала графика разрешено начать смену (0–240)",
     )
