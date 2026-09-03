@@ -33,6 +33,10 @@ class OrganizationSettingsResponse(BaseModel):
         description="За сколько минут до планового начала графика разрешено начать смену "
         "(0–240); 0 — строго не раньше начала (schedule_window_enforcement)"
     )
+    checklist_grace_minutes: int = Field(
+        description="Окно дозаполнения чек-листа после закрытия смены в минутах (0–240); "
+        "0 — дозаполнение запрещено (checklist_grace_period)"
+    )
 
     model_config = {"from_attributes": True}
 
@@ -71,4 +75,11 @@ class OrganizationSettingsUpdate(BaseModel):
         ge=0,
         le=240,
         description="За сколько минут до планового начала графика разрешено начать смену (0–240)",
+    )
+    checklist_grace_minutes: int | None = Field(
+        default=None,
+        ge=0,
+        le=240,
+        description="Окно дозаполнения чек-листа после закрытия смены в минутах (0–240); "
+        "0 — дозаполнение запрещено",
     )

@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.app.core.config import get_settings
 from src.app.core.security import hash_password
 from src.app.models.audit_log import AuditLog
+from src.app.models.checklist import (
+    ChecklistInstance,
+    ChecklistInstanceStatus,
+    ChecklistType,
+)
 from src.app.models.file import File, FileCategory
 from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
@@ -19,7 +24,11 @@ from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
 from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_schedule import WorkSchedule
 from src.app.tasks.cleanup import cleanup_expired_tokens, cleanup_orphan_files
-from src.app.tasks.shifts import auto_finish_stale_pauses, auto_finish_stale_shifts
+from src.app.tasks.shifts import (
+    auto_finish_stale_pauses,
+    auto_finish_stale_shifts,
+    finalize_expired_checklist_grace_periods,
+)
 
 settings = get_settings()
 
@@ -76,6 +85,21 @@ def _make_schedule(org_id: uuid.UUID) -> WorkSchedule:
         name="Дневная",
         start_time=dt_time(9, 0),
         end_time=dt_time(18, 0),
+    )
+
+
+def _make_pending_required_instance(shift_id: uuid.UUID) -> ChecklistInstance:
+    """Обязательный экземпляр с одним незакрытым пунктом (checklist_grace_period:
+    имитирует состояние «есть незаполненный обязательный чек-лист» без похода
+    через полный API-флоу шаблонов/назначений)."""
+    return ChecklistInstance(
+        id=uuid.uuid4(),
+        shift_id=shift_id,
+        template_id=None,
+        name="Открытие",
+        type=ChecklistType.shift_start,
+        is_required=True,
+        status=ChecklistInstanceStatus.pending,
     )
 
 
@@ -366,6 +390,357 @@ class TestAutoFinishStaleShifts:
         pause_result = await db_session.execute(select(Pause).where(Pause.id == pause_id))
         updated_pause = pause_result.scalar_one()
         assert updated_pause.finished_at == scheduled_end
+
+    async def test_org_shift_with_grace_window_leaves_checklist_pending(
+        self, db_session: AsyncSession
+    ):
+        """checklist_grace_period: авто-финиш по графику с `checklist_grace_minutes>0`
+        не переводит незакрытый обязательный экземпляр в терминальный incomplete —
+        окно дозаполнения открывается так же, как при ручном завершении."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=30
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        scheduled_end = datetime.now(UTC) - timedelta(minutes=5)
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=2),
+            scheduled_end_at=scheduled_end,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            auto_finish_stale_shifts()
+
+        db_session.expire_all()
+        shift_result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        updated_shift = shift_result.scalar_one()
+        assert updated_shift.status == ShiftStatus.finished
+        assert updated_shift.has_incomplete_required_checklists is True
+
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.pending
+
+    async def test_org_shift_with_grace_disabled_finalizes_checklist_immediately(
+        self, db_session: AsyncSession
+    ):
+        """checklist_grace_minutes=0 — прежнее поведение сохраняется и для
+        авто-финиша по графику: терминальный incomplete сразу."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=0
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        scheduled_end = datetime.now(UTC) - timedelta(minutes=5)
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.active,
+            scheduled_start_at=datetime.now(UTC) - timedelta(hours=2),
+            scheduled_end_at=scheduled_end,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            auto_finish_stale_shifts()
+
+        db_session.expire_all()
+        shift_result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        updated_shift = shift_result.scalar_one()
+        assert updated_shift.status == ShiftStatus.finished
+        assert updated_shift.has_incomplete_required_checklists is True
+
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.incomplete
+
+
+class TestFinalizeExpiredChecklistGracePeriods:
+    """checklist_grace_period: терминальная фиксация чек-листов после того, как
+    окно дозаполнения истекло (см. tasks/shifts.finalize_expired_checklist_grace_periods)."""
+
+    async def test_window_elapsed_finalizes_to_incomplete(self, db_session: AsyncSession) -> None:
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=30
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=31),
+            has_incomplete_required_checklists=True,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.incomplete
+
+        shift_result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        assert shift_result.scalar_one().has_incomplete_required_checklists is True
+
+    async def test_running_twice_is_idempotent(self, db_session: AsyncSession) -> None:
+        """checklist_grace_period, идемпотентность (финальное ревью, Находка 3):
+        повторный прогон задачи на тех же данных не меняет уже зафиксированный
+        результат и не падает — частичный индекс `ix_checklist_instances_pending_
+        required` исключает уже финализированный экземпляр из кандидатов
+        следующего тика (заявлено в докстроке задачи и в ADR-004, но напрямую не
+        было проверено)."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=30
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=31),
+            has_incomplete_required_checklists=True,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        after_first_run = (
+            await db_session.execute(
+                select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+            )
+        ).scalar_one()
+        assert after_first_run.status == ChecklistInstanceStatus.incomplete
+        completed_at_after_first_run = after_first_run.completed_at
+
+        shift_after_first_run = (
+            await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        ).scalar_one()
+        assert shift_after_first_run.has_incomplete_required_checklists is True
+
+        # Второй прогон на тех же данных, без каких-либо изменений между вызовами:
+        # экземпляр уже не pending -> не попадает в кандидаты (частичный индекс),
+        # задача должна быть no-op — ни статус, ни флаг не меняются, исключений нет.
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        after_second_run = (
+            await db_session.execute(
+                select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+            )
+        ).scalar_one()
+        assert after_second_run.status == ChecklistInstanceStatus.incomplete
+        assert after_second_run.completed_at == completed_at_after_first_run
+
+        shift_after_second_run = (
+            await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        ).scalar_one()
+        assert shift_after_second_run.has_incomplete_required_checklists is True
+
+    async def test_window_still_open_not_finalized(self, db_session: AsyncSession) -> None:
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=30
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=5),
+            has_incomplete_required_checklists=True,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        # Окно ещё открыто (5 из 30 минут) — статус остаётся pending, дозаполнение
+        # по-прежнему разрешено.
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.pending
+
+    async def test_missing_settings_row_defaults_to_30_minutes(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Нет строки OrganizationSettings -> считаем DEFAULT_CHECKLIST_GRACE_MINUTES
+        (server_default), как и для остальных настроек с дефолтом."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+        # Намеренно без строки OrganizationSettings.
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=31),
+            has_incomplete_required_checklists=True,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.incomplete
+
+    async def test_no_pending_required_instances_no_op(self, db_session: AsyncSession) -> None:
+        """Идемпотентность: смена без pending-обязательных экземпляров не
+        попадает в кандидаты (уже финализирована/выполнена ранее) — задача не
+        трогает completed-экземпляры и не падает при пустой выборке."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=31),
+            has_incomplete_required_checklists=False,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = ChecklistInstance(
+            id=uuid.uuid4(),
+            shift_id=shift_id,
+            template_id=None,
+            name="Открытие",
+            type=ChecklistType.shift_start,
+            is_required=True,
+            status=ChecklistInstanceStatus.completed,
+        )
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        instance_result = await db_session.execute(
+            select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+        )
+        assert instance_result.scalar_one().status == ChecklistInstanceStatus.completed
 
 
 class TestAutoFinishStalePauses:

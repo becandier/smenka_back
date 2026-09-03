@@ -245,6 +245,16 @@ class ChecklistInstance(Base):
         # Под агрегаты `checklists_summary`/фильтр `checklists` (список орг-смен) и
         # фильтр `status` реестра `GET .../checklist-instances` (checklist_reports).
         Index("ix_checklist_instances_shift_id_status", "shift_id", "status"),
+        # Под выборку Celery-задачи `finalize_expired_checklist_grace_periods`
+        # (checklist_grace_period): пока окно дозаполнения открыто, обязательный
+        # экземпляр остаётся pending (терминальный incomplete не проставляется) —
+        # частичный индекс отдаёт только кандидатов на финализацию, не сканируя
+        # завершённые/необязательные экземпляры.
+        Index(
+            "ix_checklist_instances_pending_required",
+            "shift_id",
+            postgresql_where=sa_text("status = 'pending' AND is_required = true"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

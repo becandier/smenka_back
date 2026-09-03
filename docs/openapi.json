@@ -3643,19 +3643,17 @@
             "title": "Geo Check Enabled",
             "description": "Включить/выключить геопроверку"
           },
-          "auto_finish_hours": {
+          "require_work_location": {
             "anyOf": [
               {
-                "type": "integer",
-                "maximum": 48.0,
-                "minimum": 1.0
+                "type": "boolean"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Auto Finish Hours",
-            "description": "Часы до автозавершения (1–48, null — отключить)"
+            "title": "Require Work Location",
+            "description": "Требовать привязку точки к смене. Нельзя включить без рабочих точек"
           },
           "max_pause_minutes": {
             "anyOf": [
@@ -3684,6 +3682,86 @@
             ],
             "title": "Max Pauses Per Shift",
             "description": "Макс. количество пауз за смену (1–50)"
+          },
+          "auto_finish_by_schedule": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Finish By Schedule",
+            "description": "Завершать смену автоматически в плановое время окончания графика"
+          },
+          "require_schedule": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Require Schedule",
+            "description": "Требовать выбор графика при старте смены. Нельзя включить без неархивных графиков организации"
+          },
+          "late_tolerance_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 120.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Late Tolerance Minutes",
+            "description": "Допуск по опозданию в минутах (0–120)"
+          },
+          "overtime_request_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 90.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overtime Request Days",
+            "description": "Срок подачи заявки на переработку в днях (1–90)"
+          },
+          "early_start_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 240.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Early Start Minutes",
+            "description": "За сколько минут до планового начала графика разрешено начать смену (0–240)"
+          },
+          "checklist_grace_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 240.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checklist Grace Minutes",
+            "description": "Окно дозаполнения чек-листа после закрытия смены в минутах (0–240); 0 — дозаполнение запрещено"
           }
         },
         "type": "object",
@@ -4389,6 +4467,25 @@
             ],
             "title": "Organization Timezone",
             "description": "Текущая IANA-таймзона организации смены; null для персональной смены"
+          },
+          "fill_allowed": {
+            "type": "boolean",
+            "title": "Fill Allowed",
+            "description": "Можно ли сейчас редактировать чек-лист смены (checklist_grace_period): true для активной смены и для завершённой в открытом окне дозаполнения, false после его истечения",
+            "default": true
+          },
+          "fill_deadline_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Deadline At",
+            "description": "Момент закрытия окна дозаполнения в UTC; null для активной смены или уже закрытого окна (checklist_grace_period)"
           }
         },
         "type": "object",
@@ -4425,6 +4522,25 @@
             ],
             "title": "Organization Timezone",
             "description": "Текущая IANA-таймзона организации смены; null для персональной смены"
+          },
+          "fill_allowed": {
+            "type": "boolean",
+            "title": "Fill Allowed",
+            "description": "Можно ли сейчас редактировать чек-листы смены (checklist_grace_period): true для активной смены и для завершённой в открытом окне дозаполнения, false после его истечения",
+            "default": true
+          },
+          "fill_deadline_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fill Deadline At",
+            "description": "Момент закрытия окна дозаполнения в UTC; null для активной смены или уже закрытого окна (checklist_grace_period)"
           }
         },
         "type": "object",

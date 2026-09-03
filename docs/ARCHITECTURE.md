@@ -301,7 +301,7 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 | `PayrollAdjustment` | `payroll_adjustments` | Ручное начисление/удержание (`manual_time_entry`): org_id→CASCADE, member_id→organization_members CASCADE, shift_id nullable→SET NULL (необязательная привязка), **amount_minor int, знаковая сумма (> 0 доплата, < 0 удержание), CHECK `!= 0`**, currency RUB, reason VARCHAR(200), comment nullable VARCHAR(500), occurred_at, created_by_user_id, is_deleted/deleted_by_user_id/deleted_at — отмена=soft-delete, created/updated_at. Индексы `(org_id,is_deleted)`, `(member_id,is_deleted)`, `(occurred_at)`. Без шаблонов (в отличие от `Penalty`) — симметрия «плюс/минус» без снимка reason/amount из справочника |
 | `OrganizationRole` | `organization_roles` | Кастомная роль организации (org_id, name) |
 | `WorkLocation` | `work_locations` | Рабочая точка (org_id, name, lat, lng, radius, address nullable VARCHAR512 — читаемый адрес, геокодинг в админке) |
-| `OrganizationSettings` | `organization_settings` | Настройки организации (geo, **require_work_location bool NOT NULL default false** — требовать точку при старте, лимиты пауз; **auto_finish_hours удалён** (work_schedules) — заменён на **auto_finish_by_schedule bool default true**, **require_schedule bool default false**, **late_tolerance_minutes int default 0** (0–120), **overtime_request_days int default 7** (1–90), **early_start_minutes int default 0** (0–240, schedule_window_enforcement — допуск на ранний старт до планового начала графика)) |
+| `OrganizationSettings` | `organization_settings` | Настройки организации (geo, **require_work_location bool NOT NULL default false** — требовать точку при старте, лимиты пауз; **auto_finish_hours удалён** (work_schedules) — заменён на **auto_finish_by_schedule bool default true**, **require_schedule bool default false**, **late_tolerance_minutes int default 0** (0–120), **overtime_request_days int default 7** (1–90), **early_start_minutes int default 0** (0–240, schedule_window_enforcement — допуск на ранний старт до планового начала графика), **checklist_grace_minutes int NOT NULL default 30** (0–240, `checklist_grace_period` — окно дозаполнения чек-листа после закрытия смены; `0` = дозаполнение запрещено, прежнее поведение)) |
 | `ChecklistTemplate` | `checklist_templates` | Шаблон чек-листа (org_id, name, type, is_required, is_deleted + deleted_at/deleted_by_user_id — soft-delete, `unified_soft_delete`) |
 | `ChecklistTemplateItem` | `checklist_template_items` | Пункт шаблона (text, is_required, position, **photo_requirement** none/optional/required, **photo_source** camera/camera_or_gallery — VARCHAR32, дефолты none/camera) |
 | `ChecklistRoleAssignment` | `checklist_role_assignments` | Привязка шаблона к роли |
@@ -514,6 +514,60 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 
 > **Фото-подтверждения чек-листов (checklist_photos).** Пункт шаблона несёт `photo_requirement` (none/optional/required) и `photo_source` (camera/camera_or_gallery — подсказка UI, сервер источник **не** enforce-ит); при `requirement=none` source нормализуется к camera. На старте org-смены настройки копируются снимком в `checklist_instance_items` (правка шаблона на уже созданные экземпляры не влияет). Загрузка файла — через существующий `POST /api/v1/files` (категория `checklist_photo`); фича только **привязывает** загруженный `file_id` к пункту-экземпляру (`checklist_item_photos`, UNIQUE на `file_id`). Привязка/отвязка — только владелец активной смены, под `SELECT ... FOR UPDATE` на пункт (защита лимита `CHECKLIST_MAX_PHOTOS_PER_ITEM`); проблема с файлом-кандидатом (нет/чужой/другая org/не `checklist_photo`/уже привязан) → единый `PHOTO_FILE_INVALID`. Привязка ставит `files.is_attached=true`; отвязка снимает флаг и зовёт `delete_file` (объект S3 + строка `files`, связь уходит каскадом). Статус экземпляра считает **единая** функция `_recompute_instance_status` по критерию **satisfied** = `is_completed AND (photo_requirement != required OR photos_count >= 1)`; вызывается из PATCH пункта и привязки/отвязки фото, поэтому `finalize_shift_checklists` (и его sync-двойник) по-прежнему доверяют хранимому статусу. Режим **мягкий**: отметить пункт без фото и завершить смену можно — отсутствие обязательного фото лишь даёт `pending`→`incomplete` и `has_incomplete_required_checklists`. Деталь экземпляра отдаёт по каждому фото свежий presigned GET (батч-подпись одним клиентом, без N+1); при недоступности storage — `url=null` без 502 (клиент дотянет через `GET /files/{id}`). `items_summary` списка получил `satisfied_count` (честный прогресс) и `photos_required_missing` (бейдж «нужно фото») — одним GROUP BY. **Privacy-долг:** `cleanup_shift_photo_files` (в `services/checklist_instance.py`) удаляет файлы привязанных фото смены ДО каскадного сноса связей, НО прямого триггера нет — смены не hard-удаляются, org — soft-delete; `cleanup_orphan_files` не подбирает `is_attached=true`, поэтому при будущем hard-delete смены/org гео-привязанные фото останутся объектами S3 (массовая чистка бакета — отдельная DevOps-задача).
 
+> **Окно дозаполнения чек-листа после закрытия смены (`checklist_grace_period`).**
+> Настройка организации `checklist_grace_minutes` (0–240, default **30**,
+> server_default той же миграцией — все существующие организации получают окно
+> автоматически) задаёт, сколько минут после `Shift.finished_at` разрешено
+> дозаполнять чек-листы завершённой смены теми же операциями, что и на активной
+> (отметка пункта, комментарий, привязка/отвязка фото). `0` — прежнее поведение
+> (`SHIFT_FINISHED` сразу). Окно считается от **фактического** `finished_at`
+> (не планового `scheduled_end_at`) и распространяется на авто-завершённые смены
+> (`auto_finish_stale_shifts`/inline-авто-финиш) — сотрудник тем более не знал о
+> завершении. Проверка/пересчёт вынесены в `services/checklist_instance.py`:
+> `compute_fill_window(shift, grace_minutes)` — чистая функция состояния окна
+> (`fill_allowed`/`fill_deadline_at`), `_assert_fill_window_open` — гейт на входе
+> мутирующих операций, `_reassert_fill_window_open` — повторная проверка
+> непосредственно перед мутацией (аналог `_reassert_shift_active` для авто-финиша,
+> но по границе окна, не только по терминальному `finished`). Ответы
+> `GET .../checklists` и `.../checklists/{instance_id}` получили аддитивные
+> `fill_allowed`/`fill_deadline_at` (`null` для активной смены и для закрытого
+> окна) — клиент не считает окно по часам устройства. Отдельно
+> `checklist_grace_minutes` денормализован (nullable, additive) и в
+> `OrganizationResponse` (`GET /organizations`/`{id}`/`all`) — по тому же
+> прецеденту, что и `overtime_request_days`: employee не имеет доступа к
+> `/settings`, но диалог подтверждения завершения смены должен сказать, сколько
+> времени останется на дозаполнение.
+>
+> **Отложенная финализация статусов.** Пока окно открыто, судьба обязательного
+> чек-листа не решена: `finalize_shift_checklists` (терминальный перевод
+> `pending`→`incomplete`) вызывается сразу только при `checklist_grace_minutes=0`.
+> При окне >0 экземпляры на финише остаются `pending`, а
+> `Shift.has_incomplete_required_checklists` заполняется **живым снимком**
+> (`_has_live_incomplete_required`: есть ли обязательный экземпляр не в статусе
+> `completed`) — общая точка входа `close_shift_checklists`
+> (async)/`_close_shift_checklists_sync` (Celery). Каждая правка пункта/фото
+> завершённой смены в течение окна пересчитывает этот флаг заново
+> (`_refresh_live_incomplete_flag`), поэтому он становится `false` сразу после
+> дозаполнения последнего обязательного пункта — без ожидания истечения окна.
+> Терминальная фиксация по истечении окна — Celery Beat `tasks/shifts.py::
+> finalize_expired_checklist_grace_periods` (см. «Фоновые задачи», каждые 60с):
+> кандидаты — завершённые смены с ещё не финализированными (pending) обязательными
+> экземплярами (частичный индекс `ix_checklist_instances_pending_required`),
+> реально просроченные (`finished_at + checklist_grace_minutes <= now`)
+> дозывают тот же `finalize_shift_checklists`. Решение через Celery Beat, а не
+> расчёт на лету при каждом чтении, выбрано по аналогии с уже существующим
+> авто-финишем смен: статус `ChecklistInstance` — не только read-модель (на
+> нём завязаны фильтры реестра `checklist_reports` и `checklists_summary`), а
+> держать его вечно пересчитываемым во всех читающих путях означало бы либо
+> денормализовать проверку окна во все агрегаты разом, либо потерять
+> терминальность `incomplete` вовсе; периодическая задача с идемпотентным
+> предикатом (после конверсии `pending` не остаётся — кандидат сам выпадает из
+> следующей выборки) даёт то же самое поведение малой кровью и без гонок с
+> чтением. Побочный эффект: между истечением окна и следующим тиком (≤60с)
+> отчёты видят ещё не финализированный `pending`, но это осознанно допустимый
+> lag — «мигания» после конвергенции нет, значения не откатываются назад (ADR:
+> `docs/decisions/004-checklist-grace-period-deferred-finalization.md`).
+
 > **База знаний (knowledge_base).** Дерево разделов/страниц org с бесконечной вложенностью (`knowledge_nodes`, self-ref `parent_id`); контент страницы — массив блоков в JSONB (BLOCK SCHEMA `schema_version=1`: heading/paragraph/bulleted_list/numbered_list/quote/callout/divider/image/file/video(youtube)/table; `span` = inline rich-text). Только организационный режим. **ACL** (`knowledge_node_access`): правило `allow`/`deny` на роль или конкретного member; эффективный доступ employee к узлу считается обходом вверх по `parent_id` с приоритетом категорий — (1) персональное правило (member_user_id), (2) ролевое (role_id кастомной роли), (3) `all_members` на узле/предке, (4) deny по умолчанию; персональное всегда сильнее ролевого, внутри категории ближайший узел перебивает дальний (`services/knowledge._resolve_employee`, индекс ACL грузится одним проходом — без N+1). owner/admin/super_admin игнорируют ACL (полный доступ). Employee без эффективного allow видит узел как несуществующий (`404 KNOWLEDGE_NODE_NOT_FOUND`, не 403); дерево для employee отдаёт доступные узлы + разделы-предки как навигационные контейнеры (поле `all_members` опускается). **Файлы** грузятся через `POST /api/v1/files` (категория `knowledge_base`, admin/owner, 50 MB, image/*+pdf+OOXML docx/xlsx/pptx; OOXML — только без макросов: `vbaProject.bin`/`macroEnabled` в контейнере или битый архив → 415 `UNSUPPORTED_FILE_TYPE`; generic zip и легаси doc/xls/ppt запрещены) и привязываются к странице **через её `content`** (блоки image/file): на PATCH сервер диффит множества `file_id` в одной транзакции — новые валидирует (`knowledge_base`, та же org, не привязан к другой странице → иначе `400 KNOWLEDGE_FILE_INVALID`) и ставит `is_attached=true` + строку `knowledge_node_files` (`UNIQUE(file_id)` — один файл = одна страница, гонка двух страниц ловится конфликтом UNIQUE), исчезнувшие — `is_attached=false` + `delete_file` (объект S3 + строка `files`); добавления идут до удалений (необратимый S3-delete не теряется при откате). На чтении страницы блоки image/file обогащаются свежим presigned `url`/`url_expires_at` (батч-подпись, при сбое storage — `url=null` без 502; в хранимом `content` только `file_id`). Перемещение (`parent_id`) проверяет цикл подъёмом по предкам (`400 KNOWLEDGE_NODE_CYCLE`), чужой parent → `404`. **Privacy-критично:** `delete_node` (M5) собирает `file_id` всего поддерева и удаляет объекты S3 + строки `files` ДО каскадного `ON DELETE CASCADE` (иначе `cleanup_orphan_files` их не подберёт — они `is_attached=true`); при hard-delete org объекты S3 останутся — массовая чистка бакета вынесена в **общий DevOps-долг с `checklist_photos`**. Ошибки — `KnowledgeError` (`KNOWLEDGE_NODE_NOT_FOUND`/`KNOWLEDGE_NODE_CYCLE`/`KNOWLEDGE_FILE_INVALID`) + переиспользуемые `FORBIDDEN`/`ROLE_NOT_FOUND`/`MEMBER_NOT_FOUND`/`VALIDATION_ERROR`/`ORG_NOT_FOUND`.
 
 > **Управленческие отчёты по чек-листам (`checklist_reports`).** Новых таблиц/колонок
@@ -713,6 +767,7 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 |------|--------|------------|
 | `tasks/shifts.py` | `auto_finish_stale_shifts` — org-смены с просроченным `scheduled_end_at` по графику (work_schedules, R4; персональные смены больше НЕ авто-завершаются), `finished_at=scheduled_end_at`, `finish_reason=auto_schedule` (+ аудит `shift.auto_finish`, actor=null) | Каждые 60 сек |
 | `tasks/shifts.py` | `auto_finish_stale_pauses` — завершение просроченных пауз (+ аудит `pause.auto_finish`, actor=null) | Каждые 5 мин |
+| `tasks/shifts.py` | `finalize_expired_checklist_grace_periods` — терминальная фиксация (`pending`→`incomplete`) обязательных чек-листов завершённых смен, у которых истекло окно `checklist_grace_minutes` (`checklist_grace_period`); кандидаты — по частичному индексу `ix_checklist_instances_pending_required` | Каждые 60 сек |
 | `tasks/cleanup.py` | `cleanup_expired_tokens` — очистка протухших токенов/кодов | Ежедневно 03:00 UTC |
 | `tasks/cleanup.py` | `cleanup_orphan_files` — удаление файлов-сирот (`is_attached=false`, старше `ORPHAN_FILE_TTL_HOURS`): объект в S3 + строка | Ежечасно |
 | `tasks/subscriptions.py` | `notify_subscription_status` — **tariffs:** `subscription_expiring` за 7/3/1 день (антидубль `last_expiry_notice_days`), `subscription_suspended` однократно (сентинел `0`); получатели owner+admin | Ежедневно 08:00 UTC |

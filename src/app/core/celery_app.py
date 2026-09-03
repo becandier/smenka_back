@@ -49,6 +49,13 @@ celery_app.conf.update(
             "task": "auto_finish_stale_pauses",
             "schedule": 300.0,
         },
+        "finalize-expired-checklist-grace-periods": {
+            "task": "finalize_expired_checklist_grace_periods",
+            # 60с, как auto-finish-stale-shifts (checklist_grace_period): терминальная
+            # фиксация обязательных чек-листов по истечении окна дозаполнения без
+            # заметной задержки для отчётов.
+            "schedule": 60.0,
+        },
         "cleanup-expired-tokens": {
             "task": "cleanup_expired_tokens",
             "schedule": crontab(hour=3, minute=0),

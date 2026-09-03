@@ -10,6 +10,12 @@ from src.app.core.database import Base
 if TYPE_CHECKING:
     from src.app.models.organization import Organization
 
+# checklist_grace_period: дефолт окна дозаполнения чек-листа после закрытия
+# смены (минуты). Используется и как server_default колонки, и как фолбэк в
+# сервисном слое/Celery-задачах для организаций без строки настроек — по
+# аналогии с auto_finish_by_schedule (см. tasks/shifts.py).
+DEFAULT_CHECKLIST_GRACE_MINUTES = 30
+
 
 class OrganizationSettings(Base):
     __tablename__ = "organization_settings"
@@ -59,6 +65,12 @@ class OrganizationSettings(Base):
         Integer,
         default=0,
         server_default="0",
+    )
+    # --- checklist_grace_period ---
+    checklist_grace_minutes: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_CHECKLIST_GRACE_MINUTES,
+        server_default=str(DEFAULT_CHECKLIST_GRACE_MINUTES),
     )
 
     organization: Mapped["Organization"] = relationship(back_populates="settings")

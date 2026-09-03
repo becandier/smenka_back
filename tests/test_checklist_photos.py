@@ -454,6 +454,36 @@ class TestAttachPhoto:
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "SHIFT_FINISHED"
 
+    async def test_attach_within_grace_window(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """checklist_grace_period: привязка фото — та же операция, что и отметка
+        пункта, — разрешена, пока окно дозаполнения открыто (дефолт 30 минут)."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="required",
+        )
+        shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
+        inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
+        file_id = await _upload_photo(client, ctx["member_headers"], organization_id=ctx["org_id"])
+
+        finish_resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        assert finish_resp.status_code == 200
+
+        resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos",
+            headers=ctx["member_headers"],
+            json={"file_id": file_id},
+        )
+        assert resp.status_code == 201, resp.text
+
 
 class TestDetachPhoto:
     async def test_detach_deletes_file_and_object(
@@ -505,6 +535,46 @@ class TestDetachPhoto:
             f"/api/v1/shifts/{shift_id}/checklists", headers=ctx["member_headers"]
         )
         assert listing.json()["data"]["items"][0]["status"] == "pending"
+
+    async def test_detach_within_grace_window(
+        self,
+        client: AsyncClient,
+        super_admin_headers,
+        db_session: AsyncSession,
+        mock_storage: dict[str, bytes],
+    ):
+        """checklist_grace_period: отвязка фото разрешена, пока окно открыто —
+        привязали ДО завершения смены, отвязываем ПОСЛЕ (в пределах окна)."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="required",
+        )
+        shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
+        inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
+        file_id = await _upload_photo(client, ctx["member_headers"], organization_id=ctx["org_id"])
+        bind = await client.post(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos",
+            headers=ctx["member_headers"],
+            json={"file_id": file_id},
+        )
+        photo_id = bind.json()["data"]["id"]
+
+        finish_resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        assert finish_resp.status_code == 200
+
+        resp = await client.delete(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos/{photo_id}",
+            headers=ctx["member_headers"],
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"data": None, "error": None}
 
     async def test_detach_missing_photo(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
