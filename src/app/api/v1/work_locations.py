@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from src.app.api.deps import CurrentUserDep, SessionDep
 from src.app.models.audit_log import AuditAction, AuditResource
@@ -14,6 +14,7 @@ from src.app.schemas.checklist import (
 from src.app.schemas.work_location import (
     WorkLocationCreate,
     WorkLocationListResponse,
+    WorkLocationNearbyResponse,
     WorkLocationResponse,
     WorkLocationUpdate,
 )
@@ -27,6 +28,14 @@ if TYPE_CHECKING:
 
 router = APIRouter(
     prefix="/organizations/{org_id}/locations",
+    tags=["work-locations"],
+)
+
+# Отдельный роутер: контракт `shift_start_location_choice/backend.md` фиксирует
+# путь `.../work-locations/nearby` — не `.../locations/nearby`, чтобы не путать
+# с CRUD-эндпоинтами точек выше (там намеренно короткий сегмент `locations`).
+nearby_router = APIRouter(
+    prefix="/organizations/{org_id}/work-locations",
     tags=["work-locations"],
 )
 
@@ -237,3 +246,57 @@ async def set_location_checklist_templates(
     )
     await session.commit()
     return ApiResponse.success({"template_ids": [str(tpl_id) for tpl_id in result_ids]})
+
+
+@nearby_router.get(
+    "/nearby",
+    response_model=ApiResponse[WorkLocationNearbyResponse],
+    summary="Точки организации рядом с координатами",
+    description=(
+        "Точки, в чей радиус попадают переданные координаты, отсортированные по "
+        "возрастанию расстояния (`is_nearest=true` у первой). Пустой `items` — "
+        "штатный случай «сотрудник вне всех зон», не ошибка. `nearest_outside` — "
+        "ближайшая точка организации ВНЕ радиуса, если такая есть. Тот же расчёт "
+        "попадания в радиус, что и при `POST /shifts/start`, — список не может "
+        "разойтись с тем, что примет старт смены. Доступно владельцу, admin и "
+        "участникам организации."
+    ),
+)
+async def get_nearby_locations(
+    org_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    latitude: float = Query(ge=-90, le=90, description="Широта"),
+    longitude: float = Query(ge=-180, le=180, description="Долгота"),
+) -> ApiResponse:
+    matched, nearest_outside = await wl_service.get_nearby_work_locations(
+        session, org_id, user.id, latitude, longitude
+    )
+    return ApiResponse.success(
+        WorkLocationNearbyResponse(
+            items=[
+                {
+                    "id": str(pair.location.id),
+                    "name": pair.location.name,
+                    "address": pair.location.address,
+                    "latitude": pair.location.latitude,
+                    "longitude": pair.location.longitude,
+                    "radius_meters": pair.location.radius_meters,
+                    "distance_meters": int(pair.distance_meters),
+                    "is_nearest": index == 0,
+                }
+                for index, pair in enumerate(matched)
+            ],
+            nearest_outside=(
+                {
+                    "id": str(nearest_outside.location.id),
+                    "name": nearest_outside.location.name,
+                    "address": nearest_outside.location.address,
+                    "distance_meters": int(nearest_outside.distance_meters),
+                    "radius_meters": nearest_outside.location.radius_meters,
+                }
+                if nearest_outside is not None
+                else None
+            ),
+        ).model_dump(mode="json")
+    )
