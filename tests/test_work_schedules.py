@@ -178,6 +178,61 @@ class TestComputeScheduledWindow:
         # Номинально 8ч, реально — 7ч (час "потерян" переводом стрелок).
         assert (end - start) == timedelta(hours=7)
 
+    def test_prod_incident_long_day_schedule_second_half_stays_today(self):
+        """Регресс прод-инцидента 2026-09-03: график «Женский бар» 09:00–23:00,
+        Europe/Moscow, старт в 22:41 — плановое окно обязано остаться
+        сегодняшним (оно ещё идёт), а не завтрашним. На старом коде (выбор
+        минимумом расстояния до НАЧАЛА окна) побеждало завтрашнее: до него
+        10ч19м, а от начала сегодняшнего уже прошло 13ч41м. Из-за этого
+        `is_schedule_startable` сравнивал `now` с завтрашним `next_start_at`
+        и блокировал старт смены (`422 SCHEDULE_WINDOW_CLOSED`) прямо
+        посреди рабочего дня.
+        """
+        started = datetime(2026, 7, 20, 19, 41, tzinfo=UTC)  # 22:41 MSK
+        start, end = compute_scheduled_window(started, self.TZ_MSK, time(9, 0), time(23, 0))
+        assert start == datetime(2026, 7, 20, 6, 0, tzinfo=UTC)  # сегодня 09:00 MSK
+        assert end == datetime(2026, 7, 20, 20, 0, tzinfo=UTC)  # сегодня 23:00 MSK
+        assert is_schedule_startable(started, start, 0) is True
+
+    def test_twelve_hour_boundary_just_before_stays_today(self):
+        # 09:00-23:00, старт 20:59 (t=11ч59м от начала) -> сегодняшнее окно.
+        started = datetime(2026, 7, 20, 17, 59, tzinfo=UTC)  # 20:59 MSK
+        start, end = compute_scheduled_window(started, self.TZ_MSK, time(9, 0), time(23, 0))
+        assert start == datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+        assert end == datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+
+    def test_twelve_hour_boundary_just_after_stays_today(self):
+        # 09:00-23:00, старт 21:01 (t=12ч01м от начала) — именно здесь на
+        # старом коде расстояние до завтрашнего начала становится меньше
+        # расстояния до сегодняшнего и выбор ломается; окно обязано остаться
+        # сегодняшним.
+        started = datetime(2026, 7, 20, 18, 1, tzinfo=UTC)  # 21:01 MSK
+        start, end = compute_scheduled_window(started, self.TZ_MSK, time(9, 0), time(23, 0))
+        assert start == datetime(2026, 7, 20, 6, 0, tzinfo=UTC)
+        assert end == datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+
+    def test_night_schedule_long_duration_stays_started_yesterday_after_midnight(self):
+        """Тот же класс бага у ночных графиков длиннее 12ч (22:00-14:00, 16ч):
+        в 13:00 (через 15ч после начала) окно обязано остаться начавшимся
+        вчера в 22:00, а не «ещё не началось сегодня в 22:00»."""
+        started = datetime(2026, 7, 21, 10, 0, tzinfo=UTC)  # 13:00 MSK 21-го
+        start, end = compute_scheduled_window(started, self.TZ_MSK, time(22, 0), time(14, 0))
+        assert start == datetime(2026, 7, 20, 19, 0, tzinfo=UTC)  # вчера 22:00 MSK
+        assert end == datetime(2026, 7, 21, 11, 0, tzinfo=UTC)  # сегодня 14:00 MSK
+        assert is_schedule_startable(started, start, 0) is True
+
+    def test_early_arrival_before_long_schedule_start_unaffected(self):
+        """Ранний приход до начала длинного графика (09:00-23:00) не задет
+        фиксом: ни один кандидат ещё не содержит `started_at`, поэтому логика
+        по-прежнему падает в ветку «ближайшее будущее окно» — сегодняшнее,
+        допуск считается `early_start_minutes` как и раньше."""
+        started = datetime(2026, 7, 20, 5, 50, tzinfo=UTC)  # 08:50 MSK, за 10 мин до начала
+        start, end = compute_scheduled_window(started, self.TZ_MSK, time(9, 0), time(23, 0))
+        assert start == datetime(2026, 7, 20, 6, 0, tzinfo=UTC)  # сегодня 09:00 MSK
+        assert end == datetime(2026, 7, 20, 20, 0, tzinfo=UTC)
+        assert is_schedule_startable(started, start, 0) is False
+        assert is_schedule_startable(started, start, 15) is True
+
 
 # --- R1: резолв эффективного набора графиков (unit на сервисе) ----------------
 
