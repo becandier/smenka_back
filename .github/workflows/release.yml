@@ -1,8 +1,8 @@
 name: Release
 
 # Пуш в main / тег → собрать образ и запушить в ghcr. Деплой по SSH опционален.
-# Намеренно НЕ зависит от CI: образ должен собираться всегда, чтобы деплой был
-# предсказуемым. Линт/тесты живут в ci.yml как обратная связь на PR.
+# Образ собирается всегда (это удобно для отката), но деплой ждёт проверок:
+# job checks переиспользует checks.yml, и красные тесты не пускают код на прод.
 
 on:
   push:
@@ -14,6 +14,12 @@ permissions:
   packages: write
 
 jobs:
+  # Гейт деплоя: те же линт/типы/тесты, что и на ветках (checks.yml).
+  # Security-сканы остаются в ci.yml как обратная связь: свежая CVE в зависимости
+  # не должна блокировать выкладку хотфикса.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   build-push:
     runs-on: ubuntu-latest
     steps:
@@ -77,8 +83,9 @@ jobs:
           output-file: sbom-smenka_back.spdx.json
 
   # автодеплой по SSH — выполняется только когда явно включён переменной репозитория
+  # и только после зелёных проверок
   deploy:
-    needs: build-push
+    needs: [build-push, checks]
     runs-on: ubuntu-latest
     if: ${{ vars.DEPLOY_ENABLED == 'true' }}
     steps:
