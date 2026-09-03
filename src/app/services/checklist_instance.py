@@ -164,18 +164,47 @@ def compute_fill_window(
     grace_minutes: int,
     *,
     now: datetime | None = None,
+    already_finalized: bool = False,
 ) -> ChecklistFillWindow:
     """Активная/на паузе смена — всегда `fill_allowed=true`, `fill_deadline_at=null`.
     Завершённая — редактируемо, пока `now < finished_at + grace_minutes`;
-    `grace_minutes = 0` — окно никогда не открывается (прежнее поведение)."""
+    `grace_minutes = 0` — окно никогда не открывается (прежнее поведение).
+
+    `already_finalized=True` — терминальная фиксация (`finalize_shift_checklists`,
+    inline при `grace=0` либо Celery-задачей `finalize_expired_checklist_grace_periods`
+    по истечении окна) уже произошла для этой смены: окно закрыто БЕЗУСЛОВНО, даже
+    если пересчёт по чистому времени сказал бы иначе. Это инвариант «incomplete не
+    воскресает» — он обязан выполняться и когда деплой задним числом раздвигает
+    `checklist_grace_minutes` дефолтом на уже финализированные смены, и когда админ
+    вручную увеличивает настройку после того, как часть смен уже прошла через
+    финализацию по прежнему, меньшему окну."""
     if shift.status != ShiftStatus.finished:
         return ChecklistFillWindow(fill_allowed=True, fill_deadline_at=None)
+    if already_finalized:
+        return ChecklistFillWindow(fill_allowed=False, fill_deadline_at=None)
     if grace_minutes <= 0 or shift.finished_at is None:
         return ChecklistFillWindow(fill_allowed=False, fill_deadline_at=None)
     deadline = shift.finished_at + timedelta(minutes=grace_minutes)
     if (now or datetime.now(UTC)) < deadline:
         return ChecklistFillWindow(fill_allowed=True, fill_deadline_at=deadline)
     return ChecklistFillWindow(fill_allowed=False, fill_deadline_at=None)
+
+
+async def _shift_checklists_finalized(session: AsyncSession, shift_id: uuid.UUID) -> bool:
+    """Терминальная фиксация чек-листов смены уже произошла: хотя бы один
+    обязательный экземпляр уже несёт статус `incomplete`. Ставит его только
+    `finalize_shift_checklists` — и делает это атомарно для ВСЕХ обязательных
+    `pending`-экземпляров смены одним UPDATE, поэтому существования одной такой
+    строки достаточно, чтобы считать финализацию свершившейся для смены целиком.
+    Once true — навсегда true (никакая мутация не переводит `incomplete` обратно)."""
+    result = await session.execute(
+        select(func.count()).where(
+            ChecklistInstance.shift_id == shift_id,
+            ChecklistInstance.is_required.is_(True),
+            ChecklistInstance.status == ChecklistInstanceStatus.incomplete,
+        )
+    )
+    return result.scalar_one() > 0
 
 
 async def get_shift_fill_window(
@@ -190,12 +219,14 @@ async def get_shift_fill_window(
     if shift is None:
         return ChecklistFillWindow(fill_allowed=False, fill_deadline_at=None)
     grace_minutes = await get_checklist_grace_minutes(session, shift.organization_id)
-    return compute_fill_window(shift, grace_minutes)
+    already_finalized = await _shift_checklists_finalized(session, shift_id)
+    return compute_fill_window(shift, grace_minutes, already_finalized=already_finalized)
 
 
 async def _assert_fill_window_open(session: AsyncSession, shift: Shift) -> None:
     grace_minutes = await get_checklist_grace_minutes(session, shift.organization_id)
-    window = compute_fill_window(shift, grace_minutes)
+    already_finalized = await _shift_checklists_finalized(session, shift.id)
+    window = compute_fill_window(shift, grace_minutes, already_finalized=already_finalized)
     if not window.fill_allowed:
         raise ChecklistError(
             "SHIFT_FINISHED",
@@ -210,13 +241,17 @@ async def _reassert_fill_window_open(session: AsyncSession, shift: Shift) -> Non
     окна дозаполнения, а не только терминальный `finished`).
 
     Защита от гонки на границе окна (ТЗ): между первой проверкой и коммитом
-    либо смену мог завершить авто-финиш, либо окно могло истечь по часам.
-    Делаем свежее чтение `status` и `finished_at` (без FOR UPDATE — лок строки
-    shifts создал бы цикл с авто-финишем, который сперва лочит строки
+    либо смену мог завершить авто-финиш, либо окно могло истечь по часам, либо
+    Celery-задача `finalize_expired_checklist_grace_periods` могла успеть
+    терминально зафиксировать чек-листы смены (`_assert_fill_window_open` внутри
+    заново читает `_shift_checklists_finalized` — не полагается на устаревший
+    Python-снимок). Делаем свежее чтение `status` и `finished_at` (без FOR UPDATE —
+    лок строки shifts создал бы цикл с авто-финишем, который сперва лочит строки
     экземпляров, затем строку смены) и пересчитываем окно заново с текущим
     `now()`. Остаточное окно (мутация коммитится на волосок позже) допустимо —
     тот же trade-off, что и раньше (см. `checklist_photos/backend.md`
-    «Транзакции и гонки»)."""
+    «Транзакции и гонки»); финальная защита от воскрешения `incomplete` в этом
+    остаточном окне — терминальный guard в `_recompute_instance_status`."""
     await session.refresh(shift, attribute_names=["status", "finished_at"])
     await _assert_fill_window_open(session, shift)
 
@@ -325,14 +360,35 @@ async def _recompute_instance_status(
     satisfied = is_completed AND (photo_requirement != required OR photos_count >= 1).
     Экземпляр completed, когда нет не-satisfied ОБЯЗАТЕЛЬНЫХ пунктов; иначе pending.
     Применяется из PATCH пункта, привязки/отвязки фото. completed_at трогаем только
-    при реальной смене статуса (без лишнего churn updated_at/онлайна)."""
+    при реальной смене статуса (без лишнего churn updated_at/онлайна).
+
+    Терминальный инвариант («incomplete не воскресает»): если к моменту получения
+    блокировки строка экземпляра уже несёт `incomplete` — no-op, статус не трогаем,
+    каким бы ни оказался `blocking`. Это единственная точка, через которую проходят
+    ВСЕ мутации пункта/фото, поэтому одной проверки здесь достаточно, чтобы закрыть
+    гонку с Celery-задачей `finalize_expired_checklist_grace_periods`: она фиксирует
+    `incomplete` через `UPDATE ... WHERE status='pending'`, который блокирует те же
+    строки, что и наш `SELECT ... FOR UPDATE` ниже. Если задача успела закоммититься
+    первой (окно закрылось между `_reassert_fill_window_open` и этим вызовом), наш
+    `SELECT` дождётся её коммита и увидит уже `incomplete`; если нет — мы отработаем
+    первыми, и задаче на следующем тике будет просто нечего финализировать."""
     # Блокируем строку экземпляра до конца транзакции: конкурентные пересчёты одного
     # instance по РАЗНЫМ пунктам (PATCH vs привязка фото) иначе читают устаревший снимок
     # друг друга и статус может «застрять» в pending. Лок именно на строке instance;
-    # авто-финиш тоже сперва трогает строки экземпляров, цикла блокировок с ним нет.
-    await session.execute(
-        select(ChecklistInstance.id).where(ChecklistInstance.id == instance.id).with_for_update()
-    )
+    # авто-финиш (`auto_finish_stale_shifts`) тоже сперва трогает строки экземпляров,
+    # цикла блокировок с ним нет. Читаем `status` в том же запросе — после получения
+    # блокировки это гарантированно самое свежее закоммиченное значение.
+    locked_status = (
+        await session.execute(
+            select(ChecklistInstance.status)
+            .where(ChecklistInstance.id == instance.id)
+            .with_for_update()
+        )
+    ).scalar_one()
+    if locked_status == ChecklistInstanceStatus.incomplete:
+        instance.status = locked_status
+        return
+
     photos_count_subq = (
         select(func.count(ChecklistItemPhoto.id))
         .where(ChecklistItemPhoto.instance_item_id == ChecklistInstanceItem.id)

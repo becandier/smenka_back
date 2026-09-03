@@ -9,10 +9,12 @@ Create Date: 2026-09-03 00:00:00.000000+00:00
 организации сразу получают 30-минутное окно, `0` возвращает прежнее поведение
 (правка чек-листа завершённой смены отклоняется `SHIFT_FINISHED`).
 
-Отдельно — частичный индекс под Celery-задачу
-`finalize_expired_checklist_grace_periods`, которая финализирует статус
-обязательных чек-листов по истечении окна (пока окно открыто, они остаются
-`pending`, а не `incomplete`).
+Частичный индекс под Celery-задачу `finalize_expired_checklist_grace_periods`
+вынесен в отдельную non-transactional миграцию `d43e672a012a`
+(`CREATE INDEX CONCURRENTLY` нельзя выполнить в той же транзакции, что и
+`ADD COLUMN`, а обычный `CREATE INDEX` держит блокирующий на запись SHARE-лок
+на `checklist_instances`, которая растёт на каждый старт org-смены — на живом
+проде это неприемлемый риск).
 """
 
 from collections.abc import Sequence
@@ -36,18 +38,7 @@ def upgrade() -> None:
             server_default="30",
         ),
     )
-    op.create_index(
-        "ix_checklist_instances_pending_required",
-        "checklist_instances",
-        ["shift_id"],
-        unique=False,
-        postgresql_where=sa.text("status = 'pending' AND is_required = true"),
-    )
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_checklist_instances_pending_required",
-        table_name="checklist_instances",
-    )
     op.drop_column("organization_settings", "checklist_grace_minutes")

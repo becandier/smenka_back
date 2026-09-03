@@ -11,6 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
 from src.app.main import app
+from src.app.models.checklist import (
+    ChecklistInstance,
+    ChecklistInstanceItem,
+    ChecklistInstanceStatus,
+    ChecklistType,
+)
 from src.app.models.organization import Organization
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
@@ -1086,6 +1092,214 @@ class TestFillWindowRaceGuard:
         with pytest.raises(ChecklistError) as exc_info:
             await instance_service._reassert_fill_window_open(db_session, shift)
         assert exc_info.value.code == "SHIFT_FINISHED"
+
+
+class TestFinalizedWindowNeverReopens:
+    """checklist_grace_period, инвариант «incomplete не воскресает» (финальное
+    ревью, Находка 1 — BLOCKER): окно закрыто не только по времени, но и по факту
+    уже случившейся терминальной финализации, независимо от текущего значения
+    `checklist_grace_minutes`."""
+
+    async def test_grace_increase_after_finalization_does_not_reopen_window(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Смена завершена и терминально финализирована (grace=0 — имитирует
+        прод-состояние ДО раскатки фичи: старый код всегда финализировал сразу).
+        Последующее увеличение checklist_grace_minutes (имитирует и деплой с
+        server_default='30' задним числом, и ручное увеличение окна админом) НЕ
+        обязано открывать окно заново для уже решённого чек-листа: без гейта на
+        `already_finalized` compute_fill_window увидела бы `now < finished_at +
+        30мин` и ошибочно вернула бы fill_allowed=true, позволив PATCH пункта
+        переписать статус несмотря на уже проставленный incomplete."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"checklist_grace_minutes": 0},
+        )
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            name="Required",
+            is_required=True,
+            items=[("P1", True)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        inst_id = list_resp.json()["data"]["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        item_id = detail.json()["data"]["items"][0]["id"]
+
+        finish_resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        assert finish_resp.status_code == 200
+
+        # Терминальная фиксация уже произошла (grace=0 на момент финиша).
+        finalized_check = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        assert finalized_check.json()["data"]["items"][0]["status"] == "incomplete"
+
+        # Деплой/админ увеличивает окно задним числом.
+        settings_patch = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"checklist_grace_minutes": 30},
+        )
+        assert settings_patch.status_code == 200
+
+        # Смена завершена только что — по чистому времени новое 30-минутное окно
+        # было бы открыто. Оно обязано остаться закрытым: финализация уже состоялась.
+        list_after = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        list_data = list_after.json()["data"]
+        assert list_data["items"][0]["status"] == "incomplete"
+        assert list_data["fill_allowed"] is False
+        assert list_data["fill_deadline_at"] is None
+
+        detail_after = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        assert detail_after.json()["data"]["fill_allowed"] is False
+        assert detail_after.json()["data"]["fill_deadline_at"] is None
+
+        patch_resp = await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True, "comment": "воскресить нельзя"},
+        )
+        assert patch_resp.status_code == 400
+        assert patch_resp.json()["error"]["code"] == "SHIFT_FINISHED"
+
+        # Финальная проверка: инстанс так и остался incomplete, не «ожил».
+        final_check = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        assert final_check.json()["data"]["status"] == "incomplete"
+
+    async def test_recompute_never_revives_incomplete_lost_to_celery_race(
+        self, db_session: AsyncSession
+    ) -> None:
+        """Находка 2 — гонка «дозаполнение вплотную к границе окна против тика
+        Celery»: `_reassert_fill_window_open` проходит (окно ещё открыто, задача
+        ещё не закоммитила), но пока применяется мутация пункта, конкурентная
+        транзакция (эмулируем прямым UPDATE с synchronize_session=False — тот же
+        приём, что и в TestFillWindowRaceGuard) успевает зафиксировать терминальный
+        `incomplete` для этого же экземпляра. `_recompute_instance_status` обязана
+        под своей блокировкой (`SELECT ... FOR UPDATE`) увидеть свежий `incomplete`
+        и не переписать его обратно в `completed`, даже когда пересчитанный
+        `blocking` только что стал 0 (единственный обязательный пункт отмечен)."""
+        user = User(
+            id=uuid.uuid4(),
+            email="celery-race@example.com",
+            password_hash=hash_password("Test1234"),
+            name="Celery Race",
+            is_verified=True,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        org = Organization(name="Celery Race Org", owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+        # Намеренно без строки OrganizationSettings — берём server_default (30 минут).
+
+        shift = Shift(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            organization_id=org.id,
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC),
+        )
+        db_session.add(shift)
+        await db_session.flush()
+
+        instance = ChecklistInstance(
+            id=uuid.uuid4(),
+            shift_id=shift.id,
+            template_id=None,
+            name="Открытие",
+            type=ChecklistType.shift_start,
+            is_required=True,
+            status=ChecklistInstanceStatus.pending,
+        )
+        db_session.add(instance)
+        await db_session.flush()
+        instance_id = instance.id
+
+        item = ChecklistInstanceItem(
+            id=uuid.uuid4(),
+            instance_id=instance.id,
+            template_item_id=None,
+            text="P1",
+            is_required=True,
+            is_completed=False,
+        )
+        db_session.add(item)
+        await db_session.commit()
+
+        # Первичная проверка (то же самое, что update_instance_item делает ДО
+        # мутации пункта) проходит — окно ещё открыто, финализации ещё не было.
+        await instance_service._reassert_fill_window_open(db_session, shift)
+
+        # Пользователь отмечает последний обязательный пункт (между reassert'ом
+        # и _recompute_instance_status в update_instance_item).
+        item.is_completed = True
+        item.completed_at = datetime.now(UTC)
+        await db_session.flush()
+
+        # Эмулируем finalize_expired_checklist_grace_periods, успевшую
+        # закоммититься первой. synchronize_session=False — не обновляем Python-
+        # объект `instance`, как и было бы при truly конкурентном коммите из
+        # другого процесса/сессии (Celery-задача работает через отдельный sync
+        # engine — см. tasks/shifts.py).
+        await db_session.execute(
+            sa_update(ChecklistInstance)
+            .where(ChecklistInstance.id == instance.id)
+            .values(status=ChecklistInstanceStatus.incomplete)
+            .execution_options(synchronize_session=False)
+        )
+        await db_session.commit()
+
+        # Устаревший объект в памяти всё ещё "думает", что статус pending.
+        assert instance.status == ChecklistInstanceStatus.pending
+
+        # _recompute_instance_status обязана увидеть свежий incomplete под своей
+        # блокировкой и НЕ переписать его в completed, хотя blocking сейчас 0.
+        await instance_service._recompute_instance_status(db_session, instance)
+        await db_session.commit()
+
+        assert instance.status == ChecklistInstanceStatus.incomplete
+
+        db_session.expunge_all()
+        refreshed = (
+            await db_session.execute(
+                select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+            )
+        ).scalar_one()
+        assert refreshed.status == ChecklistInstanceStatus.incomplete
+        # completed_at не проставлен задним числом — инвариант не «дописывает»
+        # успешное завершение поверх терминального отказа.
+        assert refreshed.completed_at is None
 
 
 class TestOrganizationResponseExposesChecklistGraceMinutes:

@@ -540,6 +540,80 @@ class TestFinalizeExpiredChecklistGracePeriods:
         shift_result = await db_session.execute(select(Shift).where(Shift.id == shift_id))
         assert shift_result.scalar_one().has_incomplete_required_checklists is True
 
+    async def test_running_twice_is_idempotent(self, db_session: AsyncSession) -> None:
+        """checklist_grace_period, идемпотентность (финальное ревью, Находка 3):
+        повторный прогон задачи на тех же данных не меняет уже зафиксированный
+        результат и не падает — частичный индекс `ix_checklist_instances_pending_
+        required` исключает уже финализированный экземпляр из кандидатов
+        следующего тика (заявлено в докстроке задачи и в ADR-004, но напрямую не
+        было проверено)."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        org = _make_org(owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+
+        org_settings = OrganizationSettings(
+            id=uuid.uuid4(), organization_id=org.id, checklist_grace_minutes=30
+        )
+        db_session.add(org_settings)
+
+        shift_id = uuid.uuid4()
+        shift = Shift(
+            id=shift_id,
+            user_id=user.id,
+            organization_id=org.id,
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC) - timedelta(minutes=31),
+            has_incomplete_required_checklists=True,
+        )
+        db_session.add(shift)
+        await db_session.flush()
+        instance = _make_pending_required_instance(shift_id)
+        instance_id = instance.id
+        db_session.add(instance)
+        await db_session.commit()
+
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        after_first_run = (
+            await db_session.execute(
+                select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+            )
+        ).scalar_one()
+        assert after_first_run.status == ChecklistInstanceStatus.incomplete
+        completed_at_after_first_run = after_first_run.completed_at
+
+        shift_after_first_run = (
+            await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        ).scalar_one()
+        assert shift_after_first_run.has_incomplete_required_checklists is True
+
+        # Второй прогон на тех же данных, без каких-либо изменений между вызовами:
+        # экземпляр уже не pending -> не попадает в кандидаты (частичный индекс),
+        # задача должна быть no-op — ни статус, ни флаг не меняются, исключений нет.
+        with patch("src.app.tasks.shifts.get_sync_session", get_sync_test_session):
+            finalize_expired_checklist_grace_periods()
+
+        db_session.expire_all()
+        after_second_run = (
+            await db_session.execute(
+                select(ChecklistInstance).where(ChecklistInstance.id == instance_id)
+            )
+        ).scalar_one()
+        assert after_second_run.status == ChecklistInstanceStatus.incomplete
+        assert after_second_run.completed_at == completed_at_after_first_run
+
+        shift_after_second_run = (
+            await db_session.execute(select(Shift).where(Shift.id == shift_id))
+        ).scalar_one()
+        assert shift_after_second_run.has_incomplete_required_checklists is True
+
     async def test_window_still_open_not_finalized(self, db_session: AsyncSession) -> None:
         user = _make_user()
         db_session.add(user)
