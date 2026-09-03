@@ -98,6 +98,9 @@ services:
       # `make test`/`make lint` видели их из контейнера без пересборки образа.
       - ./tests:/app/tests
       - ./scripts:/app/scripts
+      # snapshot-тест OpenAPI читает docs/openapi.json относительно корня репозитория;
+      # без монтирования `make test` падает локально, хотя в CI тест зелёный
+      - ./docs:/app/docs:ro
     depends_on:
       db:
         condition: service_healthy
