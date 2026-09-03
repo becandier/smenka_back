@@ -6,6 +6,22 @@
 
 ---
 
+## Фича — Окно дозаполнения чек-листа после закрытия смены (`checklist_grace_period`) `[~]`
+ТЗ: `../../docs/tasks/checklist_grace_period/backend.md`  STATUS: `../../docs/tasks/checklist_grace_period/STATUS.md`  ADR: `docs/decisions/004-checklist-grace-period-deferred-finalization.md`
+- [x] `OrganizationSettings.checklist_grace_minutes` (int, 0–240, default/server_default `30`) — сколько минут после `finished_at` разрешено дозаполнять чек-листы завершённой смены; `0` = прежнее поведение (`SHIFT_FINISHED` сразу). Миграция `5856058d23ab`, обратима
+- [x] `services/checklist_instance.py`: `compute_fill_window`/`get_checklist_grace_minutes` — чистая логика окна; `_assert_fill_window_open` (гейт) и `_reassert_fill_window_open` (повторная проверка прямо перед мутацией — аналог `_reassert_shift_active`, но по границе окна) заменяют прежний терминальный `_assert_shift_active` в `update_instance_item`/`attach_photo`/`detach_photo`
+- [x] Отложенная финализация: `close_shift_checklists`/`_close_shift_checklists_sync` на финише решают — немедленный терминальный `finalize_shift_checklists` (`grace=0`) или живой снимок `_has_live_incomplete_required` (`grace>0`, экземпляры остаются `pending`); `_refresh_live_incomplete_flag` пересчитывает `Shift.has_incomplete_required_checklists` при каждой правке пункта/фото завершённой смены в течение окна
+- [x] Celery Beat `finalize_expired_checklist_grace_periods` (60 сек, как `auto_finish_stale_shifts`) — терминальная фиксация `pending → incomplete` по истечении окна; кандидаты через новый частичный индекс `ix_checklist_instances_pending_required`
+- [x] Окно распространяется на авто-завершённые смены (`auto_finish_stale_shifts`, inline auto-finish по графику) — не только на ручной `finish_shift`
+- [x] `GET .../checklists` и `.../checklists/{instance_id}` — аддитивные `fill_allowed`/`fill_deadline_at` (null для активной смены и для закрытого окна); `GET`/`PATCH /organizations/{id}/settings` читают/пишут `checklist_grace_minutes`
+- [x] Формулировка `SHIFT_FINISHED` уточнена: «время на дозаполнение чек-листа истекло» вместо «нельзя редактировать завершённую смену»; новых кодов ошибок нет
+- [x] Дополнение к ТЗ («Длительность окна — рядовому сотруднику»): `checklist_grace_minutes` дополнительно денормализован (nullable, additive) в `OrganizationResponse` (`GET /organizations`/`{id}`/`all`, `_org_to_response`) — тот же паттерн, что и `overtime_request_days`, чтобы employee (без доступа к `/settings`) знал длительность окна для диалога завершения смены
+- [x] `docs/openapi.json` точечно обновлён (только затронутые компоненты — `ChecklistInstanceListResponse`/`ChecklistInstanceDetailResponse`/`OrganizationSettingsUpdate`); `OrganizationResponse`/`OrganizationSettingsResponse` в спеке не участвуют вовсе (эндпоинты возвращают их без типизированного `response_model`) — патчить нечего
+- [x] 23 новых/переработанных теста (`test_checklist_instances.py`, `test_checklist_photos.py`, `test_organization_settings.py`, `test_tasks.py`): окно открыто/закрыто/отключено (`grace=0`), авто-финиш (inline + Celery) открывает окно, `has_incomplete_required_checklists` сходится к `false` после дозаполнения, финализация по истечении окна (Celery-задача, 4 сценария), граница окна перед мутацией (реассерт ловит гонку), `fill_allowed`/`fill_deadline_at` в трёх состояниях, привязка/отвязка фото в окне, границы `checklist_grace_minutes` (0/240/вне диапазона/нецелое), `checklist_grace_minutes` в `OrganizationResponse` (default/обновление/read-only/без строки настроек)
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Таймзона организации в контракте смены (`shift_timezone_display`) `[x]`
 ТЗ: `../../docs/tasks/shift_timezone_display/backend.md`  STATUS: `../../docs/tasks/shift_timezone_display/STATUS.md`
 - [x] `ShiftResponse.organization_timezone` — nullable IANA-контекст: организация получает текущую зону, персональная смена — `null`

@@ -3,14 +3,19 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.security import hash_password
 from src.app.main import app
+from src.app.models.organization import Organization
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User
+from src.app.services import checklist_instance as instance_service
+from src.app.services.checklist_template import ChecklistError
 
 
 async def _create_user(
@@ -518,10 +523,17 @@ class TestItemUpdates:
         assert final_resp.json()["data"]["status"] == "completed"
         assert final_resp.json()["data"]["completed_at"] is not None
 
-    async def test_cannot_edit_finished_shift(
+    async def test_cannot_edit_finished_shift_with_grace_disabled(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
+        """checklist_grace_period: `checklist_grace_minutes=0` — прежнее поведение,
+        окно не открывается вовсе."""
         ctx = await _setup(client, db_session, super_admin_headers)
+        await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"checklist_grace_minutes": 0},
+        )
         await _make_template_with_items(
             client,
             super_admin_headers,
@@ -556,6 +568,104 @@ class TestItemUpdates:
         )
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "SHIFT_FINISHED"
+
+    async def test_can_edit_finished_shift_within_grace_window(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """checklist_grace_period: организация с дефолтным окном (30 минут) — PATCH
+        пункта завершённой смены проходит, пока окно открыто."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            items=[("P1", False)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        inst_id = list_resp.json()["data"]["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        item_id = detail.json()["data"]["items"][0]["id"]
+
+        await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        resp = await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True, "comment": "дозаполнено в окне"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["is_completed"] is True
+
+    async def test_cannot_edit_after_grace_window_elapsed(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """checklist_grace_period: окно посчитано от фактического `finished_at`;
+        по истечении — прежний отказ SHIFT_FINISHED."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            items=[("P1", False)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        inst_id = list_resp.json()["data"]["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        item_id = detail.json()["data"]["items"][0]["id"]
+
+        await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        shift_row = (
+            await db_session.execute(select(Shift).where(Shift.id == uuid.UUID(shift_id)))
+        ).scalar_one()
+        # Дефолтное окно — 30 минут; отодвигаем finished_at так, чтобы оно уже истекло.
+        shift_row.finished_at = datetime.now(UTC) - timedelta(minutes=31)
+        await db_session.commit()
+
+        resp = await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True, "comment": None},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "SHIFT_FINISHED"
+
+        # Третье состояние контракта: окно закрылось -> fill_allowed=false,
+        # fill_deadline_at=null (не отдаём прошедший дедлайн).
+        list_after = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        assert list_after.json()["data"]["fill_allowed"] is False
+        assert list_after.json()["data"]["fill_deadline_at"] is None
 
     async def test_non_owner_cannot_edit(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
@@ -593,10 +703,17 @@ class TestItemUpdates:
 
 
 class TestFinalize:
-    async def test_finish_marks_incomplete_required(
+    async def test_finish_marks_incomplete_required_when_grace_disabled(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
+        """checklist_grace_minutes=0 — прежнее поведение: терминальный incomplete
+        сразу на финише."""
         ctx = await _setup(client, db_session, super_admin_headers)
+        await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"checklist_grace_minutes": 0},
+        )
         await _make_template_with_items(
             client,
             super_admin_headers,
@@ -634,6 +751,77 @@ class TestFinalize:
         by_name = {i["name"]: i for i in list_resp.json()["data"]["items"]}
         assert by_name["Required"]["status"] == "incomplete"
         assert by_name["Optional"]["status"] == "pending"
+        assert list_resp.json()["data"]["fill_allowed"] is False
+        assert list_resp.json()["data"]["fill_deadline_at"] is None
+
+    async def test_finish_with_grace_window_keeps_pending_until_filled(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """checklist_grace_period, окно по умолчанию (30 минут): сразу после финиша
+        обязательный экземпляр остаётся `pending` (судьба ещё не решена),
+        `has_incomplete_required_checklists` — живой снимок (True, пункт не закрыт),
+        `fill_allowed=true`/`fill_deadline_at` заполнен. После дозаполнения
+        последнего обязательного пункта флаг становится False, статус — completed."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            name="Required",
+            is_required=True,
+            items=[("P1", True)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        finish_resp = await client.post(
+            f"/api/v1/shifts/{shift_id}/finish",
+            headers=ctx["member_headers"],
+        )
+        assert finish_resp.status_code == 200
+        assert finish_resp.json()["data"]["has_incomplete_required_checklists"] is True
+
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        list_data = list_resp.json()["data"]
+        by_name = {i["name"]: i for i in list_data["items"]}
+        assert by_name["Required"]["status"] == "pending"
+        assert list_data["fill_allowed"] is True
+        assert list_data["fill_deadline_at"] is not None
+
+        inst_id = list_data["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        assert detail.json()["data"]["fill_allowed"] is True
+        assert detail.json()["data"]["fill_deadline_at"] is not None
+        item_id = detail.json()["data"]["items"][0]["id"]
+
+        patch_resp = await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True, "comment": None},
+        )
+        assert patch_resp.status_code == 200
+
+        list_after = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        by_name_after = {i["name"]: i for i in list_after.json()["data"]["items"]}
+        assert by_name_after["Required"]["status"] == "completed"
+
+        shift_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}",
+            headers=ctx["member_headers"],
+        )
+        assert shift_resp.json()["data"]["has_incomplete_required_checklists"] is False
 
     async def test_finish_no_required_no_flag(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
@@ -737,3 +925,237 @@ class TestAutoFinishIntegration:
         await db_session.refresh(shift_row)
         assert shift_row.status == ShiftStatus.finished
         assert shift_row.has_incomplete_required_checklists is True
+
+    async def test_inline_auto_finish_opens_grace_window(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """checklist_grace_period: авто-завершённая смена тоже получает окно
+        (дефолт 30 минут) — экземпляр остаётся pending, а не терминально
+        incomplete, и дозаполнение через API проходит. Плановое окончание —
+        всего пару минут в прошлом, чтобы окно (30 минут от фактического
+        finished_at) было ещё открыто на момент проверки."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            is_required=True,
+            items=[("P1", True)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        shift_uuid = uuid.UUID(shift_id)
+
+        shift_row = (
+            await db_session.execute(select(Shift).where(Shift.id == shift_uuid))
+        ).scalar_one()
+        shift_row.started_at = datetime.now(UTC) - timedelta(hours=2)
+        shift_row.scheduled_start_at = datetime.now(UTC) - timedelta(hours=2)
+        shift_row.scheduled_end_at = datetime.now(UTC) - timedelta(minutes=2)
+        await db_session.commit()
+
+        # Starting another shift triggers inline auto-finish
+        await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={},
+        )
+
+        await db_session.refresh(shift_row)
+        assert shift_row.status == ShiftStatus.finished
+        assert shift_row.has_incomplete_required_checklists is True
+
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        list_data = list_resp.json()["data"]
+        assert list_data["items"][0]["status"] == "pending"
+        assert list_data["fill_allowed"] is True
+        assert list_data["fill_deadline_at"] is not None
+
+        inst_id = list_data["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        item_id = detail.json()["data"]["items"][0]["id"]
+        patch_resp = await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True, "comment": None},
+        )
+        assert patch_resp.status_code == 200
+
+
+class TestFillWindowContract:
+    async def test_fill_window_fields_for_active_shift(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Для активной смены fill_allowed=true, fill_deadline_at=null — окно не
+        применяется, пока смена не завершена."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template_with_items(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            items=[("P1", True)],
+        )
+        shift_id = await _start_org_shift(
+            client,
+            ctx["member_headers"],
+            ctx["org_id"],
+        )
+        list_resp = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists",
+            headers=ctx["member_headers"],
+        )
+        data = list_resp.json()["data"]
+        assert data["fill_allowed"] is True
+        assert data["fill_deadline_at"] is None
+
+        inst_id = data["items"][0]["id"]
+        detail = await client.get(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}",
+            headers=ctx["member_headers"],
+        )
+        assert detail.json()["data"]["fill_allowed"] is True
+        assert detail.json()["data"]["fill_deadline_at"] is None
+
+
+class TestFillWindowRaceGuard:
+    async def test_reassert_catches_window_closed_between_checks(
+        self, db_session: AsyncSession, super_admin_headers, client: AsyncClient
+    ):
+        """checklist_grace_period, граница окна: решение принимается по времени
+        начала обработки запроса, но `_reassert_fill_window_open` перечитывает
+        `status`/`finished_at` заново перед мутацией — этим он ловит смену,
+        которую окно закрыло уже ПОСЛЕ первичной проверки (например, конкурентный
+        auto-finish/другая вкладка). Без него мутация бы проскочила на устаревших
+        Python-атрибутах уже загруженного объекта."""
+        user = User(
+            id=uuid.uuid4(),
+            email="race-guard@example.com",
+            password_hash=hash_password("Test1234"),
+            name="Race Guard",
+            is_verified=True,
+        )
+        db_session.add(user)
+        await db_session.flush()
+
+        org = Organization(name="Race Org", owner_id=user.id)
+        db_session.add(org)
+        await db_session.flush()
+        # Намеренно без строки OrganizationSettings — берём server_default (30 минут).
+
+        shift = Shift(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            organization_id=org.id,
+            status=ShiftStatus.finished,
+            finished_at=datetime.now(UTC),
+        )
+        db_session.add(shift)
+        await db_session.commit()
+
+        # Первичная проверка проходит: смена только что завершена, окно (30 минут) открыто.
+        await instance_service._assert_fill_window_open(db_session, shift)
+
+        # Симулируем конкурентное завершение окна: другая транзакция отодвинула
+        # finished_at в прошлое настолько, что окно уже истекло.
+        # synchronize_session=False — не обновляем Python-атрибуты уже загруженного
+        # `shift` в памяти, как это и происходило бы при труъ-конкурентном коммите
+        # из другого процесса/сессии.
+        await db_session.execute(
+            sa_update(Shift)
+            .where(Shift.id == shift.id)
+            .values(finished_at=datetime.now(UTC) - timedelta(minutes=31))
+            .execution_options(synchronize_session=False)
+        )
+        await db_session.commit()
+
+        # Устаревший объект в памяти всё ещё "думает", что окно открыто.
+        assert instance_service.compute_fill_window(shift, 30).fill_allowed is True
+
+        # Реассерт перечитывает status/finished_at из БД и ловит закрытое окно.
+        with pytest.raises(ChecklistError) as exc_info:
+            await instance_service._reassert_fill_window_open(db_session, shift)
+        assert exc_info.value.code == "SHIFT_FINISHED"
+
+
+class TestOrganizationResponseExposesChecklistGraceMinutes:
+    """Дополнение к ТЗ (раздел «Длительность окна — рядовому сотруднику»):
+    `checklist_grace_minutes` денормализуется в `OrganizationResponse` по тому
+    же прецеденту, что и `overtime_request_days` (см. `test_overtime.py`,
+    `TestOrganizationResponseExposesOvertimeRequestDays`) — employee не имеет
+    доступа к `/settings`, но должен знать длительность окна, чтобы диалог
+    завершения смены показал, сколько времени останется на дозаполнение."""
+
+    async def test_employee_sees_default_value_in_org_detail(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup(client, db_session, super_admin_headers)
+        resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}", headers=ctx["member_headers"]
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["checklist_grace_minutes"] == 30
+
+    async def test_employee_sees_value_in_org_list(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup(client, db_session, super_admin_headers)
+        resp = await client.get("/api/v1/organizations", headers=ctx["member_headers"])
+        assert resp.status_code == 200
+        items = resp.json()["data"]["items"]
+        target = next(i for i in items if i["id"] == ctx["org_id"])
+        assert target["checklist_grace_minutes"] == 30
+
+    async def test_value_reflects_settings_update_and_is_read_only(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup(client, db_session, super_admin_headers)
+        patch_resp = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/settings",
+            headers=super_admin_headers,
+            json={"checklist_grace_minutes": 0},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["data"]["checklist_grace_minutes"] == 0
+
+        detail_resp = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}", headers=ctx["member_headers"]
+        )
+        assert detail_resp.json()["data"]["checklist_grace_minutes"] == 0
+
+        # Поле read-only в OrganizationResponse — попытка передать его через
+        # PATCH /organizations/{id} (не /settings) молча игнорируется схемой.
+        rename_resp = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}",
+            headers=super_admin_headers,
+            json={"name": "Renamed Org", "checklist_grace_minutes": 120},
+        )
+        assert rename_resp.status_code == 200
+        assert rename_resp.json()["data"]["checklist_grace_minutes"] == 0
+
+    async def test_default_thirty_when_settings_record_missing(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        super_admin_headers,
+        super_admin_user,
+    ):
+        organization = Organization(name="No Settings Org", owner_id=super_admin_user.id)
+        db_session.add(organization)
+        await db_session.commit()
+
+        resp = await client.get(
+            f"/api/v1/organizations/{organization.id}", headers=super_admin_headers
+        )
+        assert resp.status_code == 200
+        assert resp.json()["data"]["checklist_grace_minutes"] == 30

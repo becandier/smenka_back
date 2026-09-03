@@ -8,6 +8,7 @@ from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
 from src.app.api.v1.checklist_instances import _org_instance_row_to_response
 from src.app.api.v1.shifts import _shift_to_response
 from src.app.models.audit_log import AuditAction, AuditResource
+from src.app.models.organization_settings import DEFAULT_CHECKLIST_GRACE_MINUTES
 from src.app.models.user import UserRole
 from src.app.schemas.audit import AuditLogEntry, AuditLogListResponse
 from src.app.schemas.base import ApiResponse
@@ -67,6 +68,12 @@ def _org_to_response(
     overtime_request_days = (
         org.settings.overtime_request_days if org.settings else DEFAULT_OVERTIME_REQUEST_DAYS
     )
+    # checklist_grace_period: денормализовано по тому же прецеденту, что и
+    # overtime_request_days выше — employee не имеет доступа к /settings, но
+    # должен знать длительность окна (диалог завершения смены).
+    checklist_grace_minutes = (
+        org.settings.checklist_grace_minutes if org.settings else DEFAULT_CHECKLIST_GRACE_MINUTES
+    )
     custom_role_payload = None
     if my_custom_role is not None:
         custom_role_payload = {
@@ -85,6 +92,7 @@ def _org_to_response(
         require_work_location=require_work_location,
         timezone=org.timezone,
         overtime_request_days=overtime_request_days,
+        checklist_grace_minutes=checklist_grace_minutes,
         created_at=org.created_at,
         my_role=my_role,
         my_custom_role=custom_role_payload,
@@ -683,6 +691,7 @@ def _settings_to_response(s: "OrganizationSettings") -> dict[str, Any]:
         late_tolerance_minutes=s.late_tolerance_minutes,
         overtime_request_days=s.overtime_request_days,
         early_start_minutes=s.early_start_minutes,
+        checklist_grace_minutes=s.checklist_grace_minutes,
     ).model_dump()
 
 

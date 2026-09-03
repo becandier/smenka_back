@@ -57,6 +57,15 @@ class OrganizationResponse(BaseModel):
         "денормализовано из OrganizationSettings, чтобы employee (без доступа к /settings) "
         "мог скрыть кнопку подачи заявки после истечения срока"
     )
+    checklist_grace_minutes: int | None = Field(
+        default=None,
+        description="Окно дозаполнения чек-листа после закрытия смены в минутах "
+        "(checklist_grace_period), read-only — денормализовано из OrganizationSettings "
+        "по тому же прецеденту, что и overtime_request_days: employee (без доступа к "
+        "/settings) должен знать длительность окна, чтобы диалог завершения смены "
+        "показал, сколько времени останется на дозаполнение. Additive-поле — "
+        "старые клиенты игнорируют.",
+    )
     created_at: datetime = Field(description="Дата создания")
     my_role: str | None = Field(
         default=None,

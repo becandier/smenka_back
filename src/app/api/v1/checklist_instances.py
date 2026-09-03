@@ -187,9 +187,12 @@ async def list_shift_checklists(
 ) -> ApiResponse:
     rows = await instance_service.get_shift_checklists(session, shift_id, user.id)
     organization_timezone = await _shift_organization_timezone(session, shift_id)
+    fill_window = await instance_service.get_shift_fill_window(session, shift_id)
     return ApiResponse.success(
         ChecklistInstanceListResponse(
             organization_timezone=organization_timezone,
+            fill_allowed=fill_window.fill_allowed,
+            fill_deadline_at=fill_window.fill_deadline_at,
             items=[
                 _instance_to_response(inst, total, completed, satisfied, missing)
                 for inst, total, completed, satisfied, missing in rows
@@ -218,6 +221,11 @@ async def get_instance(
     )
     detail = await _instance_detail_to_response(instance)
     detail["organization_timezone"] = await _shift_organization_timezone(session, shift_id)
+    fill_window = await instance_service.get_shift_fill_window(session, shift_id)
+    detail["fill_allowed"] = fill_window.fill_allowed
+    detail["fill_deadline_at"] = (
+        fill_window.fill_deadline_at.isoformat() if fill_window.fill_deadline_at else None
+    )
     return ApiResponse.success(detail)
 
 
@@ -225,7 +233,7 @@ async def get_instance(
     "/{instance_id}/items/{item_id}",
     summary="Обновить пункт",
     description="Отметить/снять пункт и добавить комментарий. Только владелец смены, "
-    "только пока смена активна.",
+    "пока открыто окно (активна или завершена в пределах checklist_grace_minutes).",
 )
 async def update_item(
     shift_id: uuid.UUID,
@@ -256,7 +264,7 @@ async def update_item(
     status_code=201,
     summary="Привязать фото к пункту",
     description="Привязывает ранее загруженный файл checklist_photo к пункту-экземпляру. "
-    "Только владелец активной смены.",
+    "Только владелец смены, пока открыто окно (checklist_grace_period).",
 )
 async def add_photo(
     shift_id: uuid.UUID,
@@ -286,7 +294,7 @@ async def add_photo(
     "/{instance_id}/items/{item_id}/photos/{photo_id}",
     summary="Отвязать и удалить фото",
     description="Снимает привязку, удаляет объект из storage и строку файла. "
-    "Только владелец активной смены.",
+    "Только владелец смены, пока открыто окно (checklist_grace_period).",
 )
 async def remove_photo(
     shift_id: uuid.UUID,

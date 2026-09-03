@@ -324,7 +324,7 @@ async def _auto_finish_stale_for_user(
     from src.app.models.audit_log import AuditAction, AuditResource
     from src.app.models.organization_settings import OrganizationSettings
     from src.app.services import audit as audit_service
-    from src.app.services.checklist_instance import finalize_shift_checklists
+    from src.app.services.checklist_instance import close_shift_checklists
 
     now = datetime.now(UTC)
     result = await session.execute(
@@ -360,7 +360,7 @@ async def _auto_finish_stale_for_user(
         if not auto_finish_enabled:
             continue
 
-        has_incomplete = await finalize_shift_checklists(session, shift.id)
+        has_incomplete = await close_shift_checklists(session, shift.id, shift.organization_id)
         shift.has_incomplete_required_checklists = has_incomplete
 
         finish_at = shift.scheduled_end_at
@@ -1042,14 +1042,14 @@ async def finish_shift(
     user_id: uuid.UUID,
 ) -> Shift:
     """Finish an active or paused shift."""
-    from src.app.services.checklist_instance import finalize_shift_checklists
+    from src.app.services.checklist_instance import close_shift_checklists
 
     shift = await _get_shift_with_pauses(session, shift_id, user_id)
 
     if shift.status == ShiftStatus.finished:
         raise ShiftError("SHIFT_ALREADY_FINISHED", "Смена уже завершена", 400)
 
-    has_incomplete = await finalize_shift_checklists(session, shift.id)
+    has_incomplete = await close_shift_checklists(session, shift.id, shift.organization_id)
     shift.has_incomplete_required_checklists = has_incomplete
 
     for pause in shift.pauses:

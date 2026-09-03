@@ -10,15 +10,33 @@ from src.app.core.database import get_sync_session
 from src.app.core.logging import get_logger
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.checklist import ChecklistInstance, ChecklistInstanceStatus
-from src.app.models.organization_settings import OrganizationSettings
+from src.app.models.organization_settings import (
+    DEFAULT_CHECKLIST_GRACE_MINUTES,
+    OrganizationSettings,
+)
 from src.app.models.shift import Shift, ShiftFinishReason, ShiftStatus
 from src.app.services import audit as audit_service
 
 logger = get_logger(__name__)
 
 
+def _has_live_incomplete_required_sync(session: Session, shift_id: uuid.UUID) -> bool:
+    """Sync-версия checklist_instance._has_live_incomplete_required: есть ли у
+    смены обязательный экземпляр, ещё не completed (pending — окно ещё
+    открыто, incomplete — уже терминально зафиксирован)."""
+    result = session.execute(
+        select(func.count()).where(
+            ChecklistInstance.shift_id == shift_id,
+            ChecklistInstance.is_required.is_(True),
+            ChecklistInstance.status != ChecklistInstanceStatus.completed,
+        )
+    )
+    return result.scalar_one() > 0
+
+
 def _finalize_shift_checklists_sync(session: Session, shift_id: uuid.UUID) -> bool:
-    """Sync version of checklist_instance.finalize_shift_checklists.
+    """Sync-версия checklist_instance.finalize_shift_checklists: терминально
+    зафиксировать незакрытые обязательные pending → incomplete.
 
     Returns True if the shift now has incomplete required checklists.
     """
@@ -31,14 +49,21 @@ def _finalize_shift_checklists_sync(session: Session, shift_id: uuid.UUID) -> bo
         )
         .values(status=ChecklistInstanceStatus.incomplete)
     )
-    result = session.execute(
-        select(func.count()).where(
-            ChecklistInstance.shift_id == shift_id,
-            ChecklistInstance.status == ChecklistInstanceStatus.incomplete,
-            ChecklistInstance.is_required.is_(True),
-        )
-    )
-    return result.scalar_one() > 0
+    return _has_live_incomplete_required_sync(session, shift_id)
+
+
+def _close_shift_checklists_sync(
+    session: Session,
+    shift_id: uuid.UUID,
+    grace_minutes: int,
+) -> bool:
+    """Sync-версия checklist_instance.close_shift_checklists (checklist_grace_period):
+    вызывается при завершении смены (авто-финиш по графику). `grace_minutes <= 0` —
+    прежнее поведение, терминальная фиксация сразу; иначе экземпляры остаются
+    `pending` (окно дозаполнения открыто), а возвращается live-снимок."""
+    if grace_minutes <= 0:
+        return _finalize_shift_checklists_sync(session, shift_id)
+    return _has_live_incomplete_required_sync(session, shift_id)
 
 
 @celery_app.task(name="auto_finish_stale_shifts")
@@ -77,7 +102,13 @@ def auto_finish_stale_shifts() -> None:
                 stale.append(shift)
 
         for shift in stale:
-            has_incomplete = _finalize_shift_checklists_sync(session, shift.id)
+            org_s = all_org_settings.get(cast(uuid.UUID, shift.organization_id))
+            grace_minutes = (
+                org_s.checklist_grace_minutes
+                if org_s is not None
+                else DEFAULT_CHECKLIST_GRACE_MINUTES
+            )
+            has_incomplete = _close_shift_checklists_sync(session, shift.id, grace_minutes)
             shift.has_incomplete_required_checklists = has_incomplete
 
             finish_at = shift.scheduled_end_at
@@ -108,6 +139,88 @@ def auto_finish_stale_shifts() -> None:
 
         if stale:
             logger.info("stale_shifts_finished", count=len(stale))
+
+
+@celery_app.task(name="finalize_expired_checklist_grace_periods")
+def finalize_expired_checklist_grace_periods() -> None:
+    """Терминальная фиксация чек-листов по истечении окна дозаполнения
+    (checklist_grace_period).
+
+    `finish_shift`/`auto_finish_stale_shifts`/inline-авто-финиш (см.
+    `close_shift_checklists`) при `checklist_grace_minutes > 0` намеренно НЕ
+    переводят незакрытые обязательные экземпляры в терминальный `incomplete` —
+    они остаются `pending`, дозаполнение разрешено. Эта задача (расписание —
+    как у `auto_finish_stale_shifts`, раз в минуту) находит завершённые смены,
+    у которых окно `checklist_grace_minutes` истекло, и фиксирует статус так
+    же, как `finalize_shift_checklists` при мгновенном (grace=0) завершении.
+
+    Идемпотентна: после фиксации ни один экземпляр не остаётся pending, смена
+    выпадает из кандидатов на следующем прогоне (частичный индекс
+    `ix_checklist_instances_pending_required`).
+    """
+    with get_sync_session() as session:
+        now = datetime.now(UTC)
+
+        candidate_shift_ids = list(
+            session.execute(
+                select(ChecklistInstance.shift_id)
+                .where(
+                    ChecklistInstance.status == ChecklistInstanceStatus.pending,
+                    ChecklistInstance.is_required.is_(True),
+                )
+                .distinct()
+            )
+            .scalars()
+            .all()
+        )
+        if not candidate_shift_ids:
+            return
+
+        shifts = list(
+            session.execute(
+                select(Shift).where(
+                    Shift.id.in_(candidate_shift_ids),
+                    Shift.status == ShiftStatus.finished,
+                    Shift.is_deleted.is_(False),
+                    Shift.finished_at.isnot(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not shifts:
+            return
+
+        org_ids = {s.organization_id for s in shifts if s.organization_id is not None}
+        settings_map: dict[uuid.UUID, OrganizationSettings] = {}
+        if org_ids:
+            settings_result = session.execute(
+                select(OrganizationSettings).where(
+                    OrganizationSettings.organization_id.in_(org_ids)
+                )
+            )
+            settings_map = {s.organization_id: s for s in settings_result.scalars().all()}
+
+        finalized = 0
+        for shift in shifts:
+            if shift.organization_id is None or shift.finished_at is None:
+                continue  # narrowing для mypy — уже отфильтровано в WHERE
+            org_s = settings_map.get(shift.organization_id)
+            grace_minutes = (
+                org_s.checklist_grace_minutes
+                if org_s is not None
+                else DEFAULT_CHECKLIST_GRACE_MINUTES
+            )
+            deadline = shift.finished_at + timedelta(minutes=grace_minutes)
+            if now < deadline:
+                continue  # окно ещё открыто
+
+            has_incomplete = _finalize_shift_checklists_sync(session, shift.id)
+            shift.has_incomplete_required_checklists = has_incomplete
+            finalized += 1
+
+        if finalized:
+            logger.info("checklist_grace_periods_finalized", count=finalized)
 
 
 @celery_app.task(name="auto_finish_stale_pauses")

@@ -202,6 +202,17 @@ class ChecklistInstanceListResponse(BaseModel):
         default=None,
         description="Текущая IANA-таймзона организации смены; null для персональной смены",
     )
+    fill_allowed: bool = Field(
+        default=True,
+        description="Можно ли сейчас редактировать чек-листы смены "
+        "(checklist_grace_period): true для активной смены и для завершённой "
+        "в открытом окне дозаполнения, false после его истечения",
+    )
+    fill_deadline_at: datetime | None = Field(
+        default=None,
+        description="Момент закрытия окна дозаполнения в UTC; null для активной "
+        "смены или уже закрытого окна (checklist_grace_period)",
+    )
 
 
 class PhotoResponse(BaseModel):
@@ -248,6 +259,17 @@ class ChecklistInstanceDetailResponse(BaseModel):
     organization_timezone: str | None = Field(
         default=None,
         description="Текущая IANA-таймзона организации смены; null для персональной смены",
+    )
+    fill_allowed: bool = Field(
+        default=True,
+        description="Можно ли сейчас редактировать чек-лист смены (checklist_grace_period): "
+        "true для активной смены и для завершённой в открытом окне дозаполнения, "
+        "false после его истечения",
+    )
+    fill_deadline_at: datetime | None = Field(
+        default=None,
+        description="Момент закрытия окна дозаполнения в UTC; null для активной "
+        "смены или уже закрытого окна (checklist_grace_period)",
     )
 
 
