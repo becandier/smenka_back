@@ -26,8 +26,8 @@ from src.app.api.v1.plans import router as plans_router
 from src.app.api.v1.shifts import router as shifts_router
 from src.app.api.v1.subscriptions import router as subscription_router
 from src.app.api.v1.users import router as users_router
-from src.app.api.v1.work_locations import nearby_router as work_locations_nearby_router
 from src.app.api.v1.work_locations import router as work_locations_router
+from src.app.api.v1.work_locations_nearby import router as work_locations_nearby_router
 from src.app.api.v1.work_schedules import router as work_schedules_router
 
 router = APIRouter(prefix="/v1")
