@@ -18,7 +18,8 @@
 | `{org_id}/shifts` list/detail | те же | текущая `Organization.timezone` и дублирующее поле строки | переиспользуется уже загруженная организация |
 | manual shift / schedule change | те же | `organization_timezone` строки | один запрос зоны по route org |
 | `/shifts/{shift_id}/checklists` list/detail | `created_at`, `completed_at`, item/photo `completed_at`/`captured_at`/`url_expires_at` | верхнее `organization_timezone`; `null` у персональной смены | один запрос shift→org и один запрос зоны, не по item/photo |
-| org-scoped checklist registry, штрафы, корректировки, ставки/payroll, employee tests | их организационные моменты | `{org_id}`-контекст уже загруженной организации | один org-context на endpoint; строковый дубль не нужен |
+| org-scoped checklist registry, штрафы, корректировки, ставки/payroll, employee tests (`/organizations/{org_id}/...`, `employee_tests.py`) | их организационные моменты | `{org_id}`-контекст уже загруженной организации | один org-context на endpoint; строковый дубль не нужен |
+| `/my/test-assignments`, `/my/test-assignments/{id}`, `/my/test-attempts/{id}` (`my_tests.py`, сотрудник — НЕ scoped по `{org_id}`, смешивает организации) | `due_at`, `started_at`, `submitted_at` | построчный `organization_timezone` на каждом `MyTestAssignmentOut`/`MyAttemptDetail` | список — один batch по уникальным `template.organization_id`; деталь назначения/попытки — один запрос зоны на ответ |
 
 Предыдущее обновление: 2026-09-01 (shift_history_scope — фильтр контекста в истории
 смен): `GET /shifts` и `GET /shifts/stats` получили два новых query-параметра —
