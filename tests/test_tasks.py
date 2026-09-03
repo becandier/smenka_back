@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, sessionmaker
@@ -31,6 +32,11 @@ from src.app.tasks.shifts import (
 )
 
 settings = get_settings()
+
+# Все тесты модуля гоняют Celery-таски через отдельное синхронное подключение
+# (get_sync_test_session ниже) — db_session должен коммитить по-настоящему,
+# иначе таска не увидит данных теста. См. tests/conftest.py::db_session.
+pytestmark = pytest.mark.db_real_commit
 
 TEST_DATABASE_URL_SYNC = (
     f"postgresql://{settings.postgres_user}:{settings.postgres_password}"

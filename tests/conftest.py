@@ -132,19 +132,34 @@ def test_session_factory(test_engine):
     return async_sessionmaker(test_engine, expire_on_commit=False)
 
 
-@pytest.fixture(autouse=True)
-async def _cleanup_tables(test_session_factory):
-    """Truncate all tables after each test for isolation.
+# Маркер для тестов, которым SAVEPOINT-изоляция не подходит (см. docstring
+# db_session ниже) — зарегистрирован в pyproject.toml [tool.pytest.ini_options].
+REAL_COMMIT_MARKER = "db_real_commit"
 
-    `plans`/`billing_periods` — исключение: статичные справочники, в проде
-    живут только миграцией и не трогаются рантаймом — как и в проде, в
-    тестах сидируются один раз на сессию (`_seed_plans`/`_seed_billing_periods`)
-    и не участвуют в per-test truncate, иначе следующий же тест не смог бы
-    создать организацию (FK `subscriptions.plan_code`) или оплатить
-    продление (FK `payments.plan_code`, `billing_periods.months` в
+
+@pytest.fixture(autouse=True)
+async def _cleanup_tables(request: pytest.FixtureRequest, test_session_factory):
+    """TRUNCATE после теста — только для тестов с `@pytest.mark.db_real_commit`.
+
+    Раньше это была общая зачистка после КАЖДОГО теста (десятки TRUNCATE на
+    каждый из 1000+ тестов). Теперь для подавляющего большинства тестов
+    изоляцию даёт сам `db_session` — откатом внешней транзакции, чистить
+    после него нечего. TRUNCATE остаётся только для тестов, которым
+    savepoint не подходит (см. `db_session`): они коммитят по-настоящему,
+    и это надо реально смыть перед следующим тестом.
+
+    `plans`/`billing_periods` — исключение и для этого пути: статичные
+    справочники, в проде живут только миграцией и не трогаются рантаймом —
+    как и в проде, в тестах сидируются один раз на сессию
+    (`_seed_plans`/`_seed_billing_periods`) и не участвуют в per-test
+    truncate, иначе следующий же тест не смог бы создать организацию (FK
+    `subscriptions.plan_code`) или оплатить продление (FK
+    `payments.plan_code`, `billing_periods.months` в
     `_get_active_billing_period`).
     """
     yield
+    if request.node.get_closest_marker(REAL_COMMIT_MARKER) is None:
+        return
     async with test_session_factory() as session:
         for table in reversed(Base.metadata.sorted_tables):
             if table.name in ("plans", "billing_periods"):
@@ -154,10 +169,52 @@ async def _cleanup_tables(test_session_factory):
 
 
 @pytest.fixture
-async def db_session(test_session_factory) -> AsyncGenerator[AsyncSession]:
-    """Provide a database session for the test."""
-    async with test_session_factory() as session:
-        yield session
+async def db_session(
+    request: pytest.FixtureRequest, test_engine, test_session_factory
+) -> AsyncGenerator[AsyncSession]:
+    """Сессия для теста.
+
+    По умолчанию — SAVEPOINT-изоляция вместо TRUNCATE: тест получает
+    выделенное подключение с реальной внешней транзакцией, а `AsyncSession`
+    присоединяется к ней через `join_transaction_mode="create_savepoint"`
+    (SQLAlchemy 2.0, см. "Joining a Session into an External Transaction" в
+    доках SQLAlchemy) — под капотом это SAVEPOINT. Код приложения (эндпоинты)
+    делает собственные `session.commit()` — это освобождает и тут же заново
+    открывает SAVEPOINT, не трогая внешнюю транзакцию, так что несколько
+    commit() внутри одного теста работают как обычно. В конце теста внешняя
+    транзакция откатывается целиком — вместе с ней пропадают и все commit()
+    приложения, база возвращается к состоянию до теста. TRUNCATE не нужен.
+
+    Тесты, помеченные `@pytest.mark.db_real_commit` (module-level
+    `pytestmark` в `test_tasks.py`/`test_tariffs.py`/
+    `test_security_hardening.py`), получают старую схему — сессию с
+    реальными commit на общем пуле подключений. Им это необходимо: они
+    прогоняют Celery-таски через ОТДЕЛЬНОЕ синхронное подключение
+    (`get_sync_session` патчится на `sync_test_session_factory`), и это
+    подключение обязано увидеть данные, которые тест закоммитил через
+    `db_session`, — а чужое подключение никогда не видит чужой SAVEPOINT
+    (он не закоммичен на уровне БД). Для них же остаётся TRUNCATE после
+    теста (`_cleanup_tables`).
+    """
+    if request.node.get_closest_marker(REAL_COMMIT_MARKER) is not None:
+        async with test_session_factory() as session:
+            yield session
+        return
+
+    async with test_engine.connect() as connection:
+        await connection.begin()
+        session = AsyncSession(
+            bind=connection,
+            join_transaction_mode="create_savepoint",
+            expire_on_commit=False,
+        )
+        try:
+            yield session
+        finally:
+            await session.close()
+            # Откат внешней транзакции целиком — обнуляет и её, и все
+            # SAVEPOINT'ы/commit() приложения внутри неё.
+            await connection.rollback()
 
 
 @pytest.fixture

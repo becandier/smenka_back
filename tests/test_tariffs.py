@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,11 @@ from src.app.services.entitlements import GRACE_DAYS, EffectiveStatus, PlanFeatu
 from src.app.tasks.subscriptions import notify_subscription_status
 
 settings = get_settings()
+
+# Часть тестов модуля гоняет Celery-таску уведомлений (run_notify_task) через
+# отдельное синхронное подключение — db_session должен коммитить по-настоящему.
+# См. tests/conftest.py::db_session.
+pytestmark = pytest.mark.db_real_commit
 
 TEST_DATABASE_URL_SYNC = (
     f"postgresql://{settings.postgres_user}:{settings.postgres_password}"

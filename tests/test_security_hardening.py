@@ -27,6 +27,11 @@ from src.app.tasks.shifts import auto_finish_stale_shifts
 
 settings = get_settings()
 
+# Часть тестов модуля гоняет Celery-таску (auto_finish_stale_shifts) через
+# отдельное синхронное подключение — db_session должен коммитить по-настоящему.
+# См. tests/conftest.py::db_session.
+pytestmark = pytest.mark.db_real_commit
+
 # Синхронная тестовая сессия (для Celery-задач, как в test_tasks.py).
 TEST_DATABASE_URL_SYNC = (
     f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
