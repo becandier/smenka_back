@@ -675,6 +675,12 @@ def compute_scheduled_window(
     учитывается переход на летнее/зимнее время: `ZoneInfo` пересчитывает
     смещение по итоговому wall-clock времени при `.astimezone(UTC)`, а не по
     смещению на момент старта прибавления.
+
+    Выбор окна — сначала то, что СОДЕРЖИТ `started_at` (`start <= started_at
+    <= end`): для длинных графиков (>12ч от начала) ближайшее по модулю
+    расстояние до начала окна может указывать на окно СЛЕДУЮЩИХ суток, хотя
+    прямо сейчас идёт текущее. Если содержащего окна нет (ранний приход до
+    начала или окно уже закрылось) — ближайшее будущее окно, как раньше.
     """
     duration = schedule_duration(start_time, end_time)
     local_date = started_at.astimezone(tz).date()
@@ -686,6 +692,12 @@ def compute_scheduled_window(
         return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     candidates = [_candidate(offset) for offset in (-1, 0, 1)]
+
+    containing = [pair for pair in candidates if pair[0] <= started_at <= pair[1]]
+    if containing:
+        # При наложении (график ровно 24ч) — то, что стартовало последним.
+        return max(containing, key=lambda pair: pair[0])
+
     valid = [pair for pair in candidates if pair[1] > started_at]
     if not valid:
         valid = [_candidate(2)]
@@ -705,9 +717,11 @@ def is_schedule_startable(
     и при старте (S2, `services/shift.py::_resolve_org_shift_schedule`), и в
     `my-schedules` (S3, `can_start_now` ниже).
 
-    Верхняя граница (`now <= next_end_at`) выполняется по построению R2: он не
-    возвращает окна, чей конец уже в прошлом относительно того же `now`/
-    `started_at`, каким было рассчитано `next_start_at`.
+    Верхняя граница (`now <= next_end_at`) выполняется по построению R2: если
+    существует окно, содержащее `now`/`started_at` (`start <= now <= end`),
+    R2 вернёт именно его — иначе ближайшее окно из тех, чей конец ещё не
+    наступил. В обоих случаях конец возвращённого окна не может быть раньше
+    того момента, для которого его считали.
     """
     return now >= next_start_at - timedelta(minutes=early_start_minutes)
 
