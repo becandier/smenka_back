@@ -48,4 +48,15 @@ jobs:
       - name: pip-audit (известные CVE в зависимостях)
         # Падает на любой известной уязвимости. Временный allowlist — флагом
         # --ignore-vuln <GHSA/PYSEC-id> с комментарием и сроком пересмотра.
-        run: uvx pip-audit --requirement requirements.txt --strict
+        #
+        # PYSEC-2026-1325 (ecdsa, Minerva timing attack на P-256, CVE-2024-23342):
+        # у python-ecdsa нет и не планируется фикса — мейнтейнеры считают
+        # side-channel атаки вне scope проекта (см. security advisory
+        # GHSA-wj6h-64fc-37mp). Пакет тянется транзитивно через
+        # python-jose[cryptography] (JWT), который в проекте используется
+        # только с HS256 (HMAC), путь ECDSA-подписи не задействован. Пересмотреть:
+        # если появится фикс апстрима, либо при миграции JWT-стека с python-jose
+        # на другую библиотеку (например PyJWT), которая не тянет ecdsa.
+        run: >-
+          uvx pip-audit --requirement requirements.txt --strict
+          --ignore-vuln PYSEC-2026-1325
