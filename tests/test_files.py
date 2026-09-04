@@ -283,6 +283,15 @@ class TestKnowledgeBaseOffice:
             (XLSX_BYTES, "table.xlsx", XLSX_MIME),
             (PPTX_BYTES, "training.pptx", PPTX_MIME),
         ],
+        # Явные ids: без них pytest берёт id из содержимого `content` (bytes), а
+        # `_ooxml()` пишет ZIP через zipfile, который проставляет текущее время в
+        # DOS-заголовок записи — сам байтовый контент, а с ним и автогенерённый id,
+        # меняется от запуска к запуску (модуль импортируется в каждом процессе
+        # заново). Под pytest-xdist это ломает сборку: воркеры, независимо
+        # импортирующие модуль, получают РАЗНЫЕ id одного и того же теста и xdist
+        # падает с "Different tests were collected". Фиксированные строковые ids
+        # никак не меняют, что тестируется — только стабилизируют его имя.
+        ids=["docx", "xlsx", "pptx"],
     )
     async def test_ooxml_upload_success(
         self,

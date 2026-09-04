@@ -7,12 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.app.core.config import get_settings
 from src.app.core.security import hash_password
 from src.app.models.notification import Notification, NotificationType
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
@@ -26,13 +26,18 @@ from src.app.models.work_location import WorkLocation
 from src.app.services import entitlements
 from src.app.services.entitlements import GRACE_DAYS, EffectiveStatus, PlanFeature
 from src.app.tasks.subscriptions import notify_subscription_status
+from tests.conftest import TEST_DATABASE_URL_SYNC
 
-settings = get_settings()
+# Часть тестов модуля гоняет Celery-таску уведомлений (run_notify_task) через
+# отдельное синхронное подключение — db_session должен коммитить по-настоящему.
+# См. tests/conftest.py::db_session.
+pytestmark = pytest.mark.db_real_commit
 
-TEST_DATABASE_URL_SYNC = (
-    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
-    f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}_test"
-)
+# TEST_DATABASE_URL_SYNC — из conftest, а не пересчитан здесь: под pytest-xdist
+# (make test-fast) у каждого воркера своя суффиксированная база (см.
+# tests/conftest.py::TEST_DB_NAME) — sync-подключение обязано смотреть в ТУ ЖЕ
+# базу, что и db_session этого воркера, иначе Celery-таска не увидит данных,
+# которые тест закоммитил.
 sync_test_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 sync_test_session_factory = sessionmaker(sync_test_engine, expire_on_commit=False)
 

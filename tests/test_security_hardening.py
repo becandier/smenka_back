@@ -24,14 +24,21 @@ from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Shift, ShiftStatus
 from src.app.models.user import User, VerificationCode
 from src.app.tasks.shifts import auto_finish_stale_shifts
+from tests.conftest import TEST_DATABASE_URL_SYNC
 
 settings = get_settings()
 
+# Часть тестов модуля гоняет Celery-таску (auto_finish_stale_shifts) через
+# отдельное синхронное подключение — db_session должен коммитить по-настоящему.
+# См. tests/conftest.py::db_session.
+pytestmark = pytest.mark.db_real_commit
+
 # Синхронная тестовая сессия (для Celery-задач, как в test_tasks.py).
-TEST_DATABASE_URL_SYNC = (
-    f"postgresql://{settings.postgres_user}:{settings.postgres_password}"
-    f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}_test"
-)
+# TEST_DATABASE_URL_SYNC — из conftest, а не пересчитан здесь: под pytest-xdist
+# (make test-fast) у каждого воркера своя суффиксированная база (см.
+# tests/conftest.py::TEST_DB_NAME) — sync-подключение обязано смотреть в ТУ ЖЕ
+# базу, что и db_session этого воркера, иначе Celery-таска не увидит данных,
+# которые тест закоммитил.
 sync_test_engine = create_engine(TEST_DATABASE_URL_SYNC, echo=False)
 sync_test_session_factory = sessionmaker(sync_test_engine, expire_on_commit=False)
 

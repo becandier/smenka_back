@@ -10,7 +10,7 @@ REST API для мобильного приложения учёта рабоч�
 - Alembic (async миграции), PostgreSQL 16
 - SQLAdmin (админка), Pydantic v2
 - Docker Compose для локальной разработки
-- pytest + httpx для тестов
+- pytest + httpx для тестов, pytest-xdist для параллельного прогона (`make test-fast`)
 
 ## Структура проекта
 
@@ -94,7 +94,7 @@ tests/
 
 Прежде чем ставить статус `review`/`done`:
 - `make lint` (ruff) и `make typecheck` (mypy) — зелёные.
-- `make test` (pytest) — зелёный, покрыты edge cases.
+- `make test` (pytest, последовательно) или `make test-fast` (pytest-xdist, параллельно — своя БД на процесс, см. `docs/ARCHITECTURE.md` → «Тестовое окружение») — зелёный, покрыты edge cases.
 - Прогнать `/code-review` (для крупной фичи — уровень `high`) и `/simplify`.
 - Миграция (если есть) прогнана локально и лежит в `migrations/versions/`.
 - Контракт `{data,error}` не сломан для старых мобильных билдов.

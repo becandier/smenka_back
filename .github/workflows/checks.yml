@@ -3,6 +3,20 @@ name: Checks
 # Переиспользуемые проверки качества: линт, формат, типы, тесты.
 # Вызывается из ci.yml (ветки/PR) и из release.yml как гейт перед деплоем,
 # чтобы на прод не уехал код с красными тестами.
+#
+# Тесты разбиты по job-матрице (см. job `test` ниже): каждая задача матрицы —
+# отдельный раннер со СВОЕЙ базой (сервис-контейнер postgres поднимается заново
+# на каждый job) и берёт свою часть тестов через TEST_SHARD_INDEX/TEST_SHARD_TOTAL
+# (tests/conftest.py::pytest_collection_modifyitems, round-robin по позиции в
+# собранном списке — не зависит от порядка файлов, не требует ручной поддержки
+# при добавлении тестов). Число шардов — одна переменная (TEST_SHARD_TOTAL
+# ниже): job `shard-matrix` строит из неё JSON-список для strategy.matrix.
+#
+# Гейт не ослаблен: workflow_call-джоба `checks` в release.yml зелёная только
+# если зелены ВСЕ джобы этого файла — quality и КАЖДЫЙ шард `test`. Красный шард
+# валит весь workflow (fail-fast выключен нарочно — чтобы увидеть все упавшие
+# шарды сразу, а не только первый; на исход гейта это не влияет: needs зависит
+# от success всей матрицы независимо от fail-fast).
 
 on:
   workflow_call:
@@ -10,9 +24,57 @@ on:
 permissions:
   contents: read
 
+env:
+  # Единственное место, где меняется число шардов прогона тестов.
+  TEST_SHARD_TOTAL: 4
+
 jobs:
-  lint-test:
+  quality:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install deps (with dev extra)
+        run: uv sync --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check src/ tests/ scripts/
+
+      - name: Ruff format check
+        run: uv run ruff format --check src/ tests/ scripts/
+
+      - name: Mypy
+        run: uv run mypy src/
+
+  # Строит JSON-массив [0, 1, ..., TEST_SHARD_TOTAL-1] для strategy.matrix job
+  # `test` ниже. GitHub Actions не умеет "matrix из числа" нативно (нет range())
+  # — при желании поменять число шардов правится ТОЛЬКО env.TEST_SHARD_TOTAL
+  # выше, этот job пересчитает список сам.
+  shard-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.matrix.outputs.shards }}
+    steps:
+      - id: matrix
+        run: |
+          python3 -c "import json; print('shards=' + json.dumps(list(range($TEST_SHARD_TOTAL))))" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: shard-matrix
+    runs-on: ubuntu-latest
+
+    strategy:
+      # fail-fast: false — увидеть падения всех шардов за один прогон, а не
+      # только первого встреченного (отменённые job'ы матрицы тоже считаются
+      # неуспешными, так что на срабатывание гейта это никак не влияет).
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shard-matrix.outputs.shards) }}
 
     services:
       postgres:
@@ -21,7 +83,8 @@ jobs:
           POSTGRES_USER: smenka
           POSTGRES_PASSWORD: smenka
           # conftest подключается к "<POSTGRES_DB>_test" (см. tests/conftest.py),
-          # поэтому при POSTGRES_DB=smenka тестовая БД — smenka_test.
+          # поэтому при POSTGRES_DB=smenka тестовая БД — smenka_test. У каждой
+          # задачи матрицы — свой собственный сервис-контейнер (своя БД).
           POSTGRES_DB: smenka_test
         ports: ["5432:5432"]
         options: >-
@@ -47,6 +110,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/1
+      TEST_SHARD_INDEX: ${{ matrix.shard }}
 
     steps:
       - uses: actions/checkout@v4
@@ -59,14 +123,5 @@ jobs:
       - name: Install deps (with dev extra)
         run: uv sync --extra dev
 
-      - name: Ruff lint
-        run: uv run ruff check src/ tests/ scripts/
-
-      - name: Ruff format check
-        run: uv run ruff format --check src/ tests/ scripts/
-
-      - name: Mypy
-        run: uv run mypy src/
-
-      - name: Pytest
+      - name: Pytest (shard ${{ matrix.shard }}/${{ env.TEST_SHARD_TOTAL }})
         run: uv run pytest -q

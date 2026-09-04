@@ -1,6 +1,6 @@
 .PHONY: help up down restart build rebuild setup sync hooks logs logs-api logs-worker logs-db ps \
        shell dbshell redis-cli migrate rollback migration migration-check db-current \
-       test-db test test-cov lint lint-fix typecheck check clean
+       test-db test test-fast test-cov lint lint-fix typecheck check clean
 
 COMPOSE = docker compose
 API     = $(COMPOSE) exec api
@@ -97,8 +97,17 @@ test-db:  ## Создать тестовую БД (идемпотентно, т�
 		"SELECT 1 FROM pg_database WHERE datname = '$(DB_NAME)_test'" | grep -q 1 || \
 		$(COMPOSE) exec db psql -U $(DB_USER) -d $(DB_NAME) -c "CREATE DATABASE $(DB_NAME)_test"
 
-test: test-db  ## Запустить тесты
+test: test-db  ## Запустить тесты (последовательно, один процесс)
 	$(API) python -m pytest tests/ -v
+
+# Параллельный прогон (pytest-xdist). Своя БД на процесс создаётся сама
+# (tests/conftest.py::_ensure_test_database_exists, суффикс — PYTEST_XDIST_WORKER,
+# который выставляет xdist), поэтому test-db как пререквизит не нужен. Число
+# процессов — одна переменная: `make test-fast TEST_WORKERS=4`, по умолчанию auto
+# (по числу ядер).
+TEST_WORKERS ?= auto
+test-fast:  ## Запустить тесты параллельно (pytest-xdist, своя БД на процесс)
+	$(API) python -m pytest tests/ -v -n $(TEST_WORKERS)
 
 test-cov: test-db  ## Тесты с покрытием
 	$(API) python -m pytest tests/ -v --cov=app --cov-report=term-missing
