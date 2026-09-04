@@ -8,7 +8,7 @@ REST API для мобильного приложения учёта рабоч�
 
 - Python 3.12, FastAPI, async SQLAlchemy 2.0, asyncpg
 - Alembic (async миграции), PostgreSQL 16
-- SQLAdmin (админка), Pydantic v2
+- Pydantic v2
 - Docker Compose для локальной разработки
 - pytest + httpx для тестов, pytest-xdist для параллельного прогона (`make test-fast`)
 
