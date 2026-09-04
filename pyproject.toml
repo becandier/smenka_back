@@ -33,7 +33,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "pytest-xdist>=3.6.0",
     "ruff>=0.8.0",
-    "mypy>=1.13.0",
+    "mypy>=2.1.0",
     "fakeredis>=2.26.0",
 ]
 
