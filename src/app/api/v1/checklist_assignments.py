@@ -13,9 +13,11 @@ from src.app.schemas.checklist import (
     MemberOverrideRequest,
     RoleAssignmentRequest,
     TemplateLocationAssignmentRequest,
+    TemplateScheduleAssignmentRequest,
 )
 from src.app.services import checklist_assignment as assign_service
 from src.app.services import checklist_location as location_service
+from src.app.services import checklist_schedule as schedule_service
 
 router = APIRouter(
     prefix="/organizations/{org_id}",
@@ -83,6 +85,29 @@ async def assign_template_to_locations(
     return ApiResponse.success({"location_ids": [str(loc_id) for loc_id in result_ids]})
 
 
+@router.put(
+    "/checklist-templates/{template_id}/schedules",
+    summary="Задать графики шаблона",
+    description=(
+        "PUT-семантика: передайте полный список графиков. "
+        "Пустой список снимает все привязки."
+    ),
+)
+async def assign_template_to_schedules(
+    org_id: uuid.UUID,
+    template_id: uuid.UUID,
+    body: TemplateScheduleAssignmentRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    schedule_ids = [uuid.UUID(schedule_id) for schedule_id in body.schedule_ids]
+    result_ids = await schedule_service.set_template_schedules(
+        session, org_id, template_id, schedule_ids, user.id
+    )
+    await session.commit()
+    return ApiResponse.success({"schedule_ids": [str(schedule_id) for schedule_id in result_ids]})
+
+
 @router.get(
     "/checklist-templates/{template_id}/assignments",
     summary="Кому назначен шаблон",
@@ -99,6 +124,7 @@ async def get_template_assignments(
         personal_add,
         personal_remove,
         location_ids,
+        schedule_ids,
     ) = await assign_service.get_template_assignments(
         session,
         org_id,
@@ -112,6 +138,7 @@ async def get_template_assignments(
             personal_add=[_member_info(m) for m in personal_add],
             personal_remove=[_member_info(m) for m in personal_remove],
             location_ids=[str(loc_id) for loc_id in location_ids],
+            schedule_ids=[str(schedule_id) for schedule_id in schedule_ids],
         ).model_dump(mode="json")
     )
 

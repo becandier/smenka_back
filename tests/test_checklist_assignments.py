@@ -83,6 +83,34 @@ async def _make_template(
 
 
 class TestRoleAssignment:
+    async def test_assign_schedule_and_show_in_assignments(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_org_with_roles_and_member(client, db_session, super_admin_headers)
+        schedule_resp = await client.post(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules",
+            headers=super_admin_headers,
+            json={"name": "День", "start_time": "09:00", "end_time": "18:00"},
+        )
+        assert schedule_resp.status_code == 201
+        schedule_id = schedule_resp.json()["data"]["id"]
+        tpl_id = await _make_template(client, super_admin_headers, ctx["org_id"])
+
+        response = await client.put(
+            f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl_id}/schedules",
+            headers=super_admin_headers,
+            json={"schedule_ids": [schedule_id]},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["schedule_ids"] == [schedule_id]
+
+        assignments = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/checklist-templates/{tpl_id}/assignments",
+            headers=super_admin_headers,
+        )
+        assert assignments.status_code == 200
+        assert assignments.json()["data"]["schedule_ids"] == [schedule_id]
+
     async def test_assign_and_replace(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
