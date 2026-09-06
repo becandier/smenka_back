@@ -7,7 +7,6 @@ from tests.test_checklist_locations import (
     _assign_role_to_member,
     _assign_template_to_locations,
     _assign_template_to_roles,
-    _delete_template,
     _make_location,
     _make_role,
     _make_template,
@@ -213,9 +212,15 @@ class TestChecklistScheduleResolution:
         await _assign_template_to_schedules(
             client, super_admin_headers, ctx["org_id"], template_id, [schedule_id]
         )
-        await _delete_template(client, super_admin_headers, ctx["org_id"], template_id)
+        pause_response = await client.patch(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule_id}",
+            headers=super_admin_headers,
+            json={"is_paused": True},
+        )
+        assert pause_response.status_code == 200, pause_response.text
+        assert pause_response.json()["data"]["is_paused"] is True
 
         shift_id = await _start_shift_with_schedule(
-            client, ctx["member_headers"], ctx["org_id"], schedule_id
+            client, ctx["member_headers"], ctx["org_id"]
         )
         assert await _shift_checklist_names(client, ctx["member_headers"], shift_id) == set()
