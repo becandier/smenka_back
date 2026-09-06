@@ -220,6 +220,17 @@ class TestChecklistScheduleResolution:
         assert pause_response.status_code == 200, pause_response.text
         assert pause_response.json()["data"]["is_paused"] is True
 
+        explicit_response = await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={
+                "organization_id": ctx["org_id"],
+                "work_schedule_id": schedule_id,
+            },
+        )
+        assert explicit_response.status_code == 403
+        assert explicit_response.json()["error"]["code"] == "SCHEDULE_NOT_AVAILABLE"
+
         shift_id = await _start_shift_with_schedule(
             client, ctx["member_headers"], ctx["org_id"]
         )
