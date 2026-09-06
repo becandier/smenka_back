@@ -285,6 +285,7 @@ async def _compute_effective(
     *,
     work_location_id: uuid.UUID | None = None,
     work_schedule_id: uuid.UUID | None = None,
+    strict_schedule: bool = False,
 ) -> list[tuple[ChecklistTemplate, str]]:
     overrides_result = await session.execute(
         select(ChecklistMemberOverride).where(
@@ -329,11 +330,9 @@ async def _compute_effective(
         location_matches = (
             True if work_location_id is None else matches_location(location_ids, work_location_id)
         )
-        schedule_matches = (
-            True
-            if work_schedule_id is None
-            else (not schedule_ids or work_schedule_id in schedule_ids)
-        )
+        schedule_matches = not schedule_ids or work_schedule_id in schedule_ids
+        if work_schedule_id is None and not strict_schedule:
+            schedule_matches = True
         if not role_matches or not location_matches or not schedule_matches:
             continue
         source = "personal_add" if template.id in add_ids else (
