@@ -17,9 +17,9 @@ from src.app.services import entitlements
 from src.app.services.checklist_location import (
     _get_org_location,
     get_location_ids_for_templates,
-    get_location_only_template_ids,
     matches_location,
 )
+from src.app.services.checklist_schedule import get_schedule_ids_for_templates
 from src.app.services.checklist_template import (
     ChecklistError,
     _check_admin_or_owner,
@@ -99,7 +99,13 @@ async def get_template_assignments(
     org_id: uuid.UUID,
     template_id: uuid.UUID,
     requester_id: uuid.UUID,
-) -> tuple[list[uuid.UUID], list[OrganizationMember], list[OrganizationMember], list[uuid.UUID]]:
+) -> tuple[
+    list[uuid.UUID],
+    list[OrganizationMember],
+    list[OrganizationMember],
+    list[uuid.UUID],
+    list[uuid.UUID],
+]:
     org = await get_organization(session, org_id)
     await _check_admin_or_owner(session, org, requester_id)
     await _get_template(session, org_id, template_id)
@@ -111,6 +117,9 @@ async def get_template_assignments(
     )
     role_ids = [row[0] for row in roles_result.all()]
     location_ids = (await get_location_ids_for_templates(session, [template_id])).get(
+        template_id, []
+    )
+    schedule_ids = (await get_schedule_ids_for_templates(session, [template_id])).get(
         template_id, []
     )
 
@@ -143,7 +152,7 @@ async def get_template_assignments(
         else:
             personal_remove.append(member)
 
-    return role_ids, personal_add, personal_remove, location_ids
+    return role_ids, personal_add, personal_remove, location_ids, schedule_ids
 
 
 async def set_member_overrides(
@@ -227,6 +236,7 @@ async def get_effective_templates(
     requester_id: uuid.UUID,
     *,
     work_location_id: uuid.UUID | None = None,
+    work_schedule_id: uuid.UUID | None = None,
 ) -> list[tuple[ChecklistTemplate, str, list[uuid.UUID]]]:
     """Эффективные чек-листы сотрудника.
 
@@ -247,7 +257,13 @@ async def get_effective_templates(
         await _get_org_location(session, org_id, work_location_id)
 
     member = await _get_member(session, org_id, user_id)
-    pairs = await _compute_effective(session, org_id, member)
+    pairs = await _compute_effective(
+        session,
+        org_id,
+        member,
+        work_location_id=work_location_id,
+        work_schedule_id=work_schedule_id,
+    )
 
     location_ids_by_template = await get_location_ids_for_templates(
         session, [t.id for t, _ in pairs]
@@ -266,24 +282,11 @@ async def _compute_effective(
     session: AsyncSession,
     org_id: uuid.UUID,
     member: OrganizationMember,
+    *,
+    work_location_id: uuid.UUID | None = None,
+    work_schedule_id: uuid.UUID | None = None,
+    strict_schedule: bool = False,
 ) -> list[tuple[ChecklistTemplate, str]]:
-    role_template_ids: set[uuid.UUID] = set()
-    if member.role_id is not None:
-        role_result = await session.execute(
-            select(ChecklistRoleAssignment.template_id).where(
-                ChecklistRoleAssignment.role_id == member.role_id,
-            )
-        )
-        role_template_ids = {row[0] for row in role_result.all()}
-
-    # Новый канал (checklist_work_location): шаблон без привязки к ролям, но
-    # с привязкой к точке — назначен ВСЕМ сотрудникам org (независимо от их
-    # роли/её отсутствия), фильтруется по точке уже на уровне вызывающего
-    # кода (create_instances_for_shift / get_effective_templates). Пустая
-    # таблица привязок → пустое множество → нулевое изменение поведения.
-    location_only_ids = await get_location_only_template_ids(session, org_id)
-    candidate_ids = role_template_ids | location_only_ids
-
     overrides_result = await session.execute(
         select(ChecklistMemberOverride).where(
             ChecklistMemberOverride.member_id == member.id,
@@ -293,28 +296,48 @@ async def _compute_effective(
     add_ids = {o.template_id for o in overrides if o.override_type == OverrideType.add}
     remove_ids = {o.template_id for o in overrides if o.override_type == OverrideType.remove}
 
-    effective_candidate_ids = candidate_ids - remove_ids
-
-    all_ids = effective_candidate_ids | add_ids
-    if not all_ids:
-        return []
-
-    templates_result = await session.execute(
+    template_result = await session.execute(
         select(ChecklistTemplate).where(
-            ChecklistTemplate.id.in_(all_ids),
             ChecklistTemplate.organization_id == org_id,
             ChecklistTemplate.is_deleted.is_(False),
         )
     )
-    templates = {t.id: t for t in templates_result.scalars().all()}
+    templates = list(template_result.scalars().all())
+    if not templates:
+        return []
 
-    result: list[tuple[ChecklistTemplate, str]] = [
-        (templates[tpl_id], "role") for tpl_id in effective_candidate_ids if tpl_id in templates
-    ]
-    result.extend(
-        (templates[tpl_id], "personal_add")
-        for tpl_id in add_ids
-        if tpl_id in templates and tpl_id not in effective_candidate_ids
+    ids = [template.id for template in templates]
+    role_result = await session.execute(
+        select(ChecklistRoleAssignment.template_id, ChecklistRoleAssignment.role_id).where(
+            ChecklistRoleAssignment.template_id.in_(ids)
+        )
     )
+    role_map: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for template_id, role_id in role_result.all():
+        role_map.setdefault(template_id, set()).add(role_id)
+    location_map = await get_location_ids_for_templates(session, ids)
+    schedule_map = await get_schedule_ids_for_templates(session, ids)
+
+    result: list[tuple[ChecklistTemplate, str]] = []
+    for template in templates:
+        role_ids = role_map.get(template.id, set())
+        location_ids = location_map.get(template.id, [])
+        schedule_ids = schedule_map.get(template.id, [])
+        has_assignment = bool(role_ids or location_ids or schedule_ids or template.id in add_ids)
+        if not has_assignment or template.id in remove_ids:
+            continue
+        role_matches = not role_ids or member.role_id in role_ids
+        location_matches = (
+            True if work_location_id is None else matches_location(location_ids, work_location_id)
+        )
+        schedule_matches = not schedule_ids or work_schedule_id in schedule_ids
+        if work_schedule_id is None and not strict_schedule:
+            schedule_matches = True
+        if not role_matches or not location_matches or not schedule_matches:
+            continue
+        source = "personal_add" if template.id in add_ids else (
+            "role" if role_ids else "schedule" if schedule_ids else "location"
+        )
+        result.append((template, source))
     result.sort(key=lambda pair: pair[0].created_at)
     return result

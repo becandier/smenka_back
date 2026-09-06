@@ -84,6 +84,7 @@ class TemplateDetailResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[TemplateItemResponse]
+    schedule_ids: list[str] = Field(default_factory=list)
 
 
 class ItemsReorderRequest(BaseModel):
@@ -106,6 +107,12 @@ class TemplateLocationAssignmentRequest(BaseModel):
             "(замена). Пустой список снимает все привязки (шаблон снова "
             "действует на всех точках)."
         ),
+    )
+
+
+class TemplateScheduleAssignmentRequest(BaseModel):
+    schedule_ids: list[str] = Field(
+        description="UUIDы графиков. Передавайте полный список — PUT-семантика (замена)",
     )
 
 
@@ -156,6 +163,10 @@ class AssignmentResponse(BaseModel):
     personal_remove: list[MemberInfo] = Field(description="Сотрудники с личным remove")
     location_ids: list[str] = Field(
         description="Точки, к которым привязан шаблон. Пустой список = действует на всех точках",
+    )
+    schedule_ids: list[str] = Field(
+        default_factory=list,
+        description="Графики, к которым привязан шаблон",
     )
 
 

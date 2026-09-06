@@ -19,6 +19,7 @@ from src.app.schemas.checklist import (
     TemplateUpdate,
 )
 from src.app.services import checklist_template as tpl_service
+from src.app.services.checklist_schedule import get_schedule_ids_for_templates
 
 router = APIRouter(
     prefix="/organizations/{org_id}/checklist-templates",
@@ -132,7 +133,12 @@ async def get_template_detail(
         template_id,
         user.id,
     )
-    return ApiResponse.success(_template_detail_to_response(template))
+    schedule_ids = (
+        await get_schedule_ids_for_templates(session, [template.id])
+    ).get(template.id, [])
+    response = _template_detail_to_response(template)
+    response["schedule_ids"] = [str(schedule_id) for schedule_id in schedule_ids]
+    return ApiResponse.success(response)
 
 
 @router.patch(

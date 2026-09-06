@@ -207,6 +207,35 @@ class ChecklistTemplateLocation(Base):
     )
 
 
+class ChecklistTemplateSchedule(Base):
+    """Привязка шаблона чек-листа к графику работы."""
+
+    __tablename__ = "checklist_template_schedules"
+    __table_args__ = (
+        UniqueConstraint(
+            "template_id",
+            "work_schedule_id",
+            name="uq_checklist_template_schedule",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("checklist_templates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    work_schedule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("work_schedules.id", ondelete="CASCADE"),
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+    )
+
+
 class ChecklistMemberOverride(Base):
     __tablename__ = "checklist_member_overrides"
     __table_args__ = (

@@ -52,16 +52,15 @@ async def create_instances_for_shift(
         session,
         shift.organization_id,
         member,
+        work_location_id=shift.work_location_id,
+        work_schedule_id=shift.work_schedule_id,
+        strict_schedule=True,
     )
     if not effective_pairs:
         return []
 
-    # Фильтр по точке смены (checklist_work_location, backend.md
-    # matches_location): применяется единообразно ко всем каналам, включая
-    # personal_add. Шаблон без привязок проходит всегда; пустая таблица
-    # привязок → фильтр всегда True → нулевое изменение поведения на проде.
     location_ids_by_template = await get_location_ids_for_templates(
-        session, [t.id for t, _ in effective_pairs]
+        session, [template.id for template, _ in effective_pairs]
     )
     effective_pairs = [
         (template, source)
@@ -71,6 +70,10 @@ async def create_instances_for_shift(
     if not effective_pairs:
         return []
 
+    # Фильтр по точке смены (checklist_work_location, backend.md
+    # matches_location): применяется единообразно ко всем каналам, включая
+    # personal_add. Шаблон без привязок проходит всегда; пустая таблица
+    # привязок → фильтр всегда True → нулевое изменение поведения на проде.
     template_ids = [t.id for t, _ in effective_pairs]
     items_result = await session.execute(
         select(ChecklistTemplateItem)
