@@ -89,8 +89,7 @@ async def assign_template_to_locations(
     "/checklist-templates/{template_id}/schedules",
     summary="Задать графики шаблона",
     description=(
-        "PUT-семантика: передайте полный список графиков. "
-        "Пустой список снимает все привязки."
+        "PUT-семантика: передайте полный список графиков. Пустой список снимает все привязки."
     ),
 )
 async def assign_template_to_schedules(

@@ -77,9 +77,9 @@ class TestChecklistScheduleResolution:
         shift_id = await _start_shift_with_schedule(
             client, ctx["member_headers"], ctx["org_id"], schedule_id
         )
-        assert await _shift_checklist_names(
-            client, ctx["member_headers"], shift_id
-        ) == {"Schedule"}
+        assert await _shift_checklist_names(client, ctx["member_headers"], shift_id) == {
+            "Schedule"
+        }
 
     async def test_role_and_schedule_are_both_required(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
@@ -106,14 +106,12 @@ class TestChecklistScheduleResolution:
         matched = await _start_shift_with_schedule(
             client, ctx["member_headers"], ctx["org_id"], schedule_id
         )
-        assert await _shift_checklist_names(
-            client, ctx["member_headers"], matched
-        ) == {"RoleSchedule"}
+        assert await _shift_checklist_names(client, ctx["member_headers"], matched) == {
+            "RoleSchedule"
+        }
 
         # The same role on another schedule does not receive the snapshot.
-        await client.post(
-            f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"]
-        )
+        await client.post(f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"])
         other = await _start_shift_with_schedule(
             client, ctx["member_headers"], ctx["org_id"], other_schedule_id
         )
@@ -142,9 +140,7 @@ class TestChecklistScheduleResolution:
         assert await _shift_checklist_names(client, ctx["member_headers"], matched) == {
             "LocationSchedule"
         }
-        await client.post(
-            f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"]
-        )
+        await client.post(f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"])
         other = await _start_shift_with_schedule(
             client, ctx["member_headers"], ctx["org_id"], schedule_id, other_location_id
         )
@@ -163,9 +159,7 @@ class TestChecklistScheduleResolution:
             client, super_admin_headers, ctx["org_id"], template_id, [schedule_id]
         )
 
-        shift_id = await _start_shift_with_schedule(
-            client, ctx["member_headers"], ctx["org_id"]
-        )
+        shift_id = await _start_shift_with_schedule(client, ctx["member_headers"], ctx["org_id"])
         assert await _shift_checklist_names(client, ctx["member_headers"], shift_id) == set()
 
     async def test_personal_add_and_remove_respect_schedule_assignment(
@@ -190,9 +184,7 @@ class TestChecklistScheduleResolution:
         assert await _shift_checklist_names(client, ctx["member_headers"], matched) == {
             "PersonalSchedule"
         }
-        await client.post(
-            f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"]
-        )
+        await client.post(f"/api/v1/shifts/{matched}/finish", headers=ctx["member_headers"])
         await client.put(
             f"/api/v1/organizations/{ctx['org_id']}/members/{ctx['member_user'].id}/checklist-overrides",
             headers=super_admin_headers,
@@ -231,7 +223,5 @@ class TestChecklistScheduleResolution:
         assert explicit_response.status_code == 403
         assert explicit_response.json()["error"]["code"] == "SCHEDULE_NOT_AVAILABLE"
 
-        shift_id = await _start_shift_with_schedule(
-            client, ctx["member_headers"], ctx["org_id"]
-        )
+        shift_id = await _start_shift_with_schedule(client, ctx["member_headers"], ctx["org_id"])
         assert await _shift_checklist_names(client, ctx["member_headers"], shift_id) == set()

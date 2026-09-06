@@ -335,8 +335,10 @@ async def _compute_effective(
             schedule_matches = True
         if not role_matches or not location_matches or not schedule_matches:
             continue
-        source = "personal_add" if template.id in add_ids else (
-            "role" if role_ids else "schedule" if schedule_ids else "location"
+        source = (
+            "personal_add"
+            if template.id in add_ids
+            else ("role" if role_ids else "schedule" if schedule_ids else "location")
         )
         result.append((template, source))
     result.sort(key=lambda pair: pair[0].created_at)

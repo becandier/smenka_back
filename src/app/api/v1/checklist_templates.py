@@ -133,9 +133,9 @@ async def get_template_detail(
         template_id,
         user.id,
     )
-    schedule_ids = (
-        await get_schedule_ids_for_templates(session, [template.id])
-    ).get(template.id, [])
+    schedule_ids = (await get_schedule_ids_for_templates(session, [template.id])).get(
+        template.id, []
+    )
     response = _template_detail_to_response(template)
     response["schedule_ids"] = [str(schedule_id) for schedule_id in schedule_ids]
     return ApiResponse.success(response)
