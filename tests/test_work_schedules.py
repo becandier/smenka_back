@@ -1891,3 +1891,48 @@ class TestWeeklyScheduleRulesAPI:
         )
         assert started.status_code == 422
         assert started.json()["error"]["code"] == "SCHEDULE_NOT_AVAILABLE"
+
+    async def test_my_schedules_saturday_override_and_overnight_start_weekday(
+        self,
+        client: AsyncClient,
+        super_admin_headers,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-my-real-api@example.com"
+        )
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], start_time="22:00", end_time="06:00"
+        )
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [
+                    {"weekday": 6, "is_enabled": True, "start_time": "23:00", "end_time": "07:00"},
+                    {"weekday": 7, "is_enabled": False},
+                ]
+            },
+        )
+        import src.app.services.work_schedule as ws_module
+
+        real_datetime = ws_module.datetime
+
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = real_datetime(2026, 9, 5, 23, 0, tzinfo=UTC)
+                return value.astimezone(tz) if tz is not None else value
+
+        monkeypatch.setattr(ws_module, "datetime", FrozenDateTime)
+        response = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules", headers=ctx["member_headers"]
+        )
+        assert response.status_code == 200
+        item = next(i for i in response.json()["data"]["items"] if i["id"] == schedule["id"])
+        assert item["next_start_at"] == "2026-09-05T20:00:00Z"
+        assert item["next_end_at"] == "2026-09-06T04:00:00Z"

@@ -62,12 +62,15 @@ def test_dst_window_keeps_local_end_time() -> None:
         name="DST", start_time=time(22), end_time=time(6), organization_id=None
     )
     rules = {
-        7: WorkScheduleWeeklyRule(
-            weekday=7, is_enabled=True, start_time=time(22), end_time=time(6)
+        6: WorkScheduleWeeklyRule(
+            weekday=6, is_enabled=True, start_time=time(22), end_time=time(6)
         )
     }
     start, end = compute_scheduled_window_with_weekly_rules(
-        datetime(2026, 3, 29, 1, 30, tzinfo=UTC), tz, schedule, rules
+        datetime(2026, 3, 28, 20, 0, tzinfo=UTC), tz, schedule, rules
     )
+    assert start == datetime(2026, 3, 28, 21, 0, tzinfo=UTC)
+    assert end == datetime(2026, 3, 29, 4, 0, tzinfo=UTC)
+    assert (end - start).total_seconds() == 7 * 3600
     assert start.astimezone(tz).time() == time(22)
     assert end.astimezone(tz).time() == time(6)
