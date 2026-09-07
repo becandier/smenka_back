@@ -4,7 +4,6 @@ from zoneinfo import ZoneInfo
 from src.app.models.work_schedule import WorkSchedule, WorkScheduleWeeklyRule
 from src.app.services.work_schedule import compute_scheduled_window_with_weekly_rules
 
-
 TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -62,7 +61,11 @@ def test_dst_window_keeps_local_end_time() -> None:
     schedule = WorkSchedule(
         name="DST", start_time=time(22), end_time=time(6), organization_id=None
     )
-    rules = {7: WorkScheduleWeeklyRule(weekday=7, is_enabled=True, start_time=time(22), end_time=time(6))}
+    rules = {
+        7: WorkScheduleWeeklyRule(
+            weekday=7, is_enabled=True, start_time=time(22), end_time=time(6)
+        )
+    }
     start, end = compute_scheduled_window_with_weekly_rules(
         datetime(2026, 3, 29, 1, 30, tzinfo=UTC), tz, schedule, rules
     )
