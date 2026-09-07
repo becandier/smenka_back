@@ -133,6 +133,39 @@ def weekly_window_for(
     return rule.start_time, rule.end_time
 
 
+def compute_scheduled_window_with_weekly_rules(
+    started_at: datetime,
+    tz: ZoneInfo,
+    schedule: WorkSchedule,
+    rules: dict[int, WorkScheduleWeeklyRule],
+) -> tuple[datetime, datetime] | None:
+    """Compute a window while applying the rule for the date it starts on.
+
+    Looking at candidate start dates is required for overnight schedules: at
+    Sunday 02:00 the active window started on Saturday and must use Saturday's
+    rule, even when Sunday is disabled.
+    """
+    local_date = started_at.astimezone(tz).date()
+    candidates: list[tuple[datetime, datetime]] = []
+    for offset in (-2, -1, 0, 1, 2):
+        candidate_date = local_date + timedelta(days=offset)
+        window = weekly_window_for(schedule, rules, candidate_date.isoweekday())
+        if window is None:
+            continue
+        start_local = datetime.combine(candidate_date, window[0], tzinfo=tz)
+        end_local = start_local + schedule_duration(window[0], window[1])
+        candidates.append((start_local.astimezone(UTC), end_local.astimezone(UTC)))
+    containing = [pair for pair in candidates if pair[0] <= started_at <= pair[1]]
+    if containing:
+        return max(containing, key=lambda pair: pair[0])
+    future = [pair for pair in candidates if pair[1] > started_at]
+    return (
+        min(future, key=lambda pair: abs((started_at - pair[0]).total_seconds()))
+        if future
+        else None
+    )
+
+
 class WorkScheduleError(Exception):
     def __init__(self, code: str, message: str, status_code: int = 400):
         self.code = code
@@ -862,13 +895,12 @@ def _build_my_schedule_items(
 ) -> list[MyScheduleItem]:
     items: list[MyScheduleItem] = []
     for schedule, _source in pairs:
-        local_weekday = moment.astimezone(tz).isoweekday()
-        window = weekly_window_for(
-            schedule, (rules_by_schedule or {}).get(schedule.id, {}), local_weekday
+        window_result = compute_scheduled_window_with_weekly_rules(
+            moment, tz, schedule, (rules_by_schedule or {}).get(schedule.id, {})
         )
-        if window is None:
+        if window_result is None:
             continue
-        start_utc, end_utc = compute_scheduled_window(moment, tz, window[0], window[1])
+        start_utc, end_utc = window_result
         is_current = start_utc <= moment <= end_utc
         starts_in_minutes = round((start_utc - moment).total_seconds() / 60)
         can_start_now = is_schedule_startable(moment, start_utc, early_start_minutes)
@@ -991,14 +1023,13 @@ async def change_shift_schedule(
         shift.scheduled_end_at = None
     else:
         schedule = await _get_schedule(session, org_id, work_schedule_id)
-        weekday = shift.started_at.astimezone(ZoneInfo(org.timezone)).isoweekday()
         rules = await get_weekly_rules_for_schedules(session, [schedule.id])
-        window = weekly_window_for(schedule, rules.get(schedule.id, {}), weekday)
-        if window is None:
-            raise WorkScheduleError("SCHEDULE_NOT_AVAILABLE", "График недоступен в этот день", 422)
-        start_utc, end_utc = compute_scheduled_window(
-            shift.started_at, ZoneInfo(org.timezone), window[0], window[1]
+        window_result = compute_scheduled_window_with_weekly_rules(
+            shift.started_at, ZoneInfo(org.timezone), schedule, rules.get(schedule.id, {})
         )
+        if window_result is None:
+            raise WorkScheduleError("SCHEDULE_NOT_AVAILABLE", "График недоступен в этот день", 422)
+        start_utc, end_utc = window_result
         shift.work_schedule_id = schedule.id
         shift.schedule_name = schedule.name
         shift.scheduled_start_at = start_utc
