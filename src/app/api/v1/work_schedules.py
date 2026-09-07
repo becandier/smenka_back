@@ -22,6 +22,8 @@ from src.app.schemas.work_schedule import (
     WorkScheduleListResponse,
     WorkScheduleResponse,
     WorkScheduleUpdate,
+    WorkScheduleWeeklyRuleResponse,
+    WorkScheduleWeeklyRulesRequest,
 )
 from src.app.services import audit as audit_service
 from src.app.services import shift as shift_service
@@ -43,6 +45,7 @@ def _schedule_to_response(
     schedule: WorkSchedule,
     role_ids: list[uuid.UUID],
     location_ids: list[uuid.UUID],
+    weekly_rules: list[Any] | None = None,
 ) -> dict[str, Any]:
     return WorkScheduleResponse(
         id=str(schedule.id),
@@ -55,6 +58,15 @@ def _schedule_to_response(
         role_ids=[str(r) for r in role_ids],
         work_location_ids=[str(loc) for loc in location_ids],
         created_at=schedule.created_at,
+        weekly_rules=[
+            WorkScheduleWeeklyRuleResponse(
+                weekday=r.weekday,
+                is_enabled=r.is_enabled,
+                start_time=_format_hhmm(r.start_time) if r.start_time is not None else None,
+                end_time=_format_hhmm(r.end_time) if r.end_time is not None else None,
+            )
+            for r in (weekly_rules or [])
+        ],
     ).model_dump(mode="json")
 
 
@@ -122,9 +134,18 @@ async def list_schedules(
     include_paused: bool = Query(False, description="Включить приостановленные графики"),
 ) -> ApiResponse:
     rows = await ws_service.list_schedules(session, org_id, user.id, include_paused=include_paused)
+    rules = await ws_service.get_weekly_rules_for_schedules(session, [s.id for s, _, _ in rows])
     return ApiResponse.success(
         WorkScheduleListResponse(
-            items=[_schedule_to_response(s, role_ids, loc_ids) for s, role_ids, loc_ids in rows],
+            items=[
+                _schedule_to_response(
+                    s,
+                    role_ids,
+                    loc_ids,
+                    sorted(rules.get(s.id, {}).values(), key=lambda r: r.weekday),
+                )
+                for s, role_ids, loc_ids in rows
+            ],
             total=len(rows),
         ).model_dump(mode="json")
     )
@@ -144,7 +165,15 @@ async def get_schedule_detail(
     schedule, role_ids, location_ids = await ws_service.get_schedule_detail(
         session, org_id, schedule_id, user.id
     )
-    return ApiResponse.success(_schedule_to_response(schedule, role_ids, location_ids))
+    rules = await ws_service.get_weekly_rules_for_schedules(session, [schedule.id])
+    return ApiResponse.success(
+        _schedule_to_response(
+            schedule,
+            role_ids,
+            location_ids,
+            sorted(rules.get(schedule.id, {}).values(), key=lambda r: r.weekday),
+        )
+    )
 
 
 @router.patch(
@@ -178,7 +207,56 @@ async def update_schedule(
     location_ids = (await ws_service.get_location_ids_for_schedules(session, [schedule.id])).get(
         schedule.id, []
     )
-    return ApiResponse.success(_schedule_to_response(schedule, role_ids, location_ids))
+    rules = await ws_service.get_weekly_rules_for_schedules(session, [schedule.id])
+    return ApiResponse.success(
+        _schedule_to_response(
+            schedule,
+            role_ids,
+            location_ids,
+            sorted(rules.get(schedule.id, {}).values(), key=lambda r: r.weekday),
+        )
+    )
+
+
+@router.put(
+    "/work-schedules/{schedule_id}/weekly-rules", summary="Задать недельные правила графика"
+)
+async def replace_weekly_rules(
+    org_id: uuid.UUID,
+    schedule_id: uuid.UUID,
+    body: WorkScheduleWeeklyRulesRequest,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ApiResponse:
+    rules = await ws_service.replace_weekly_rules(
+        session,
+        org_id,
+        schedule_id,
+        user.id,
+        [
+            {
+                "weekday": r.weekday,
+                "is_enabled": r.is_enabled,
+                "start_time": _parse_hhmm(r.start_time) if r.start_time is not None else None,
+                "end_time": _parse_hhmm(r.end_time) if r.end_time is not None else None,
+            }
+            for r in body.rules
+        ],
+    )
+    await session.commit()
+    return ApiResponse.success(
+        {
+            "rules": [
+                {
+                    "weekday": r.weekday,
+                    "is_enabled": r.is_enabled,
+                    "start_time": _format_hhmm(r.start_time) if r.start_time is not None else None,
+                    "end_time": _format_hhmm(r.end_time) if r.end_time is not None else None,
+                }
+                for r in sorted(rules, key=lambda r: r.weekday)
+            ]
+        }
+    )
 
 
 @router.delete(

@@ -1758,3 +1758,181 @@ class TestMySchedulesGeoResolve:
             params={"lat": 55.7558, "lng": -4000.0},
         )
         assert resp.status_code == 422
+
+
+class TestWeeklyScheduleRulesAPI:
+    async def test_put_rules_rbac_validation_replace_and_get(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-api@example.com"
+        )
+        schedule = await _create_schedule(client, super_admin_headers, ctx["org_id"])
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        forbidden = await client.put(path, headers=ctx["member_headers"], json={"rules": []})
+        assert forbidden.status_code == 403
+        invalid = await client.put(
+            path,
+            headers=super_admin_headers,
+            json={"rules": [{"weekday": 8, "is_enabled": False}]},
+        )
+        assert invalid.status_code == 422
+        duplicate = await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [{"weekday": 6, "is_enabled": False}, {"weekday": 6, "is_enabled": False}]
+            },
+        )
+        assert duplicate.status_code == 422
+        saved = await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [
+                    {"weekday": 6, "is_enabled": True, "start_time": "09:00", "end_time": "19:00"},
+                    {"weekday": 7, "is_enabled": False},
+                ]
+            },
+        )
+        assert saved.status_code == 200
+        detail = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}",
+            headers=super_admin_headers,
+        )
+        assert [r["weekday"] for r in detail.json()["data"]["weekly_rules"]] == [6, 7]
+        listed = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules", headers=super_admin_headers
+        )
+        assert listed.json()["data"]["items"][0]["weekly_rules"][0]["start_time"] == "09:00"
+        cleared = await client.put(path, headers=super_admin_headers, json={"rules": []})
+        assert cleared.status_code == 200
+        assert cleared.json()["data"]["rules"] == []
+
+    async def test_not_found_and_snapshot_existing_shift(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-snapshot@example.com"
+        )
+        start, end = _wide_open_window()
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], start_time=start, end_time=end
+        )
+        started = await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={"organization_id": ctx["org_id"], "work_schedule_id": schedule["id"]},
+        )
+        assert started.status_code == 201, started.text
+        before = started.json()["data"]["scheduled_start_at"]
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        changed = await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [
+                    {
+                        "weekday": datetime.now(UTC)
+                        .astimezone(ZoneInfo("Europe/Moscow"))
+                        .isoweekday(),
+                        "is_enabled": True,
+                        "start_time": "01:00",
+                        "end_time": "02:00",
+                    }
+                ]
+            },
+        )
+        assert changed.status_code == 200
+        detail = await client.get(
+            f"/api/v1/shifts/{started.json()['data']['id']}", headers=ctx["member_headers"]
+        )
+        assert detail.json()["data"]["scheduled_start_at"] == before
+        missing = await client.put(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{uuid.uuid4()}/weekly-rules",
+            headers=super_admin_headers,
+            json={"rules": []},
+        )
+        assert missing.status_code == 404
+
+    async def test_disabled_schedule_is_hidden_and_explicit_start_rejected(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-disabled@example.com"
+        )
+        schedule = await _create_schedule(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            **dict(zip(("start_time", "end_time"), _wide_open_window(), strict=True)),
+        )
+        weekday = datetime.now(UTC).astimezone(ZoneInfo("Europe/Moscow")).isoweekday()
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        await client.put(
+            path,
+            headers=super_admin_headers,
+            json={"rules": [{"weekday": weekday, "is_enabled": False}]},
+        )
+        schedules = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules", headers=ctx["member_headers"]
+        )
+        assert all(item["id"] != schedule["id"] for item in schedules.json()["data"]["items"])
+        started = await client.post(
+            "/api/v1/shifts/start",
+            headers=ctx["member_headers"],
+            json={"organization_id": ctx["org_id"], "work_schedule_id": schedule["id"]},
+        )
+        assert started.status_code == 422
+        assert started.json()["error"]["code"] == "SCHEDULE_NOT_AVAILABLE"
+
+    async def test_my_schedules_saturday_override_and_overnight_start_weekday(
+        self,
+        client: AsyncClient,
+        super_admin_headers,
+        db_session: AsyncSession,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-my-real-api@example.com"
+        )
+        schedule = await _create_schedule(
+            client, super_admin_headers, ctx["org_id"], start_time="22:00", end_time="06:00"
+        )
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [
+                    {"weekday": 6, "is_enabled": True, "start_time": "23:00", "end_time": "07:00"},
+                    {"weekday": 7, "is_enabled": False},
+                ]
+            },
+        )
+        import src.app.services.work_schedule as ws_module
+
+        real_datetime = ws_module.datetime
+
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = real_datetime(2026, 9, 5, 23, 0, tzinfo=UTC)
+                return value.astimezone(tz) if tz is not None else value
+
+        monkeypatch.setattr(ws_module, "datetime", FrozenDateTime)
+        response = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/my-schedules", headers=ctx["member_headers"]
+        )
+        assert response.status_code == 200
+        item = next(i for i in response.json()["data"]["items"] if i["id"] == schedule["id"])
+        assert item["next_start_at"] == "2026-09-05T20:00:00Z"
+        assert item["next_end_at"] == "2026-09-06T04:00:00Z"

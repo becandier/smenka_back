@@ -70,6 +70,7 @@ from src.app.models.work_schedule import (
     WorkScheduleLocation,
     WorkScheduleMemberOverride,
     WorkScheduleRole,
+    WorkScheduleWeeklyRule,
 )
 
 __all__ = [
@@ -147,4 +148,5 @@ __all__ = [
     "WorkScheduleLocation",
     "WorkScheduleMemberOverride",
     "WorkScheduleRole",
+    "WorkScheduleWeeklyRule",
 ]

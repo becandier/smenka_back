@@ -37,6 +37,25 @@ class WorkScheduleResponse(BaseModel):
         default_factory=list, description="Точки, к которым привязан"
     )
     created_at: datetime
+    weekly_rules: list["WorkScheduleWeeklyRuleResponse"] = Field(default_factory=list)
+
+
+class WorkScheduleWeeklyRuleRequest(BaseModel):
+    weekday: int = Field(ge=1, le=7)
+    is_enabled: bool = True
+    start_time: str | None = Field(default=None, pattern=_HHMM_PATTERN)
+    end_time: str | None = Field(default=None, pattern=_HHMM_PATTERN)
+
+
+class WorkScheduleWeeklyRuleResponse(BaseModel):
+    weekday: int
+    is_enabled: bool
+    start_time: str | None
+    end_time: str | None
+
+
+class WorkScheduleWeeklyRulesRequest(BaseModel):
+    rules: list[WorkScheduleWeeklyRuleRequest]
 
 
 class WorkScheduleListResponse(BaseModel):

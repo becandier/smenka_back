@@ -17,6 +17,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    SmallInteger,
     Time,
     UniqueConstraint,
 )
@@ -85,6 +86,32 @@ class WorkSchedule(Base):
         if end_minutes > start_minutes:
             return end_minutes - start_minutes
         return 24 * 60 - (start_minutes - end_minutes)
+
+
+class WorkScheduleWeeklyRule(Base):
+    """Optional override of a schedule's window for an ISO weekday."""
+
+    __tablename__ = "work_schedule_weekly_rules"
+    __table_args__ = (
+        UniqueConstraint("work_schedule_id", "weekday", name="uq_work_schedule_weekly_rule"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    work_schedule_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("work_schedules.id", ondelete="CASCADE"), index=True
+    )
+    weekday: Mapped[int] = mapped_column(SmallInteger)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
 
 
 class WorkScheduleRole(Base):
