@@ -1869,7 +1869,7 @@ class TestWeeklyScheduleRulesAPI:
             client,
             super_admin_headers,
             ctx["org_id"],
-            **dict(zip(("start_time", "end_time"), _wide_open_window())),
+            **dict(zip(("start_time", "end_time"), _wide_open_window(), strict=True)),
         )
         weekday = datetime.now(UTC).astimezone(ZoneInfo("Europe/Moscow")).isoweekday()
         path = (
