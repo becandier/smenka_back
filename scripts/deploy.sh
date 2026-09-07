@@ -15,6 +15,9 @@ if [[ -n "${GHCR_TOKEN:-}" && -n "${GHCR_USER:-}" ]]; then
   echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 fi
 
+echo "▶ backup БД перед миграцией"
+./scripts/backup-db.sh
+
 # Образы приложения (ghcr.io) тянем строго: их обновление — суть деплоя.
 # Базовые образы (docker.io: caddy/postgres/redis/flower) — best-effort:
 # Docker Hub отдаёт 429 на анонимные pull'ы, и это не должно валить деплой —
