@@ -451,7 +451,9 @@ async def _resolve_org_shift_schedule(
         _get_schedule,
         compute_scheduled_window,
         get_effective_schedules,
+        get_weekly_rules_for_schedules,
         is_schedule_startable,
+        weekly_window_for,
     )
 
     org = await get_organization(session, organization_id)
@@ -461,13 +463,16 @@ async def _resolve_org_shift_schedule(
 
     effective = await get_effective_schedules(session, organization_id, member, work_location_id)
     tz = ZoneInfo(org.timezone)
+    rules_by_schedule = await get_weekly_rules_for_schedules(session, [s.id for s, _ in effective])
+    weekday = started_at.astimezone(tz).isoweekday()
 
     def _window(schedule: WorkSchedule) -> tuple[datetime, datetime, bool]:
         """S1: плановое окно (R2) + допуск к старту от `started_at` — единый
         источник истины что для явного выбора, что для автоподбора."""
-        start_utc, end_utc = compute_scheduled_window(
-            started_at, tz, schedule.start_time, schedule.end_time
-        )
+        window = weekly_window_for(schedule, rules_by_schedule.get(schedule.id, {}), weekday)
+        if window is None:
+            return started_at, started_at, False
+        start_utc, end_utc = compute_scheduled_window(started_at, tz, window[0], window[1])
         startable = is_schedule_startable(started_at, start_utc, early_start_minutes)
         return start_utc, end_utc, startable
 
@@ -489,6 +494,8 @@ async def _resolve_org_shift_schedule(
                 "Этот график недоступен вам на выбранной точке",
                 403,
             )
+        if weekly_window_for(chosen, rules_by_schedule.get(chosen.id, {}), weekday) is None:
+            raise ShiftError("SCHEDULE_NOT_AVAILABLE", "График недоступен в этот день", 422)
         start_utc, end_utc, startable = _window(chosen)
         if not startable:
             if not require_schedule:

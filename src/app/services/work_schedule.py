@@ -28,6 +28,7 @@ from src.app.models.work_schedule import (
     WorkScheduleLocation,
     WorkScheduleMemberOverride,
     WorkScheduleRole,
+    WorkScheduleWeeklyRule,
 )
 from src.app.services import entitlements
 from src.app.services.checklist_location import _get_org_location, matches_location
@@ -38,6 +39,95 @@ if TYPE_CHECKING:
     from src.app.models.shift import Shift
 
 logger = get_logger(__name__)
+
+
+async def get_weekly_rules_for_schedules(
+    session: AsyncSession, schedule_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[int, WorkScheduleWeeklyRule]]:
+    if not schedule_ids:
+        return {}
+    result = await session.execute(
+        select(WorkScheduleWeeklyRule).where(
+            WorkScheduleWeeklyRule.work_schedule_id.in_(schedule_ids)
+        )
+    )
+    mapping: dict[uuid.UUID, dict[int, WorkScheduleWeeklyRule]] = {}
+    for rule in result.scalars().all():
+        mapping.setdefault(rule.work_schedule_id, {})[rule.weekday] = rule
+    return mapping
+
+
+async def replace_weekly_rules(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    schedule_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    rules: list[dict[str, object]],
+) -> list[WorkScheduleWeeklyRule]:
+    org = await get_organization(session, org_id)
+    await _check_admin_or_owner(session, org, requester_id)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    await _get_schedule(session, org_id, schedule_id)
+    seen: set[int] = set()
+    parsed: list[WorkScheduleWeeklyRule] = []
+    for data in rules:
+        weekday = int(data["weekday"])
+        enabled = bool(data["is_enabled"])
+        start = data.get("start_time")
+        end = data.get("end_time")
+        if weekday in seen or not 1 <= weekday <= 7:
+            raise WorkScheduleError("VALIDATION_ERROR", "weekday должен быть от 1 до 7", 422)
+        seen.add(weekday)
+        if enabled != (start is not None and end is not None) or (
+            not enabled and (start is not None or end is not None)
+        ):
+            raise WorkScheduleError(
+                "VALIDATION_ERROR",
+                "Включённое правило требует оба времени, выключенное — null",
+                422,
+            )
+        if enabled and start == end:
+            raise WorkScheduleError("VALIDATION_ERROR", "Начало и конец не могут совпадать", 422)
+        parsed.append(
+            WorkScheduleWeeklyRule(
+                work_schedule_id=schedule_id,
+                weekday=weekday,
+                is_enabled=enabled,
+                start_time=start,
+                end_time=end,
+            )
+        )
+    old = list(
+        (
+            await session.execute(
+                select(WorkScheduleWeeklyRule).where(
+                    WorkScheduleWeeklyRule.work_schedule_id == schedule_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in old:
+        await session.delete(row)
+    session.add_all(parsed)
+    await session.flush()
+    return parsed
+
+
+def weekly_window_for(
+    schedule: WorkSchedule,
+    rules: dict[int, WorkScheduleWeeklyRule],
+    weekday: int,
+) -> tuple[time, time] | None:
+    rule = rules.get(weekday)
+    if rule is None:
+        return schedule.start_time, schedule.end_time
+    if not rule.is_enabled:
+        return None
+    if rule.start_time is None or rule.end_time is None:
+        return None
+    return rule.start_time, rule.end_time
 
 
 class WorkScheduleError(Exception):
@@ -765,12 +855,17 @@ def _build_my_schedule_items(
     tz: ZoneInfo,
     moment: datetime,
     early_start_minutes: int,
+    rules_by_schedule: dict[uuid.UUID, dict[int, WorkScheduleWeeklyRule]] | None = None,
 ) -> list[MyScheduleItem]:
     items: list[MyScheduleItem] = []
     for schedule, _source in pairs:
-        start_utc, end_utc = compute_scheduled_window(
-            moment, tz, schedule.start_time, schedule.end_time
+        local_weekday = moment.astimezone(tz).isoweekday()
+        window = weekly_window_for(
+            schedule, (rules_by_schedule or {}).get(schedule.id, {}), local_weekday
         )
+        if window is None:
+            continue
+        start_utc, end_utc = compute_scheduled_window(moment, tz, window[0], window[1])
         is_current = start_utc <= moment <= end_utc
         starts_in_minutes = round((start_utc - moment).total_seconds() / 60)
         can_start_now = is_schedule_startable(moment, start_utc, early_start_minutes)
@@ -857,7 +952,8 @@ async def get_my_schedules(
     pairs = await get_effective_schedules(session, org_id, member, effective_location_id)
     tz = ZoneInfo(org.timezone)
     now = datetime.now(UTC)
-    items = _build_my_schedule_items(pairs, tz, now, early_start_minutes)
+    rules = await get_weekly_rules_for_schedules(session, [s.id for s, _ in pairs])
+    items = _build_my_schedule_items(pairs, tz, now, early_start_minutes, rules)
     return MySchedulesResult(
         items=items,
         require_schedule=require_schedule,
@@ -892,8 +988,13 @@ async def change_shift_schedule(
         shift.scheduled_end_at = None
     else:
         schedule = await _get_schedule(session, org_id, work_schedule_id)
+        weekday = shift.started_at.astimezone(ZoneInfo(org.timezone)).isoweekday()
+        rules = await get_weekly_rules_for_schedules(session, [schedule.id])
+        window = weekly_window_for(schedule, rules.get(schedule.id, {}), weekday)
+        if window is None:
+            raise WorkScheduleError("SCHEDULE_NOT_AVAILABLE", "График недоступен в этот день", 422)
         start_utc, end_utc = compute_scheduled_window(
-            shift.started_at, ZoneInfo(org.timezone), schedule.start_time, schedule.end_time
+            shift.started_at, ZoneInfo(org.timezone), window[0], window[1]
         )
         shift.work_schedule_id = schedule.id
         shift.schedule_name = schedule.name
