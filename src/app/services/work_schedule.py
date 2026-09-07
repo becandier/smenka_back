@@ -158,6 +158,8 @@ def compute_scheduled_window_with_weekly_rules(
     containing = [pair for pair in candidates if pair[0] <= started_at <= pair[1]]
     if containing:
         return max(containing, key=lambda pair: pair[0])
+    if weekly_window_for(schedule, rules, local_date.isoweekday()) is None:
+        return None
     future = [pair for pair in candidates if pair[1] > started_at]
     return (
         min(future, key=lambda pair: abs((started_at - pair[0]).total_seconds()))
