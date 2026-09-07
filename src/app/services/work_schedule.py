@@ -71,7 +71,10 @@ async def replace_weekly_rules(
     seen: set[int] = set()
     parsed: list[WorkScheduleWeeklyRule] = []
     for data in rules:
-        weekday = int(data["weekday"])
+        weekday_value = data["weekday"]
+        if not isinstance(weekday_value, int):
+            raise WorkScheduleError("VALIDATION_ERROR", "weekday должен быть числом", 422)
+        weekday = weekday_value
         enabled = bool(data["is_enabled"])
         start = data.get("start_time")
         end = data.get("end_time")
