@@ -14,7 +14,7 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, selectinload
 
@@ -100,19 +100,19 @@ async def replace_weekly_rules(
                 end_time=end,
             )
         )
-    old = list(
-        (
-            await session.execute(
-                select(WorkScheduleWeeklyRule).where(
-                    WorkScheduleWeeklyRule.work_schedule_id == schedule_id
-                )
-            )
+    # Bulk DELETE выполняется как отдельный SQL-запрос сразу здесь, а не через
+    # session.delete() на загруженных ORM-объектах: unit of work SQLAlchemy
+    # выполняет во flush INSERT раньше DELETE, поэтому delete()+add_all() в
+    # одном flush падал на unique(work_schedule_id, weekday), если новый набор
+    # переиспользовал уже сохранённый weekday (полная замена почти всегда его
+    # переиспользует). Старые строки гарантированно удалены из БД до вставки
+    # новых. Транзакция запроса не коммитится здесь — если flush ниже упадёт,
+    # DELETE и всё остальное откатятся вместе при закрытии сессии без commit.
+    await session.execute(
+        delete(WorkScheduleWeeklyRule).where(
+            WorkScheduleWeeklyRule.work_schedule_id == schedule_id
         )
-        .scalars()
-        .all()
     )
-    for row in old:
-        await session.delete(row)
     session.add_all(parsed)
     await session.flush()
     return parsed

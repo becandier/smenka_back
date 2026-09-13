@@ -1811,6 +1811,63 @@ class TestWeeklyScheduleRulesAPI:
         assert cleared.status_code == 200
         assert cleared.json()["data"]["rules"] == []
 
+    async def test_resave_reusing_existing_weekday_does_not_conflict(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        """Регрессия (bug 2026-09-07): повторный PUT, переиспользующий уже
+        сохранённый weekday, не должен падать 500 на unique(work_schedule_id,
+        weekday). До фикса delete()+add_all() в одном flush вставлял новые
+        строки раньше удаления старых — второе сохранение с тем же днём падало
+        всегда, потому что админка при сохранении шлёт всю матрицу."""
+        ctx = await _setup_member_org(
+            client, db_session, super_admin_headers, email="weekly-resave@example.com"
+        )
+        schedule = await _create_schedule(client, super_admin_headers, ctx["org_id"])
+        path = (
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}/weekly-rules"
+        )
+        first = await client.put(
+            path,
+            headers=super_admin_headers,
+            json={
+                "rules": [
+                    {"weekday": 7, "is_enabled": True, "start_time": "08:00", "end_time": "16:00"}
+                ]
+            },
+        )
+        assert first.status_code == 200, first.text
+
+        second_payload = {
+            "rules": [
+                {"weekday": 6, "is_enabled": False},
+                {"weekday": 7, "is_enabled": True, "start_time": "09:00", "end_time": "17:00"},
+            ]
+        }
+        second = await client.put(path, headers=super_admin_headers, json=second_payload)
+        assert second.status_code == 200, second.text
+
+        detail = await client.get(
+            f"/api/v1/organizations/{ctx['org_id']}/work-schedules/{schedule['id']}",
+            headers=super_admin_headers,
+        )
+        rules_by_weekday = {r["weekday"]: r for r in detail.json()["data"]["weekly_rules"]}
+        assert set(rules_by_weekday) == {6, 7}
+        assert rules_by_weekday[6]["is_enabled"] is False
+        assert rules_by_weekday[7] == {
+            "weekday": 7,
+            "is_enabled": True,
+            "start_time": "09:00",
+            "end_time": "17:00",
+        }
+
+        # Идемпотентность: третий PUT с тем же набором тоже 200.
+        third = await client.put(path, headers=super_admin_headers, json=second_payload)
+        assert third.status_code == 200, third.text
+
+        cleared = await client.put(path, headers=super_admin_headers, json={"rules": []})
+        assert cleared.status_code == 200
+        assert cleared.json()["data"]["rules"] == []
+
     async def test_not_found_and_snapshot_existing_shift(
         self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
     ):
