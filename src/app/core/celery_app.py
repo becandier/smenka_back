@@ -64,11 +64,20 @@ celery_app.conf.update(
             "task": "cleanup_orphan_files",
             "schedule": crontab(minute=0),  # ежечасно
         },
-        "purge-expired-checklist-photos": {
-            "task": "purge_expired_checklist_photos",
-            # checklist_photo_retention: раз в сутки — объём небольшой
-            # (единицы МБ/сутки), ежечасно избыточно; retention_days=0 — no-op.
+        "purge-expired-files": {
+            "task": "purge_expired_files",
+            # storage_housekeeping (заменяет purge_expired_checklist_photos):
+            # раз в сутки — объём небольшой (единицы МБ/сутки), ежечасно
+            # избыточно; retention_days=0 на любом из трёх правил — no-op.
             "schedule": crontab(hour=2, minute=0),
+        },
+        "reconcile-storage-objects": {
+            "task": "reconcile_storage_objects",
+            # storage_housekeeping: сверка "объекты S3 без строки в files" —
+            # раз в неделю (не ежедневно: расхождения появляются редко, только
+            # при сбое коммита после put_object/delete_file, ищем по всем
+            # префиксам категорий). STORAGE_RECONCILE_ENABLED=false — no-op.
+            "schedule": crontab(hour=4, minute=0, day_of_week="sunday"),
         },
         "notify-subscription-status": {
             "task": "notify_subscription_status",
