@@ -12,6 +12,9 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy import (
+    text as sa_text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,6 +43,15 @@ class File(Base):
     __table_args__ = (
         # Под запрос очистки сирот (is_attached=false AND created_at < cutoff).
         Index("ix_files_attached_created", "is_attached", "created_at"),
+        # checklist_photo_retention: кандидаты на удаление объекта по сроку
+        # хранения (Celery `purge_expired_checklist_photos`) — привязанные,
+        # ещё не удалённые файлы категории, отсортированные по возрасту.
+        Index(
+            "ix_files_retention_candidates",
+            "category",
+            "created_at",
+            postgresql_where=sa_text("purged_at IS NULL AND is_attached = true"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -64,6 +76,16 @@ class File(Base):
     checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Привязан ли файл к бизнес-сущности (см. жизненный цикл и сироты).
     is_attached: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # checklist_photo_retention: момент удаления ОБЪЕКТА из S3 по сроку хранения
+    # (`purge_expired_checklist_photos`). NULL = объект на месте. Строка `files`
+    # и её метаданные (storage_key, size_bytes, checksum_sha256) переживают
+    # удаление объекта — они след для истории чек-листа; presigned-ссылка на
+    # такой файл больше не выдаётся ни при каких обстоятельствах.
+    purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=None,
+    )
     # NULL = персональный/платформенный файл.
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
