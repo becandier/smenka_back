@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter
@@ -117,23 +117,47 @@ def _org_instance_row_to_response(
     ).model_dump(mode="json")
 
 
-def _photo_to_response(photo: ChecklistItemPhoto, url_map: _UrlMap) -> PhotoResponse:
-    url, expires_at = url_map.get(photo.file_id, (None, None))
+def _photo_retention_fields(file: File) -> tuple[datetime | None, datetime | None]:
+    """checklist_photo_retention: (purged_at, expires_at) для PhotoResponse.
+
+    `expires_at` — только для ещё живых фото при включённой очистке
+    (`CHECKLIST_PHOTO_RETENTION_DAYS > 0`); для удалённых или при выключенной
+    очистке — `null` (контракт backend.md)."""
+    if file.purged_at is not None:
+        return file.purged_at, None
+    if settings.checklist_photo_retention_days <= 0:
+        return None, None
+    expires_at = file.created_at + timedelta(days=settings.checklist_photo_retention_days)
+    return None, expires_at
+
+
+def _photo_to_response(photo: ChecklistItemPhoto, file: File, url_map: _UrlMap) -> PhotoResponse:
+    purged_at, expires_at = _photo_retention_fields(file)
+    # Удалённое по сроку фото: url=null безусловно — presign для него не
+    # запрашивается (url_map его не содержит, см. _collect_files), но проверяем
+    # явно на случай прямого вызова (POST .../photos — файл только что привязан
+    # и заведомо не purged, однако инвариант держим в одном месте).
+    url, url_expires_at = (
+        (None, None) if purged_at is not None else url_map.get(photo.file_id, (None, None))
+    )
     return PhotoResponse(
         id=str(photo.id),
         file_id=str(photo.file_id),
         url=url,
-        url_expires_at=expires_at,
+        url_expires_at=url_expires_at,
         captured_at=photo.captured_at,
         latitude=photo.latitude,
         longitude=photo.longitude,
         position=photo.position,
+        purged_at=purged_at,
+        expires_at=expires_at,
     )
 
 
 def _item_to_response(item: ChecklistInstanceItem, url_map: _UrlMap) -> dict[str, Any]:
     photos = [
-        _photo_to_response(p, url_map) for p in sorted(item.photos, key=lambda x: x.position)
+        _photo_to_response(p, p.file, url_map)
+        for p in sorted(item.photos, key=lambda x: x.position)
     ]
     return InstanceItemResponse(
         id=str(item.id),
@@ -152,7 +176,15 @@ def _item_to_response(item: ChecklistInstanceItem, url_map: _UrlMap) -> dict[str
 
 
 def _collect_files(items: list[ChecklistInstanceItem]) -> list[File]:
-    return [p.file for it in items for p in it.photos if p.file is not None]
+    """Файлы, которым нужен свежий presigned URL. Удалённые по сроку хранения
+    (`purged_at != null`) исключаются — presign для них не запрашивается
+    (backend.md checklist_photo_retention: «presign для удалённого не вызывается»)."""
+    return [
+        p.file
+        for it in items
+        for p in it.photos
+        if p.file is not None and p.file.purged_at is None
+    ]
 
 
 async def _instance_detail_to_response(instance: ChecklistInstance) -> dict[str, Any]:
@@ -254,7 +286,7 @@ async def update_item(
     )
     await session.commit()
     url_map = await file_storage.presigned_urls_for(
-        [p.file for p in item.photos if p.file is not None]
+        [p.file for p in item.photos if p.file is not None and p.file.purged_at is None]
     )
     return ApiResponse.success(_item_to_response(item, url_map))
 
@@ -287,7 +319,7 @@ async def add_photo(
     )
     await session.commit()
     url_map = await file_storage.presigned_urls_for([file])
-    return ApiResponse.success(_photo_to_response(photo, url_map).model_dump(mode="json"))
+    return ApiResponse.success(_photo_to_response(photo, file, url_map).model_dump(mode="json"))
 
 
 @router.delete(

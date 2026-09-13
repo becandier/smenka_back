@@ -3,6 +3,7 @@ import io
 import uuid
 import zipfile
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -485,6 +486,53 @@ class TestGetFile:
             content_type="image/jpeg",
         )
         file_id = up.json()["data"]["id"]
+
+        resp = await client.get(f"/api/v1/files/{file_id}", headers=employee_headers)
+        assert resp.status_code == 403
+
+    async def test_get_purged_file_returns_410(
+        self, client: AsyncClient, auth_headers, db_session: AsyncSession
+    ):
+        """checklist_photo_retention: файл, удалённый по сроку хранения, отдаёт
+        410 FILE_PURGED вместо presigned URL."""
+        up = await _upload(
+            client,
+            auth_headers,
+            category="avatar",
+            content=JPEG_BYTES,
+            filename="me.jpg",
+            content_type="image/jpeg",
+        )
+        file_id = up.json()["data"]["id"]
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(file_id)))
+        ).scalar_one()
+        file.purged_at = datetime.now(UTC)
+        await db_session.commit()
+
+        resp = await client.get(f"/api/v1/files/{file_id}", headers=auth_headers)
+        assert resp.status_code == 410
+        assert resp.json()["error"]["code"] == "FILE_PURGED"
+
+    async def test_get_purged_file_by_foreign_user_still_forbidden(
+        self, client: AsyncClient, auth_headers, employee_headers, db_session: AsyncSession
+    ):
+        """Проверка доступа выполняется ДО проверки purged_at: чужой файл — 403,
+        не 410, даже если он уже удалён по сроку хранения."""
+        up = await _upload(
+            client,
+            auth_headers,
+            category="avatar",
+            content=JPEG_BYTES,
+            filename="me.jpg",
+            content_type="image/jpeg",
+        )
+        file_id = up.json()["data"]["id"]
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(file_id)))
+        ).scalar_one()
+        file.purged_at = datetime.now(UTC)
+        await db_session.commit()
 
         resp = await client.get(f"/api/v1/files/{file_id}", headers=employee_headers)
         assert resp.status_code == 403
