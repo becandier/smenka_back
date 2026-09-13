@@ -1111,6 +1111,53 @@ class TestCleanupOrphanFiles:
         remaining_after_retry = (await db_session.execute(select(File.id))).scalars().all()
         assert orphan_id not in remaining_after_retry
 
+    async def test_full_batch_partial_failure_stops_loop(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Ревью-фикс: полный батч с частичным провалом останавливает цикл после
+        коммита — _delete_objects_report вызывается ровно один раз, а не
+        долбит те же ключи повторно до _ORPHAN_MAX_BATCHES. Успешные в этом
+        батче удаляются, провалившийся остаётся кандидатом, до следующего
+        батча цикл не доходит вовсе."""
+        monkeypatch.setattr(cleanup_tasks, "_ORPHAN_BATCH_SIZE", 2)
+
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        # order_by(created_at): failing раньше succeeding раньше untouched.
+        failing = _make_file(user.id, is_attached=False, age_hours=32)
+        succeeding = _make_file(user.id, is_attached=False, age_hours=31)
+        untouched = _make_file(user.id, is_attached=False, age_hours=26)
+        db_session.add_all([failing, succeeding, untouched])
+        await db_session.commit()
+        failing_id, failing_key = failing.id, failing.storage_key
+        succeeding_id = succeeding.id
+        untouched_id = untouched.id
+
+        call_count = 0
+
+        def partial_failure_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            nonlocal call_count
+            call_count += 1
+            succeeded_keys = [k for k in keys if k != failing_key]
+            failed_keys = [k for k in keys if k == failing_key]
+            return succeeded_keys, failed_keys
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", partial_failure_report),
+        ):
+            cleanup_orphan_files()
+
+        assert call_count == 1  # цикл не повторил батч со StorageError
+
+        db_session.expire_all()
+        remaining = (await db_session.execute(select(File.id))).scalars().all()
+        assert failing_id in remaining  # провалившийся — остался кандидатом
+        assert succeeding_id not in remaining  # успешный в том же батче — удалён
+        assert untouched_id in remaining  # до второго батча цикл не дошёл
+
 
 class TestPurgeExpiredChecklistPhotos:
     """checklist_photo_retention: удаление ОБЪЕКТА S3 (не строки) привязанных
@@ -1230,6 +1277,62 @@ class TestPurgeExpiredChecklistPhotos:
             await db_session.execute(select(File).where(File.id == photo_id))
         ).scalar_one()
         assert row_after_retry.purged_at is not None
+
+    async def test_full_batch_partial_failure_stops_loop(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ревью-фикс: полный батч с частичным провалом останавливает цикл после
+        коммита — _delete_objects_report вызывается ровно один раз, а не
+        долбит те же ключи повторно до _PURGE_MAX_BATCHES. Успешный в этом
+        батче помечается purged_at, провалившийся остаётся кандидатом, до
+        следующего батча цикл не доходит вовсе."""
+        monkeypatch.setattr(cleanup_tasks, "_PURGE_BATCH_SIZE", 2)
+
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        # order_by(created_at): failing раньше succeeding раньше untouched.
+        failing = _make_checklist_photo_file(user.id, is_attached=True, age_days=33)
+        succeeding = _make_checklist_photo_file(user.id, is_attached=True, age_days=32)
+        untouched = _make_checklist_photo_file(user.id, is_attached=True, age_days=31)
+        db_session.add_all([failing, succeeding, untouched])
+        await db_session.commit()
+        failing_id, failing_key = failing.id, failing.storage_key
+        succeeding_id = succeeding.id
+        untouched_id = untouched.id
+
+        call_count = 0
+
+        def partial_failure_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            nonlocal call_count
+            call_count += 1
+            succeeded_keys = [k for k in keys if k != failing_key]
+            failed_keys = [k for k in keys if k == failing_key]
+            return succeeded_keys, failed_keys
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", partial_failure_report),
+        ):
+            purge_expired_checklist_photos()
+
+        assert call_count == 1  # цикл не повторил батч со StorageError
+
+        db_session.expire_all()
+        rows = {
+            row.id: row
+            for row in (
+                await db_session.execute(
+                    select(File).where(File.id.in_([failing_id, succeeding_id, untouched_id]))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert rows[failing_id].purged_at is None  # провалившийся — остался кандидатом
+        assert rows[succeeding_id].purged_at is not None  # успешный в том же батче — помечен
+        assert rows[untouched_id].purged_at is None  # до второго батча цикл не дошёл
 
     async def test_idempotent_second_run_no_op(self, db_session: AsyncSession) -> None:
         """Повторный запуск после успешной очистки не трогает уже удалённые фото."""

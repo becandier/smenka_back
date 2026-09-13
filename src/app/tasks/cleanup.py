@@ -92,7 +92,14 @@ def cleanup_orphan_files() -> None:
     storage удалён успешно (или уже отсутствовал) — при `StorageError` строка
     остаётся, чтобы следующий часовой запуск повторил попытку (иначе объект
     «теряется» в бакете навсегда, а строка о нём уже исчезла — этот баг чинит
-    checklist_photo_retention/backend.md «Исправление cleanup_orphan_files»)."""
+    checklist_photo_retention/backend.md «Исправление cleanup_orphan_files»).
+
+    Если в батче были неудачные удаления, после коммита этого батча цикл
+    останавливается (не крутит оставшиеся до `_ORPHAN_MAX_BATCHES`) — иначе при
+    недоступном storage задача десятки раз подряд повторяет одни и те же
+    неудачные ключи (сортировка по `created_at` возвращает их первыми же в
+    следующем батче), впустую занимая воркер. Остаток батча и неудачные ключи
+    подхватит следующий плановый запуск."""
     cutoff = datetime.now(UTC) - timedelta(hours=settings.orphan_file_ttl_hours)
     deleted = 0
     with get_sync_session() as session:
@@ -115,12 +122,15 @@ def cleanup_orphan_files() -> None:
                 break
 
             by_key = {f.storage_key: f for f in batch}
-            succeeded_keys, _failed_keys = _delete_objects_report(list(by_key))
+            succeeded_keys, failed_keys = _delete_objects_report(list(by_key))
             if succeeded_keys:
                 ids = [by_key[key].id for key in succeeded_keys]
                 session.execute(delete(File).where(File.id.in_(ids)))
                 deleted += len(ids)
             session.commit()
+
+            if failed_keys:
+                break
 
             if len(batch) < _ORPHAN_BATCH_SIZE:
                 break
@@ -144,8 +154,14 @@ def purge_expired_checklist_photos() -> None:
     purged_at IS NULL AND created_at < cutoff`, батчами по `_PURGE_BATCH_SIZE`
     с `FOR UPDATE SKIP LOCKED`, не больше `_PURGE_MAX_BATCHES` за запуск —
     остаток уйдёт в следующий (беат — ежедневно 02:00 UTC). `StorageError` на
-    конкретном файле не мешает остальным батчам — `purged_at` для него просто
-    не проставляется, и следующий запуск повторит попытку."""
+    конкретном файле не мешает остальным файлам ЭТОГО батча — `purged_at` для
+    него просто не проставляется, и следующий запуск повторит попытку.
+
+    Если в батче были неудачные удаления, цикл останавливается после коммита
+    этого батча и не крутит оставшиеся батчи — иначе при недоступном storage
+    задача десятки раз подряд долбит одни и те же неудачные ключи (они же
+    первыми возвращаются следующим батчем по сортировке `created_at`), занимая
+    воркер. Остаток и неудачные ключи подхватит следующий плановый запуск."""
     retention_days = settings.checklist_photo_retention_days
     if retention_days <= 0:
         return
@@ -184,6 +200,9 @@ def purge_expired_checklist_photos() -> None:
                 purged += len(ids)
             failed += len(failed_keys)
             session.commit()
+
+            if failed_keys:
+                break
 
             if len(batch) < _PURGE_BATCH_SIZE:
                 break
