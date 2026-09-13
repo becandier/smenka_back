@@ -1458,7 +1458,20 @@ class TestPurgeExpiredFilesShiftGeoPhotoRule:
 
         fresh = _make_shift_geo_photo_file(user.id, is_attached=True, age_days=5)
         unattached = _make_shift_geo_photo_file(user.id, is_attached=False, age_days=91)
-        other_category = _make_checklist_photo_file(user.id, is_attached=True, age_days=91)
+        # knowledge_base — категория без своего срока хранения: подтверждает,
+        # что "другая категория" не попадает под правило shift_geo_photo.
+        other_category = File(
+            id=uuid.uuid4(),
+            storage_key=f"knowledge-base/{uuid.uuid4().hex}.pdf",
+            bucket="smenka-files",
+            category=FileCategory.knowledge_base,
+            original_filename="doc.pdf",
+            content_type="application/pdf",
+            size_bytes=10,
+            is_attached=True,
+            owner_user_id=user.id,
+            created_at=datetime.now(UTC) - timedelta(days=91),
+        )
         already_purged = _make_shift_geo_photo_file(
             user.id, is_attached=True, age_days=91, purged_at=datetime.now(UTC)
         )
@@ -1471,10 +1484,11 @@ class TestPurgeExpiredFilesShiftGeoPhotoRule:
         }
         already_purged_id, already_purged_at = already_purged.id, already_purged.purged_at
 
-        deleted_keys: list[str] = []
+        called = False
 
         def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
-            deleted_keys.extend(keys)
+            nonlocal called
+            called = True
             return list(keys), []
 
         with (
@@ -1483,10 +1497,7 @@ class TestPurgeExpiredFilesShiftGeoPhotoRule:
         ):
             purge_expired_files()
 
-        # other_category (checklist_photo, age_days=91) старше CHECKLIST_PHOTO_RETENTION_DAYS=30,
-        # поэтому его заберёт СВОЁ правило — deleted_keys содержит его ключ, но не ключи
-        # shift_geo_photo кандидатов (fresh/unattached/already_purged).
-        assert photo_key_prefixes(deleted_keys) == {"checklist-photos/"}
+        assert called is False  # ни один из соседей не стал кандидатом ни одного правила
 
         db_session.expire_all()
         for label, file_id in ids.items():
@@ -1537,12 +1548,6 @@ class TestPurgeExpiredFilesShiftGeoPhotoRule:
             await db_session.execute(select(File).where(File.id == photo_id))
         ).scalar_one()
         assert row_after_retry.purged_at is not None
-
-
-def photo_key_prefixes(keys: list[str]) -> set[str]:
-    """Тестовый хелпер: множество префиксов категории по storage_key (первый
-    сегмент до `/`), удобно сравнивать «какие категории затронуты»."""
-    return {key.split("/", 1)[0] + "/" for key in keys}
 
 
 class TestPurgeExpiredFilesDeletedOrganizationRule:
@@ -1928,6 +1933,7 @@ class TestReconcileStorageObjects:
         )
         db_session.add_all([live_file, survivor_file])
         await db_session.commit()
+        live_file_id = live_file.id
 
         old = datetime.now(UTC) - timedelta(hours=48)
         young = datetime.now(UTC) - timedelta(hours=1)
@@ -1973,7 +1979,7 @@ class TestReconcileStorageObjects:
 
         db_session.expire_all()
         live_row = (
-            await db_session.execute(select(File).where(File.id == live_file.id))
+            await db_session.execute(select(File).where(File.id == live_file_id))
         ).scalar_one()
         assert live_row.purged_at is None  # живая строка не тронута сверкой
 
