@@ -64,6 +64,12 @@ celery_app.conf.update(
             "task": "cleanup_orphan_files",
             "schedule": crontab(minute=0),  # ежечасно
         },
+        "purge-expired-checklist-photos": {
+            "task": "purge_expired_checklist_photos",
+            # checklist_photo_retention: раз в сутки — объём небольшой
+            # (единицы МБ/сутки), ежечасно избыточно; retention_days=0 — no-op.
+            "schedule": crontab(hour=2, minute=0),
+        },
         "notify-subscription-status": {
             "task": "notify_subscription_status",
             # Раз в сутки (tariffs, backend.md «Уведомления»).
