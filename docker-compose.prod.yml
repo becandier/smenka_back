@@ -12,10 +12,20 @@
 # Compose v2 (не Swarm) учитывает deploy.resources.limits при `docker compose up`.
 name: smenka
 
+# Ротация логов контейнеров. Без неё драйвер json-file пишет в
+# /var/lib/docker/containers/*/*-json.log бесконечно (api логирует каждый запрос,
+# worker — каждый запуск beat-задачи). 3 файла по 10 МБ = потолок 30 МБ на сервис.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "80:80"
       - "443:443"
@@ -52,6 +62,7 @@ services:
   migrate:
     image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
     restart: "no"
+    logging: *default-logging
     env_file: .env
     environment:
       PYTHONPATH: /app
@@ -72,6 +83,7 @@ services:
   api:
     image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       PYTHONPATH: /app
@@ -102,6 +114,7 @@ services:
   worker:
     image: ghcr.io/becandier/smenka_back:${BACK_TAG:-latest}
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       PYTHONPATH: /app
@@ -137,6 +150,7 @@ services:
   flower:
     image: mher/flower:2.0
     restart: unless-stopped
+    logging: *default-logging
     command: celery --broker=${CELERY_BROKER_URL} flower --port=5555
     environment:
       # Логин/пароль вида user:pass — задаётся в .env.prod (DEPLOY_NOTES §6).
@@ -157,6 +171,7 @@ services:
   admin:
     image: ghcr.io/becandier/smenka_admin:${ADMIN_TAG:-latest}
     restart: unless-stopped
+    logging: *default-logging
     expose:
       - "80"
     deploy:
@@ -173,6 +188,7 @@ services:
   web:
     image: ghcr.io/becandier/smenka_web:${WEB_TAG:-latest}
     restart: unless-stopped
+    logging: *default-logging
     expose:
       - "80"
     deploy:
@@ -186,6 +202,7 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -208,6 +225,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - redisdata:/data
     healthcheck:
