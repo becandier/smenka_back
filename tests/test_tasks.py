@@ -1185,9 +1185,7 @@ class TestPurgeExpiredChecklistPhotos:
 
         db_session.expire_all()
         for label, file_id in ids.items():
-            row = (
-                await db_session.execute(select(File).where(File.id == file_id))
-            ).scalar_one()
+            row = (await db_session.execute(select(File).where(File.id == file_id))).scalar_one()
             if label == "already_purged":
                 assert row.purged_at == already_purged_at
             else:
