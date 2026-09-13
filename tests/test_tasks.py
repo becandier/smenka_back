@@ -23,7 +23,12 @@ from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.shift import Pause, Shift, ShiftFinishReason, ShiftStatus
 from src.app.models.user import RefreshToken, User, VerificationCode
 from src.app.models.work_schedule import WorkSchedule
-from src.app.tasks.cleanup import cleanup_expired_tokens, cleanup_orphan_files
+from src.app.tasks import cleanup as cleanup_tasks
+from src.app.tasks.cleanup import (
+    cleanup_expired_tokens,
+    cleanup_orphan_files,
+    purge_expired_checklist_photos,
+)
 from src.app.tasks.shifts import (
     auto_finish_stale_pauses,
     auto_finish_stale_shifts,
@@ -1006,6 +1011,30 @@ def _make_file(
     )
 
 
+def _make_checklist_photo_file(
+    owner_id: uuid.UUID,
+    *,
+    is_attached: bool = True,
+    age_days: int = 40,
+    purged_at: datetime | None = None,
+) -> File:
+    """checklist_photo_retention: файл категории checklist_photo с заданным
+    возрастом (по умолчанию старше дефолтного CHECKLIST_PHOTO_RETENTION_DAYS=30)."""
+    return File(
+        id=uuid.uuid4(),
+        storage_key=f"checklist-photos/{uuid.uuid4().hex}.jpg",
+        bucket="smenka-files",
+        category=FileCategory.checklist_photo,
+        original_filename="proof.jpg",
+        content_type="image/jpeg",
+        size_bytes=10,
+        is_attached=is_attached,
+        owner_user_id=owner_id,
+        created_at=datetime.now(UTC) - timedelta(days=age_days),
+        purged_at=purged_at,
+    )
+
+
 class TestCleanupOrphanFiles:
     async def test_old_unattached_deleted_others_kept(self, db_session: AsyncSession):
         """Сирота (unattached, >24h) удаляется; свежий и привязанный — остаются."""
@@ -1026,12 +1055,13 @@ class TestCleanupOrphanFiles:
 
         deleted_keys: list[str] = []
 
+        def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            deleted_keys.extend(keys)
+            return list(keys), []
+
         with (
             patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
-            patch(
-                "src.app.tasks.cleanup._delete_orphan_objects",
-                lambda keys: deleted_keys.extend(keys),
-            ),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report),
         ):
             cleanup_orphan_files()
 
@@ -1042,3 +1072,347 @@ class TestCleanupOrphanFiles:
         assert orphan_id not in remaining
         assert fresh_id in remaining
         assert attached_id in remaining
+
+    async def test_storage_error_keeps_row_for_retry(self, db_session: AsyncSession):
+        """исправление cleanup_orphan_files: StorageError на удалении объекта ->
+        строка files НЕ удаляется; следующий (успешный) запуск подчищает её."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        orphan = _make_file(user.id, is_attached=False, age_hours=25)
+        db_session.add(orphan)
+        await db_session.commit()
+        orphan_id = orphan.id
+
+        def failing_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            return [], list(keys)
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", failing_report),
+        ):
+            cleanup_orphan_files()
+
+        db_session.expire_all()
+        remaining = (await db_session.execute(select(File.id))).scalars().all()
+        assert orphan_id in remaining  # строка осталась — объект не потерян молча
+
+        def succeeding_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", succeeding_report),
+        ):
+            cleanup_orphan_files()
+
+        db_session.expire_all()
+        remaining_after_retry = (await db_session.execute(select(File.id))).scalars().all()
+        assert orphan_id not in remaining_after_retry
+
+    async def test_full_batch_partial_failure_stops_loop(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Ревью-фикс: полный батч с частичным провалом останавливает цикл после
+        коммита — _delete_objects_report вызывается ровно один раз, а не
+        долбит те же ключи повторно до _ORPHAN_MAX_BATCHES. Успешные в этом
+        батче удаляются, провалившийся остаётся кандидатом, до следующего
+        батча цикл не доходит вовсе."""
+        monkeypatch.setattr(cleanup_tasks, "_ORPHAN_BATCH_SIZE", 2)
+
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        # order_by(created_at): failing раньше succeeding раньше untouched.
+        failing = _make_file(user.id, is_attached=False, age_hours=32)
+        succeeding = _make_file(user.id, is_attached=False, age_hours=31)
+        untouched = _make_file(user.id, is_attached=False, age_hours=26)
+        db_session.add_all([failing, succeeding, untouched])
+        await db_session.commit()
+        failing_id, failing_key = failing.id, failing.storage_key
+        succeeding_id = succeeding.id
+        untouched_id = untouched.id
+
+        call_count = 0
+
+        def partial_failure_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            nonlocal call_count
+            call_count += 1
+            succeeded_keys = [k for k in keys if k != failing_key]
+            failed_keys = [k for k in keys if k == failing_key]
+            return succeeded_keys, failed_keys
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", partial_failure_report),
+        ):
+            cleanup_orphan_files()
+
+        assert call_count == 1  # цикл не повторил батч со StorageError
+
+        db_session.expire_all()
+        remaining = (await db_session.execute(select(File.id))).scalars().all()
+        assert failing_id in remaining  # провалившийся — остался кандидатом
+        assert succeeding_id not in remaining  # успешный в том же батче — удалён
+        assert untouched_id in remaining  # до второго батча цикл не дошёл
+
+
+class TestPurgeExpiredChecklistPhotos:
+    """checklist_photo_retention: удаление ОБЪЕКТА S3 (не строки) привязанных
+    фото чек-листов старше CHECKLIST_PHOTO_RETENTION_DAYS."""
+
+    async def test_expired_attached_photo_purged(self, db_session: AsyncSession):
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        photo = _make_checklist_photo_file(user.id, is_attached=True, age_days=31)
+        db_session.add(photo)
+        await db_session.commit()
+        photo_id, photo_key = photo.id, photo.storage_key
+
+        deleted_keys: list[str] = []
+
+        def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            deleted_keys.extend(keys)
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report),
+        ):
+            purge_expired_checklist_photos()
+
+        assert deleted_keys == [photo_key]
+
+        db_session.expire_all()
+        result = await db_session.execute(select(File).where(File.id == photo_id))
+        row = result.scalar_one()
+        assert row.purged_at is not None
+
+    async def test_fresh_unattached_other_category_and_already_purged_untouched(
+        self, db_session: AsyncSession
+    ):
+        """Не трогаются: моложе N дней; непривязанный; другая категория; уже удалённый."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        fresh = _make_checklist_photo_file(user.id, is_attached=True, age_days=5)
+        unattached = _make_checklist_photo_file(user.id, is_attached=False, age_days=40)
+        other_category = _make_file(user.id, is_attached=True, age_hours=40 * 24)
+        already_purged = _make_checklist_photo_file(
+            user.id, is_attached=True, age_days=40, purged_at=datetime.now(UTC)
+        )
+        db_session.add_all([fresh, unattached, other_category, already_purged])
+        await db_session.commit()
+        ids = {
+            "fresh": fresh.id,
+            "unattached": unattached.id,
+            "other_category": other_category.id,
+            "already_purged": already_purged.id,
+        }
+        already_purged_at = already_purged.purged_at
+
+        deleted_keys: list[str] = []
+
+        def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            deleted_keys.extend(keys)
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report),
+        ):
+            purge_expired_checklist_photos()
+
+        assert deleted_keys == []
+
+        db_session.expire_all()
+        for label, file_id in ids.items():
+            row = (await db_session.execute(select(File).where(File.id == file_id))).scalar_one()
+            if label == "already_purged":
+                assert row.purged_at == already_purged_at
+            else:
+                assert row.purged_at is None
+
+    async def test_storage_error_keeps_purged_at_null_retry_succeeds(
+        self, db_session: AsyncSession
+    ):
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        photo = _make_checklist_photo_file(user.id, is_attached=True, age_days=31)
+        db_session.add(photo)
+        await db_session.commit()
+        photo_id = photo.id
+
+        def failing_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            return [], list(keys)
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", failing_report),
+        ):
+            purge_expired_checklist_photos()
+
+        db_session.expire_all()
+        row = (await db_session.execute(select(File).where(File.id == photo_id))).scalar_one()
+        assert row.purged_at is None
+
+        def succeeding_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", succeeding_report),
+        ):
+            purge_expired_checklist_photos()
+
+        db_session.expire_all()
+        row_after_retry = (
+            await db_session.execute(select(File).where(File.id == photo_id))
+        ).scalar_one()
+        assert row_after_retry.purged_at is not None
+
+    async def test_full_batch_partial_failure_stops_loop(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ревью-фикс: полный батч с частичным провалом останавливает цикл после
+        коммита — _delete_objects_report вызывается ровно один раз, а не
+        долбит те же ключи повторно до _PURGE_MAX_BATCHES. Успешный в этом
+        батче помечается purged_at, провалившийся остаётся кандидатом, до
+        следующего батча цикл не доходит вовсе."""
+        monkeypatch.setattr(cleanup_tasks, "_PURGE_BATCH_SIZE", 2)
+
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        # order_by(created_at): failing раньше succeeding раньше untouched.
+        failing = _make_checklist_photo_file(user.id, is_attached=True, age_days=33)
+        succeeding = _make_checklist_photo_file(user.id, is_attached=True, age_days=32)
+        untouched = _make_checklist_photo_file(user.id, is_attached=True, age_days=31)
+        db_session.add_all([failing, succeeding, untouched])
+        await db_session.commit()
+        failing_id, failing_key = failing.id, failing.storage_key
+        succeeding_id = succeeding.id
+        untouched_id = untouched.id
+
+        call_count = 0
+
+        def partial_failure_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            nonlocal call_count
+            call_count += 1
+            succeeded_keys = [k for k in keys if k != failing_key]
+            failed_keys = [k for k in keys if k == failing_key]
+            return succeeded_keys, failed_keys
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", partial_failure_report),
+        ):
+            purge_expired_checklist_photos()
+
+        assert call_count == 1  # цикл не повторил батч со StorageError
+
+        db_session.expire_all()
+        rows = {
+            row.id: row
+            for row in (
+                await db_session.execute(
+                    select(File).where(File.id.in_([failing_id, succeeding_id, untouched_id]))
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert rows[failing_id].purged_at is None  # провалившийся — остался кандидатом
+        assert rows[succeeding_id].purged_at is not None  # успешный в том же батче — помечен
+        assert rows[untouched_id].purged_at is None  # до второго батча цикл не дошёл
+
+    async def test_idempotent_second_run_no_op(self, db_session: AsyncSession) -> None:
+        """Повторный запуск после успешной очистки не трогает уже удалённые фото."""
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        photo = _make_checklist_photo_file(user.id, is_attached=True, age_days=31)
+        db_session.add(photo)
+        await db_session.commit()
+        photo_id = photo.id
+
+        def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report),
+        ):
+            purge_expired_checklist_photos()
+
+        db_session.expire_all()
+        first_purged_at = (
+            await db_session.execute(select(File.purged_at).where(File.id == photo_id))
+        ).scalar_one()
+        assert first_purged_at is not None
+
+        deleted_keys_second_run: list[str] = []
+
+        def fake_report_second(keys: list[str]) -> tuple[list[str], list[str]]:
+            deleted_keys_second_run.extend(keys)
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report_second),
+        ):
+            purge_expired_checklist_photos()
+
+        assert deleted_keys_second_run == []  # уже purged — не кандидат повторно
+
+    async def test_retention_disabled_is_noop(
+        self, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CHECKLIST_PHOTO_RETENTION_DAYS=0 — задача ничего не делает."""
+        monkeypatch.setattr(cleanup_tasks.settings, "checklist_photo_retention_days", 0)
+
+        user = _make_user()
+        db_session.add(user)
+        await db_session.flush()
+
+        photo = _make_checklist_photo_file(user.id, is_attached=True, age_days=365)
+        db_session.add(photo)
+        await db_session.commit()
+        photo_id = photo.id
+
+        called = False
+
+        def fake_report(keys: list[str]) -> tuple[list[str], list[str]]:
+            nonlocal called
+            called = True
+            return list(keys), []
+
+        with (
+            patch("src.app.tasks.cleanup.get_sync_session", get_sync_test_session),
+            patch("src.app.tasks.cleanup._delete_objects_report", fake_report),
+        ):
+            purge_expired_checklist_photos()
+
+        assert called is False
+
+        db_session.expire_all()
+        row = (await db_session.execute(select(File).where(File.id == photo_id))).scalar_one()
+        assert row.purged_at is None
+
+
+def test_purge_expired_checklist_photos_registered_in_beat_schedule() -> None:
+    """checklist_photo_retention: задача зарегистрирована в beat-расписании."""
+    from src.app.core.celery_app import celery_app
+
+    entry = celery_app.conf.beat_schedule.get("purge-expired-checklist-photos")
+    assert entry is not None
+    assert entry["task"] == "purge_expired_checklist_photos"

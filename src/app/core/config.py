@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # Верхняя граница числа фото на один пункт чек-листа (отдаётся клиенту как
     # max_photos_per_item, чтобы он прятал кнопку при достижении лимита).
     checklist_max_photos_per_item: int = 10
+    # checklist_photo_retention: через сколько дней после загрузки (files.created_at)
+    # удалять ОБЪЕКТ фото чек-листа из S3 (Celery `purge_expired_checklist_photos`,
+    # ежедневно 02:00 UTC). Строка `files`/`checklist_item_photos` не удаляется —
+    # только объект. `0` — очистка выключена.
+    checklist_photo_retention_days: int = 30
 
     # Rate limiting (slowapi, per-IP). Строки в формате limits: "5/minute;30/hour".
     # Хранилище счётчиков — Redis в проде (см. rate_limit_storage_uri), общий с Celery.

@@ -395,12 +395,17 @@ async def delete_file(
             409,
         )
 
-    # Ошибку удаления объекта логируем, строку всё равно убираем: осиротевший
-    # объект подберёт lifecycle-политика бакета.
-    try:
-        await storage.delete_object(file.storage_key)
-    except StorageError as exc:
-        logger.warning("file_object_delete_failed", file_id=str(file_id), error=str(exc))
+    # checklist_photo_retention: объект уже удалён по сроку хранения — в storage
+    # нечего удалять, S3-вызов пропускаем (см. backend.md «DELETE .../photos» —
+    # то же поведение и для cleanup_shift_photo_files, оба идут через эту функцию).
+    # Для ещё живого файла поведение прежнее: ошибку удаления объекта логируем,
+    # строку всё равно убираем — осиротевший объект подберёт lifecycle-политика
+    # бакета (известный долг, вне scope этой фичи — см. backend.md).
+    if file.purged_at is None:
+        try:
+            await storage.delete_object(file.storage_key)
+        except StorageError as exc:
+            logger.warning("file_object_delete_failed", file_id=str(file_id), error=str(exc))
 
     await session.delete(file)
     await session.flush()

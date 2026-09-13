@@ -231,13 +231,25 @@ class PhotoResponse(BaseModel):
     file_id: str
     url: str | None = Field(
         default=None,
-        description="Свежий presigned GET URL; null при недоступности storage",
+        description="Свежий presigned GET URL; null при недоступности storage "
+        "ИЛИ если фото удалено по сроку хранения (purged_at != null)",
     )
     url_expires_at: datetime | None = None
     captured_at: datetime | None = None
     latitude: float | None = None
     longitude: float | None = None
     position: int
+    purged_at: datetime | None = Field(
+        default=None,
+        description="checklist_photo_retention: UTC-момент удаления объекта из "
+        "хранилища по сроку хранения; null — объект на месте",
+    )
+    expires_at: datetime | None = Field(
+        default=None,
+        description="checklist_photo_retention: когда фото будет удалено "
+        "(created_at + CHECKLIST_PHOTO_RETENTION_DAYS); null, если уже удалено "
+        "или очистка выключена (retention_days=0)",
+    )
 
 
 class InstanceItemResponse(BaseModel):

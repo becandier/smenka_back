@@ -1,5 +1,7 @@
 # tests/test_checklist_photos.py
 import uuid
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
@@ -7,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core import storage
+from src.app.core.config import get_settings
 from src.app.core.storage import StorageError
 from src.app.models.checklist import ChecklistItemPhoto
 from src.app.models.file import File
@@ -674,3 +677,173 @@ class TestCleanupHook:
         assert (
             await db_session.execute(select(File).where(File.id == uuid.UUID(file_id)))
         ).scalar_one_or_none() is None
+
+
+class TestPhotoRetention:
+    """checklist_photo_retention: purged_at/expires_at в PhotoResponse, отвязка
+    без обращения к S3 для уже удалённого объекта, инвариантность статуса/сводки."""
+
+    async def _attach_one(
+        self,
+        client: AsyncClient,
+        super_admin_headers: dict[str, str],
+        db_session: AsyncSession,
+    ) -> dict[str, str]:
+        """Шаблон required + org-смена + одно привязанное фото. Возвращает
+        {shift_id, inst_id, item_id, file_id, photo_id}."""
+        ctx = await _setup(client, db_session, super_admin_headers)
+        await _make_template(
+            client,
+            super_admin_headers,
+            ctx["org_id"],
+            ctx["role_id"],
+            photo_requirement="required",
+        )
+        shift_id = await _start_org_shift(client, ctx["member_headers"], ctx["org_id"])
+        inst_id, item_id = await _drill_to_item(client, ctx["member_headers"], shift_id)
+        file_id = await _upload_photo(client, ctx["member_headers"], organization_id=ctx["org_id"])
+        bind = await client.post(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}/photos",
+            headers=ctx["member_headers"],
+            json={"file_id": file_id},
+        )
+        await client.patch(
+            f"/api/v1/shifts/{shift_id}/checklists/{inst_id}/items/{item_id}",
+            headers=ctx["member_headers"],
+            json={"is_completed": True},
+        )
+        return {
+            "member_headers": ctx["member_headers"],
+            "shift_id": shift_id,
+            "inst_id": inst_id,
+            "item_id": item_id,
+            "file_id": file_id,
+            "photo_id": bind.json()["data"]["id"],
+        }
+
+    async def test_live_photo_has_expires_at_no_purged_at(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await self._attach_one(client, super_admin_headers, db_session)
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(ctx["file_id"])))
+        ).scalar_one()
+        retention_days = get_settings().checklist_photo_retention_days
+        expected_expires_at = file.created_at + timedelta(days=retention_days)
+
+        detail = await client.get(
+            f"/api/v1/shifts/{ctx['shift_id']}/checklists/{ctx['inst_id']}",
+            headers=ctx["member_headers"],
+        )
+        photo = detail.json()["data"]["items"][0]["photos"][0]
+        assert photo["purged_at"] is None
+        assert photo["url"] is not None
+        assert datetime.fromisoformat(photo["expires_at"]) == expected_expires_at
+
+    async def test_purged_photo_url_null_no_presign_call(
+        self, client: AsyncClient, super_admin_headers, db_session: AsyncSession
+    ):
+        ctx = await self._attach_one(client, super_admin_headers, db_session)
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(ctx["file_id"])))
+        ).scalar_one()
+        purged_at = datetime.now(UTC)
+        file.purged_at = purged_at
+        await db_session.commit()
+
+        presign_calls: list[tuple[str, str]] = []
+
+        async def spy_presign_many(items: list[tuple[str, str]]) -> dict[str, str]:
+            presign_calls.extend(items)
+            return {key: f"https://storage.test/{key}?sig=fake" for key, _ in items}
+
+        with patch("src.app.core.storage.generate_presigned_get_many", spy_presign_many):
+            detail = await client.get(
+                f"/api/v1/shifts/{ctx['shift_id']}/checklists/{ctx['inst_id']}",
+                headers=ctx["member_headers"],
+            )
+
+        assert presign_calls == []  # покрытый по сроку файл не уходит в presign-батч
+        photo = detail.json()["data"]["items"][0]["photos"][0]
+        assert photo["url"] is None
+        assert photo["url_expires_at"] is None
+        assert photo["expires_at"] is None
+        assert photo["purged_at"] is not None
+        assert datetime.fromisoformat(photo["purged_at"]) == purged_at
+
+    async def test_purge_does_not_change_status_or_summary(
+        self,
+        client: AsyncClient,
+        super_admin_headers,
+        db_session: AsyncSession,
+    ):
+        ctx = await self._attach_one(client, super_admin_headers, db_session)
+
+        before = await client.get(
+            f"/api/v1/shifts/{ctx['shift_id']}/checklists", headers=ctx["member_headers"]
+        )
+        summary_before = before.json()["data"]["items"][0]
+        assert summary_before["status"] == "completed"
+        assert summary_before["items_summary"]["satisfied_count"] == 1
+        assert summary_before["items_summary"]["photos_required_missing"] == 0
+
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(ctx["file_id"])))
+        ).scalar_one()
+        file.purged_at = datetime.now(UTC)
+        await db_session.commit()
+
+        after = await client.get(
+            f"/api/v1/shifts/{ctx['shift_id']}/checklists", headers=ctx["member_headers"]
+        )
+        summary_after = after.json()["data"]["items"][0]
+        assert summary_after["status"] == "completed"
+        assert summary_after["items_summary"]["satisfied_count"] == 1
+        assert summary_after["items_summary"]["photos_required_missing"] == 0
+
+        detail = await client.get(
+            f"/api/v1/shifts/{ctx['shift_id']}/checklists/{ctx['inst_id']}",
+            headers=ctx["member_headers"],
+        )
+        assert detail.json()["data"]["items"][0]["photos_count"] == 1
+
+    async def test_detach_purged_photo_skips_storage_delete(
+        self,
+        client: AsyncClient,
+        super_admin_headers,
+        db_session: AsyncSession,
+        mock_storage: dict[str, bytes],
+    ):
+        """DELETE .../photos для уже удалённого по сроку фото: строки files/
+        checklist_item_photos уходят как обычно, но storage.delete_object НЕ
+        вызывается (объекта там уже нет — backend.md checklist_photo_retention)."""
+        ctx = await self._attach_one(client, super_admin_headers, db_session)
+        assert len(mock_storage) == 1
+
+        file = (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(ctx["file_id"])))
+        ).scalar_one()
+        storage_key = file.storage_key
+        file.purged_at = datetime.now(UTC)
+        await db_session.commit()
+
+        resp = await client.delete(
+            f"/api/v1/shifts/{ctx['shift_id']}/checklists/{ctx['inst_id']}"
+            f"/items/{ctx['item_id']}/photos/{ctx['photo_id']}",
+            headers=ctx["member_headers"],
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"data": None, "error": None}
+
+        assert (
+            await db_session.execute(select(File).where(File.id == uuid.UUID(ctx["file_id"])))
+        ).scalar_one_or_none() is None
+        assert (
+            await db_session.execute(
+                select(ChecklistItemPhoto).where(
+                    ChecklistItemPhoto.id == uuid.UUID(ctx["photo_id"])
+                )
+            )
+        ).scalar_one_or_none() is None
+        # Объект в (мок-)storage не тронут — delete_object пропущен для purged.
+        assert storage_key in mock_storage

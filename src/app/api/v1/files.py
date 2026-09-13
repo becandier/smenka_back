@@ -9,6 +9,7 @@ from src.app.models.file import File as FileModel
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.file import FileResponse
 from src.app.services import file_storage as file_service
+from src.app.services.file_storage import FileError
 
 router = APIRouter(prefix="/files", tags=["files"])
 
@@ -63,7 +64,10 @@ async def upload_file(
         "Возвращает метаданные файла и новый presigned GET URL (для обновления "
         "протухшей ссылки). Доступ — загрузивший, admin/owner организации файла "
         "(в т.ч. для просмотра фото старта без геопроверки, shift_geo_photo) "
-        "или участник (для knowledge_base)."
+        "или участник (для knowledge_base). "
+        "checklist_photo_retention: файл, удалённый по сроку хранения "
+        "(`purged_at != null`), отдаёт 410 `FILE_PURGED` — проверка доступа "
+        "выполняется до этого, чужой/несуществующий файл по-прежнему 403/404."
     ),
 )
 async def get_file(
@@ -72,6 +76,8 @@ async def get_file(
     session: SessionDep,
 ) -> ApiResponse:
     file = await file_service.get_file_for_read(session, file_id, user)
+    if file.purged_at is not None:
+        raise FileError("FILE_PURGED", "Файл удалён по сроку хранения", 410)
     url, expires_at = await file_service.presigned_url_for(file)
     return ApiResponse.success(_file_response(file, url, expires_at))
 

@@ -4841,7 +4841,7 @@
               }
             ],
             "title": "Url",
-            "description": "Свежий presigned GET URL; null при недоступности storage"
+            "description": "Свежий presigned GET URL; null при недоступности storage ИЛИ если фото удалено по сроку хранения (purged_at != null)"
           },
           "url_expires_at": {
             "anyOf": [
@@ -4892,6 +4892,32 @@
           "position": {
             "type": "integer",
             "title": "Position"
+          },
+          "purged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purged At",
+            "description": "checklist_photo_retention: UTC-момент удаления объекта из хранилища по сроку хранения; null — объект на месте"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At",
+            "description": "checklist_photo_retention: когда фото будет удалено (created_at + CHECKLIST_PHOTO_RETENTION_DAYS); null, если уже удалено или очистка выключена (retention_days=0)"
           }
         },
         "type": "object",
