@@ -12,6 +12,9 @@ managed S3 (AWS / Yandex Object Storage / Timeweb S3 — любой S3-совм�
 оба адреса совпадают → no-op.
 """
 
+from dataclasses import dataclass
+from datetime import datetime
+
 import aioboto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
@@ -129,6 +132,46 @@ async def delete_object(key: str) -> None:
     except (BotoCoreError, ClientError) as exc:
         logger.error("s3_delete_failed", key=key, error=repr(exc))
         raise StorageError(str(exc)) from exc
+
+
+@dataclass(frozen=True)
+class ObjectSummary:
+    """Одна запись листинга `ListObjectsV2`: ключ, размер, время изменения."""
+
+    key: str
+    size: int
+    last_modified: datetime
+
+
+async def list_objects_page(
+    prefix: str,
+    continuation_token: str | None,
+    page_size: int,
+) -> tuple[list[ObjectSummary], str | None]:
+    """Одна страница `ListObjectsV2` под префиксом (storage_housekeeping:
+    `reconcile_storage_objects`). Возвращает (объекты_страницы,
+    next_continuation_token) — `None`, если страниц больше нет. Вызывающий код
+    сам крутит цикл, передавая полученный токен следующим вызовом."""
+    kwargs: dict[str, object] = {
+        "Bucket": settings.s3_bucket,
+        "Prefix": prefix,
+        "MaxKeys": page_size,
+    }
+    if continuation_token:
+        kwargs["ContinuationToken"] = continuation_token
+    try:
+        async with _session().client("s3", **_client_kwargs(public=False)) as client:
+            response = await client.list_objects_v2(**kwargs)
+    except (BotoCoreError, ClientError) as exc:
+        logger.error("s3_list_objects_failed", prefix=prefix, error=repr(exc))
+        raise StorageError(str(exc)) from exc
+
+    items = [
+        ObjectSummary(key=obj["Key"], size=obj["Size"], last_modified=obj["LastModified"])
+        for obj in response.get("Contents", [])
+    ]
+    next_token = response.get("NextContinuationToken") if response.get("IsTruncated") else None
+    return items, next_token
 
 
 async def ensure_bucket() -> None:

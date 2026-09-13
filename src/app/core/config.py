@@ -47,11 +47,20 @@ class Settings(BaseSettings):
     # Верхняя граница числа фото на один пункт чек-листа (отдаётся клиенту как
     # max_photos_per_item, чтобы он прятал кнопку при достижении лимита).
     checklist_max_photos_per_item: int = 10
-    # checklist_photo_retention: через сколько дней после загрузки (files.created_at)
-    # удалять ОБЪЕКТ фото чек-листа из S3 (Celery `purge_expired_checklist_photos`,
-    # ежедневно 02:00 UTC). Строка `files`/`checklist_item_photos` не удаляется —
-    # только объект. `0` — очистка выключена.
+    # checklist_photo_retention / storage_housekeeping: через сколько дней после
+    # загрузки (files.created_at) удалять ОБЪЕКТ фото чек-листа из S3 (Celery
+    # `purge_expired_files`, ежедневно 02:00 UTC, правило `checklist_photo`).
+    # Строка `files`/`checklist_item_photos` не удаляется — только объект.
+    # `0` — правило выключено.
     checklist_photo_retention_days: int = 30
+    # storage_housekeeping: срок хранения ОБЪЕКТА фото старта смены без
+    # геопроверки (`shift_geo_photo`, лицо сотрудника) от `files.created_at` —
+    # тот же `purge_expired_files`, правило `shift_geo_photo`. `0` — правило выключено.
+    shift_geo_photo_retention_days: int = 90
+    # storage_housekeeping: через сколько дней после `organizations.deleted_at`
+    # удалять ОБЪЕКТЫ всех файлов организации (любая категория) — `purge_expired_files`,
+    # правило `deleted_organization`. `0` — правило выключено.
+    deleted_org_file_retention_days: int = 30
 
     # Rate limiting (slowapi, per-IP). Строки в формате limits: "5/minute;30/hour".
     # Хранилище счётчиков — Redis в проде (см. rate_limit_storage_uri), общий с Celery.
@@ -88,6 +97,14 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 50
     # Возраст удаления непривязанных файлов-сирот (Celery cleanup_orphan_files).
     orphan_file_ttl_hours: int = 24
+    # storage_housekeeping: сверка "объекты S3 без строки в files"
+    # (Celery `reconcile_storage_objects`, еженедельно вс 04:00 UTC).
+    # `false` — задача выходит сразу же, S3 не опрашивается.
+    storage_reconcile_enabled: bool = False
+    # Предохранитель: если кандидатов на удаление в одном запуске больше этого
+    # числа — не удалять НИЧЕГО (массовое расхождение = ошибка конфигурации,
+    # не тот бакет/БД, а не мусор — решает человек).
+    storage_reconcile_max_deletes: int = 1000
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
