@@ -241,10 +241,46 @@ app = FastAPI(
 app.state.limiter = limiter
 
 
+def _unhandled_exception_response(request: Request, exc: Exception) -> JSONResponse:
+    """Строит конверт 500 для необработанного исключения и фиксирует его след.
+
+    Общая логика для `logging_middleware` (основной перехват, см. ниже) и
+    `unhandled_exception_handler` (страховка) — чтобы событие `unhandled_exception`
+    и отправка в Sentry не могли разойтись между двумя точками перехвата.
+    """
+    logger.error(
+        "unhandled_exception",
+        method=request.method,
+        path=request.url.path,
+        error=repr(exc),
+    )
+    if settings.sentry_dsn:
+        sentry_sdk.capture_exception(exc)
+    return JSONResponse(
+        status_code=500,
+        content=ApiResponse.fail("ERROR", "Внутренняя ошибка сервера").model_dump(),
+    )
+
+
 @app.middleware("http")
 async def logging_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
     start = time.monotonic()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # Перехват необработанных исключений здесь, а не только в
+        # @app.exception_handler(Exception) ниже: Starlette регистрирует
+        # обработчик голого Exception в ServerErrorMiddleware — самом внешнем
+        # слое стека, СНАРУЖИ CORSMiddleware (см. комментарий у add_middleware
+        # ниже). Ответ оттуда не проходит через CORSMiddleware и не получает
+        # Access-Control-Allow-Origin — браузер превращает 500 в сетевую
+        # ошибку ("Failed to fetch"/"Load failed") вместо показа кода ошибки.
+        # Этот middleware добавлен ДО CORSMiddleware, поэтому оказывается
+        # внутри него, и построенный здесь JSONResponse получает CORS-заголовки
+        # как обычный ответ. exception_handler(Exception) остаётся страховкой
+        # на случай исключения выше по стеку (например, в самом
+        # CORSMiddleware) — до него в норме не доходит.
+        response = _unhandled_exception_response(request, exc)
     duration_ms = round((time.monotonic() - start) * 1000, 2)
     logger.info(
         "request_completed",
@@ -259,7 +295,9 @@ async def logging_middleware(request: Request, call_next: RequestResponseEndpoin
 # CORS: добавляется после logging-middleware, чтобы оказаться внешним слоем
 # (Starlette применяет middleware в обратном порядке добавления) и корректно
 # обрабатывать preflight-запросы браузерных клиентов — веб-админки и веб-версии
-# мобилки (flutter build web).
+# мобилки (flutter build web). logging_middleware ловит необработанные
+# исключения (см. его try/except выше) именно поэтому — чтобы ответ 500 успел
+# оказаться "внутри" этого слоя и получить CORS-заголовки.
 # allow_credentials=False: клиенты шлют JWT в заголовке Authorization, не в cookie.
 # Включать True только при переходе на httpOnly-cookie + CSRF (отдельная задача).
 # При credentials=False wildcard allow_headers/allow_methods=["*"] валиден и
@@ -478,25 +516,20 @@ async def payment_error_handler(request: Request, exc: PaymentError) -> JSONResp
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Глобальный перехват необработанных исключений.
+    """Страховочный перехват необработанных исключений.
 
     Доменные ошибки и RequestValidationError обрабатываются своими хендлерами
-    (ожидаемые 4xx) и сюда не попадают. Здесь — программные/инфраструктурные 500:
-    логируем через structlog (repr), полный стек шлём в Sentry (если включён),
-    клиенту отдаём неизменный конверт {data,error} со статусом 500.
+    (ожидаемые 4xx) и сюда не попадают. Программные/инфраструктурные 500 в
+    норме перехватывает try/except в `logging_middleware` (внутри
+    CORSMiddleware — там ответ получает CORS-заголовки). Starlette кладёт
+    обработчик голого `Exception` в ServerErrorMiddleware, САМЫЙ внешний слой
+    стека, снаружи CORSMiddleware — ответ отсюда никогда не получит
+    Access-Control-Allow-Origin. Хендлер оставлен как страховка на случай
+    исключения выше по стеку самого logging_middleware (например, в
+    CORSMiddleware) — событие `unhandled_exception` и Sentry не теряются даже
+    тогда, просто без CORS-заголовков в этом крайнем случае.
     """
-    logger.error(
-        "unhandled_exception",
-        method=request.method,
-        path=request.url.path,
-        error=repr(exc),
-    )
-    if settings.sentry_dsn:
-        sentry_sdk.capture_exception(exc)
-    return JSONResponse(
-        status_code=500,
-        content=ApiResponse.fail("ERROR", "Внутренняя ошибка сервера").model_dump(),
-    )
+    return _unhandled_exception_response(request, exc)
 
 
 app.include_router(v1_router, prefix="/api")
