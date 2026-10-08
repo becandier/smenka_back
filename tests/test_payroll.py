@@ -1867,7 +1867,8 @@ class TestPayrollExport:
         assert "attachment; filename=" in resp.headers["content-disposition"]
 
         wb = load_workbook(BytesIO(resp.content))
-        assert wb.sheetnames == ["Сводка", "Детализация"]
+        # payroll_breakdown: листы операций есть при include_* = true (по умолчанию)
+        assert wb.sheetnames == ["Сводка", "Детализация", "Начисления и удержания", "Штрафы"]
 
         summary = wb["Сводка"]
         rows = list(summary.iter_rows(values_only=True))

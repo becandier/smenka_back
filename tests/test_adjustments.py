@@ -933,9 +933,15 @@ async def test_payroll_export_adjustment_column(
     summary = wb["Сводка"]
     rows = list(summary.iter_rows(values_only=True))
     header = next(r for r in rows if r and r[0] == "Сотрудник")
-    assert "Начисления/удержания, ₽" in header
-    idx = header.index("Начисления/удержания, ₽")
+    # payroll_breakdown: свёрнутая колонка «Начисления/удержания» разложена на
+    # «Доплаты»/«Удержания» + категории (тут — «Без категории»)
+    assert "Начисления/удержания, ₽" not in header
+    idx = header.index("Доплаты, ₽")
+    d_idx = header.index("Удержания, ₽")
+    c_idx = header.index("Без категории, ₽")
     n_idx = header.index("К выплате, ₽")
     emp_row = next(r for r in rows if r and r[0] == "Test User")
     assert emp_row[idx] == 150.0  # 15000 коп.
+    assert emp_row[d_idx] == 0.0
+    assert emp_row[c_idx] == 150.0
     assert emp_row[n_idx] == 510.0  # 51000 коп.

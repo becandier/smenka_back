@@ -97,6 +97,41 @@ class PayrollPeriod(BaseModel):
     )
 
 
+class PayrollCategoryAmount(BaseModel):
+    """Сумма ручных начислений одной категории (payroll_breakdown)."""
+
+    category_id: str | None = Field(
+        default=None, description="UUID категории или null — «Без категории»"
+    )
+    category_name: str | None = Field(
+        default=None,
+        description="Имя категории (в т.ч. удалённой) или null — «Без категории»",
+    )
+    amount_minor: int = Field(description="Знаковая сумма начислений категории, в копейках")
+    accrual_minor: int = Field(description="Сумма положительных начислений категории (≥ 0)")
+    deduction_minor: int = Field(description="Сумма удержаний категории по модулю (≥ 0)")
+    count: int = Field(description="Число начислений категории")
+
+
+_BASE_AMOUNT_DESCRIPTION = (
+    "Оплата за отработанное время, в копейках (half-up на смену); "
+    "base_amount_minor + overtime_amount_minor == gross_amount_minor"
+)
+_OVERTIME_AMOUNT_DESCRIPTION = (
+    "Оплата согласованной переработки, в копейках: по сменам amount(ставка, время + "
+    "переработка) − amount(ставка, время); для per_shift — 0"
+)
+_ACCRUAL_DESCRIPTION = "Сумма положительных ручных начислений (≥ 0), в копейках"
+_DEDUCTION_DESCRIPTION = (
+    "Сумма удержаний по модулю (≥ 0), в копейках; "
+    "adjustment_accrual_minor − adjustment_deduction_minor == adjustment_amount_minor"
+)
+_BY_CATEGORY_DESCRIPTION = (
+    "Суммы ручных начислений по категориям: сортировка по lower(category_name), "
+    "«Без категории» (category_id = null) — последней; пусто, если начислений нет"
+)
+
+
 class PayrollItemResponse(BaseModel):
     user_id: str = Field(description="UUID сотрудника")
     user_name: str = Field(
@@ -120,6 +155,8 @@ class PayrollItemResponse(BaseModel):
         description="Начисление в копейках (half-up, округлено один раз на итог); для "
         "hourly-ставки включает согласованную переработку",
     )
+    base_amount_minor: int = Field(default=0, description=_BASE_AMOUNT_DESCRIPTION)
+    overtime_amount_minor: int = Field(default=0, description=_OVERTIME_AMOUNT_DESCRIPTION)
     unpaid_seconds: int = Field(
         description="Время смен, для которых не нашлось действующей ставки",
     )
@@ -137,7 +174,12 @@ class PayrollItemResponse(BaseModel):
         description="Знаковая сумма активных ручных начислений сотрудника за период, в копейках "
         "(manual_time_entry)",
     )
+    adjustment_accrual_minor: int = Field(default=0, description=_ACCRUAL_DESCRIPTION)
+    adjustment_deduction_minor: int = Field(default=0, description=_DEDUCTION_DESCRIPTION)
     adjustments_count: int = Field(default=0, description="Число активных ручных начислений")
+    adjustments_by_category: list[PayrollCategoryAmount] = Field(
+        default_factory=list, description=_BY_CATEGORY_DESCRIPTION
+    )
     net_amount_minor: int = Field(
         description="К выплате: gross_amount_minor − penalty_amount_minor + "
         "adjustment_amount_minor (может быть < 0)",
@@ -170,6 +212,8 @@ class PayrollTotalsResponse(BaseModel):
     gross_amount_minor: int = Field(
         description="Сумма округлённых итогов сотрудников, в копейках",
     )
+    base_amount_minor: int = Field(default=0, description=_BASE_AMOUNT_DESCRIPTION)
+    overtime_amount_minor: int = Field(default=0, description=_OVERTIME_AMOUNT_DESCRIPTION)
     penalty_amount_minor: int = Field(
         default=0,
         description="Сумма штрафов по всем сотрудникам, в копейках",
@@ -178,8 +222,14 @@ class PayrollTotalsResponse(BaseModel):
     adjustment_amount_minor: int = Field(
         default=0, description="Сумма знаковых ручных начислений по всем сотрудникам, в копейках"
     )
+    adjustment_accrual_minor: int = Field(default=0, description=_ACCRUAL_DESCRIPTION)
+    adjustment_deduction_minor: int = Field(default=0, description=_DEDUCTION_DESCRIPTION)
     adjustments_count: int = Field(
         default=0, description="Суммарное число активных ручных начислений"
+    )
+    adjustments_by_category: list[PayrollCategoryAmount] = Field(
+        default_factory=list,
+        description="Агрегат adjustments_by_category по всем items (та же форма и сортировка)",
     )
     net_amount_minor: int = Field(
         description="Сумма «к выплате» по всем сотрудникам (может быть < 0)",
@@ -216,6 +266,8 @@ class PayrollBreakdownBucket(BaseModel):
     gross_amount_minor: int = Field(
         description="Начисление за корзину в копейках (сумма округлённых дневных значений)",
     )
+    base_amount_minor: int = Field(default=0, description=_BASE_AMOUNT_DESCRIPTION)
+    overtime_amount_minor: int = Field(default=0, description=_OVERTIME_AMOUNT_DESCRIPTION)
     unpaid_seconds: int = Field(description="Время смен корзины без действующей ставки")
     has_missing_rate: bool = Field(description="true, если в корзине были смены без ставки")
     planned_seconds: int = Field(default=0, description="Плановое время корзины")

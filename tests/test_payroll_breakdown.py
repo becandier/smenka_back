@@ -3,10 +3,13 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+from io import BytesIO
 from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -635,3 +638,726 @@ async def test_my_adjustments_include_category(
     assert items[0]["category_name"] == "Премия"
     assert items[1]["category_id"] is None
     assert items[1]["category_name"] is None
+
+
+# --- Отчёт payroll: разбивка ------------------------------------------------------
+def _amount(rate: int, seconds: int) -> int:
+    exact = Decimal(seconds) * rate / Decimal(3600)
+    return int(exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+HOURLY_RATE = 10001  # некруглая ставка — ловит расхождения округления
+
+
+async def _seed_report(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    owner_headers: dict[str, str],
+    org: Organization,
+    owner: User,
+    employee_member: OrganizationMember,
+    emp2_member: OrganizationMember,
+    verified_user: User,
+    emp2_user: User,
+) -> dict[str, Any]:
+    """Test User — hourly с переработкой на двух сменах в разные недели;
+    Anna Second — per_shift с переработкой. Начисления в 2 категориях + без
+    категории, удалённая категория, отменённое начисление, штрафы."""
+    await _make_rate(db_session, employee_member.id, HOURLY_RATE)
+    await _make_rate(db_session, emp2_member.id, 500000, RateType.per_shift)
+
+    s1 = await _make_finished_shift(
+        db_session,
+        verified_user.id,
+        org.id,
+        datetime(2026, 6, 3, 9, 0, 0, tzinfo=UTC),
+        datetime(2026, 6, 3, 10, 0, 7, tzinfo=UTC),  # 3607 c
+    )
+    await _approve_overtime(db_session, s1.id, 13)
+    s2 = await _make_finished_shift(
+        db_session,
+        verified_user.id,
+        org.id,
+        datetime(2026, 6, 20, 10, 0, tzinfo=UTC),
+        datetime(2026, 6, 20, 11, 30, tzinfo=UTC),  # 5400 c
+    )
+    await _approve_overtime(db_session, s2.id, 7)
+    s3 = await _make_finished_shift(
+        db_session,
+        emp2_user.id,
+        org.id,
+        datetime(2026, 6, 5, 9, 0, tzinfo=UTC),
+        datetime(2026, 6, 5, 17, 0, tzinfo=UTC),
+    )
+    await _approve_overtime(db_session, s3.id, 30)
+
+    bonus = await _category_id(client, owner_headers, org.id, "премия")
+    advance = await _category_id(client, owner_headers, org.id, "Аванс")
+    member = str(employee_member.id)
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=5000,
+        category_id=bonus,
+        reason="Премия за план",
+        comment="Июнь",
+        occurred_at="2026-06-10T10:00:00Z",
+    )
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=3000,
+        category_id=bonus,
+        shift_id=str(s1.id),
+        occurred_at=None,
+    )
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=-2000,
+        category_id=advance,
+        occurred_at="2026-06-15T22:30:00Z",
+    )
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=-1000,
+        occurred_at="2026-06-12T10:00:00Z",
+    )
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=700,
+        occurred_at="2026-06-11T10:00:00Z",
+    )
+    cancelled = await _adjustment(
+        client, owner_headers, org.id, member_id=member, amount_minor=99999, category_id=bonus
+    )
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/adjustments/{cancelled['id']}", headers=owner_headers
+    )
+    # вне периода — не попадает
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=777,
+        category_id=bonus,
+        occurred_at="2026-07-02T10:00:00Z",
+    )
+    # удалённая категория у Anna — остаётся в отчёте под своим именем
+    gone = await _category_id(client, owner_headers, org.id, "Форма")
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(emp2_member.id),
+        amount_minor=-400,
+        category_id=gone,
+    )
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/adjustment-categories/{gone}", headers=owner_headers
+    )
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(emp2_member.id),
+        amount_minor=100,
+        category_id=bonus,
+    )
+
+    await _make_penalty(
+        db_session,
+        org.id,
+        employee_member.id,
+        owner.id,
+        1500,
+        datetime(2026, 6, 4, 9, 0, tzinfo=UTC),
+        shift_id=s1.id,
+    )
+    await _make_penalty(
+        db_session,
+        org.id,
+        employee_member.id,
+        owner.id,
+        9999,
+        datetime(2026, 6, 4, 9, 0, tzinfo=UTC),
+        is_deleted=True,
+    )
+    await _make_penalty(
+        db_session,
+        org.id,
+        emp2_member.id,
+        owner.id,
+        250,
+        datetime(2026, 6, 6, 9, 0, tzinfo=UTC),
+        reason="Форма",
+    )
+
+    base1 = _amount(HOURLY_RATE, 3607) + _amount(HOURLY_RATE, 5400)
+    gross1 = _amount(HOURLY_RATE, 3607 + 13 * 60) + _amount(HOURLY_RATE, 5400 + 7 * 60)
+    return {"bonus": bonus, "advance": advance, "gone": gone, "base1": base1, "gross1": gross1}
+
+
+def _assert_gross_split(container: dict[str, Any]) -> None:
+    assert (
+        container["base_amount_minor"] + container["overtime_amount_minor"]
+        == container["gross_amount_minor"]
+    )
+
+
+def _assert_adjustment_invariants(container: dict[str, Any]) -> None:
+    assert container["adjustment_accrual_minor"] >= 0
+    assert container["adjustment_deduction_minor"] >= 0
+    assert (
+        container["adjustment_accrual_minor"] - container["adjustment_deduction_minor"]
+        == container["adjustment_amount_minor"]
+    )
+    by_cat = container["adjustments_by_category"]
+    assert sum(c["amount_minor"] for c in by_cat) == container["adjustment_amount_minor"]
+    assert sum(c["count"] for c in by_cat) == container["adjustments_count"]
+    for c in by_cat:
+        assert c["accrual_minor"] - c["deduction_minor"] == c["amount_minor"]
+
+
+@pytest.mark.parametrize("granularity", ["none", "day", "week", "month"])
+async def test_payroll_breakdown_invariants(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+    granularity,
+):
+    seeded = await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll",
+        headers=owner_headers,
+        params={**JUNE, "granularity": granularity},
+    )
+    assert resp.status_code == 200, resp.text
+    data = _data(resp)
+    items = {i["user_name"]: i for i in data["items"]}
+    test_user, anna = items["Test User"], items["Anna Second"]
+
+    # hourly с переработкой: точное значение base/overtime по сменам
+    assert test_user["gross_amount_minor"] == seeded["gross1"]
+    assert test_user["base_amount_minor"] == seeded["base1"]
+    assert test_user["overtime_amount_minor"] == seeded["gross1"] - seeded["base1"]
+    assert test_user["overtime_amount_minor"] > 0
+    # per_shift: переработка не оплачивается отдельно
+    assert anna["gross_amount_minor"] == 500000
+    assert anna["base_amount_minor"] == 500000
+    assert anna["overtime_amount_minor"] == 0
+
+    for container in [*data["items"], data["totals"]]:
+        _assert_gross_split(container)
+        _assert_adjustment_invariants(container)
+    if granularity != "none":
+        for item in data["items"]:
+            for bucket in item["breakdown"]:
+                _assert_gross_split(bucket)
+            assert (
+                sum(b["base_amount_minor"] for b in item["breakdown"]) == item["base_amount_minor"]
+            )
+            assert (
+                sum(b["overtime_amount_minor"] for b in item["breakdown"])
+                == item["overtime_amount_minor"]
+            )
+
+    assert test_user["adjustment_amount_minor"] == 5700
+    assert test_user["adjustment_accrual_minor"] == 8700
+    assert test_user["adjustment_deduction_minor"] == 3000
+    assert test_user["adjustments_count"] == 5
+    assert test_user["adjustments_by_category"] == [
+        {
+            "category_id": seeded["advance"],
+            "category_name": "Аванс",
+            "amount_minor": -2000,
+            "accrual_minor": 0,
+            "deduction_minor": 2000,
+            "count": 1,
+        },
+        {
+            "category_id": seeded["bonus"],
+            "category_name": "премия",
+            "amount_minor": 8000,
+            "accrual_minor": 8000,
+            "deduction_minor": 0,
+            "count": 2,
+        },
+        {
+            "category_id": None,
+            "category_name": None,
+            "amount_minor": -300,
+            "accrual_minor": 700,
+            "deduction_minor": 1000,
+            "count": 2,
+        },
+    ]
+    assert test_user["penalty_amount_minor"] == 1500
+    assert test_user["net_amount_minor"] == seeded["gross1"] - 1500 + 5700
+
+    assert anna["adjustments_by_category"] == [
+        {
+            "category_id": seeded["bonus"],
+            "category_name": "премия",
+            "amount_minor": 100,
+            "accrual_minor": 100,
+            "deduction_minor": 0,
+            "count": 1,
+        },
+        {
+            "category_id": seeded["gone"],
+            "category_name": "Форма",
+            "amount_minor": -400,
+            "accrual_minor": 0,
+            "deduction_minor": 400,
+            "count": 1,
+        },
+    ]
+
+    totals = data["totals"]
+    assert totals["base_amount_minor"] == seeded["base1"] + 500000
+    assert totals["adjustment_accrual_minor"] == 8800
+    assert totals["adjustment_deduction_minor"] == 3400
+    assert [
+        (c["category_name"], c["amount_minor"], c["count"])
+        for c in totals["adjustments_by_category"]
+    ] == [("Аванс", -2000, 1), ("премия", 8100, 3), ("Форма", -400, 1), (None, -300, 2)]
+
+
+async def test_payroll_breakdown_include_adjustments_false(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll",
+        headers=owner_headers,
+        params={**JUNE, "include_adjustments": "false"},
+    )
+    data = _data(resp)
+    for container in [*data["items"], data["totals"]]:
+        assert container["adjustment_amount_minor"] == 0
+        assert container["adjustment_accrual_minor"] == 0
+        assert container["adjustment_deduction_minor"] == 0
+        assert container["adjustments_count"] == 0
+        assert container["adjustments_by_category"] == []
+        _assert_gross_split(container)
+
+
+async def test_payroll_breakdown_user_filter_and_empty(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    seeded = await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll",
+        headers=owner_headers,
+        params={**JUNE, "user_ids": str(emp2_user.id)},
+    )
+    data = _data(resp)
+    assert [i["user_name"] for i in data["items"]] == ["Anna Second"]
+    assert [c["category_id"] for c in data["totals"]["adjustments_by_category"]] == [
+        seeded["bonus"],
+        seeded["gone"],
+    ]
+    assert data["totals"]["adjustment_amount_minor"] == -300
+
+    # период без начислений — пустой список категорий
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll",
+        headers=owner_headers,
+        params={"date_from": "2026-05-01T00:00:00Z", "date_to": "2026-05-31T23:59:59Z"},
+    )
+    assert _data(resp)["totals"]["adjustments_by_category"] == []
+    assert _data(resp)["items"] == []
+
+
+# --- Excel -------------------------------------------------------------------------
+def _sheet_rows(wb: Any, title: str) -> list[tuple[Any, ...]]:
+    return list(wb[title].iter_rows(values_only=True))
+
+
+def _summary(wb: Any) -> tuple[list[str], dict[str, tuple[Any, ...]]]:
+    rows = _sheet_rows(wb, "Сводка")
+    header = list(next(r for r in rows if r and r[0] == "Сотрудник"))
+    body = {str(r[0]): r for r in rows[rows.index(tuple(header)) + 1 :] if r and r[0] is not None}
+    return header, body
+
+
+async def test_payroll_export_breakdown_sheets(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    seeded = await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export",
+        headers=owner_headers,
+        params={**JUNE, "tz": "Europe/Moscow"},
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(BytesIO(resp.content))
+    assert wb.sheetnames == ["Сводка", "Детализация", "Начисления и удержания", "Штрафы"]
+
+    header, body = _summary(wb)
+    assert header == [
+        "Сотрудник",
+        "Часы",
+        "Смены",
+        "Начислено, ₽",
+        "в т.ч. за время, ₽",
+        "в т.ч. переработка, ₽",
+        "Штраф, ₽",
+        "Доплаты, ₽",
+        "Удержания, ₽",
+        "Аванс, ₽",
+        "премия, ₽",
+        "Форма, ₽",
+        "Без категории, ₽",
+        "К выплате, ₽",
+        "Без ставки (смен)",
+        "Без ставки (часов)",
+        "Переработка, ч",
+        "По графику, ч",
+        "По графику, ₽",
+        "Разница, ₽",
+        "Опозданий",
+        "Опоздания, мин",
+    ]
+    col = {name: idx for idx, name in enumerate(header)}
+    assert list(body) == ["Anna Second", "Test User", "ИТОГО"]  # как items
+    tu = body["Test User"]
+    assert tu[col["Начислено, ₽"]] == seeded["gross1"] / 100
+    assert tu[col["в т.ч. за время, ₽"]] == seeded["base1"] / 100
+    assert tu[col["Доплаты, ₽"]] == 87.0
+    assert tu[col["Удержания, ₽"]] == -30.0
+    assert tu[col["Аванс, ₽"]] == -20.0
+    assert tu[col["премия, ₽"]] == 80.0
+    assert tu[col["Форма, ₽"]] == 0
+    assert tu[col["Без категории, ₽"]] == -3.0
+    anna = body["Anna Second"]
+    assert anna[col["в т.ч. переработка, ₽"]] == 0
+    assert anna[col["Форма, ₽"]] == -4.0
+
+    # К выплате = Начислено − Штраф + Доплаты + Удержания; Начислено = время + переработка
+    for row in body.values():
+        assert row[col["К выплате, ₽"]] == pytest.approx(
+            row[col["Начислено, ₽"]]
+            - row[col["Штраф, ₽"]]
+            + row[col["Доплаты, ₽"]]
+            + row[col["Удержания, ₽"]]
+        )
+        assert row[col["Начислено, ₽"]] == pytest.approx(
+            row[col["в т.ч. за время, ₽"]] + row[col["в т.ч. переработка, ₽"]]
+        )
+        cats = sum(row[col[h]] for h in ("Аванс, ₽", "премия, ₽", "Форма, ₽", "Без категории, ₽"))
+        assert cats == pytest.approx(row[col["Доплаты, ₽"]] + row[col["Удержания, ₽"]])
+    # ИТОГО — по всем денежным колонкам, включая категорийные
+    for name in (
+        "Начислено, ₽",
+        "в т.ч. за время, ₽",
+        "в т.ч. переработка, ₽",
+        "Штраф, ₽",
+        "Доплаты, ₽",
+        "Удержания, ₽",
+        "Аванс, ₽",
+        "премия, ₽",
+        "Форма, ₽",
+        "Без категории, ₽",
+        "К выплате, ₽",
+    ):
+        assert body["ИТОГО"][col[name]] == pytest.approx(
+            body["Test User"][col[name]] + body["Anna Second"][col[name]]
+        )
+
+    # Детализация: без вводящих в заблуждение колонок, с разбивкой gross
+    detail = _sheet_rows(wb, "Детализация")
+    assert list(detail[0]) == [
+        "Сотрудник",
+        "Дата",
+        "Часы",
+        "Смены",
+        "Начислено, ₽",
+        "в т.ч. за время, ₽",
+        "в т.ч. переработка, ₽",
+        "Без ставки (часов)",
+        "По графику, ч",
+        "По графику, ₽",
+        "Разница, ₽",
+    ]
+    for r in detail[1:]:
+        assert r[4] == pytest.approx(r[5] + r[6])
+
+    # Лист начислений: те же строки, что в агрегате
+    adj_rows = _sheet_rows(wb, "Начисления и удержания")
+    assert list(adj_rows[0]) == [
+        "Сотрудник",
+        "Дата",
+        "Категория",
+        "Причина",
+        "Комментарий",
+        "Сумма, ₽",
+        "Смена",
+        "Кто внёс",
+    ]
+    adj_body = adj_rows[1:-1]
+    assert adj_rows[-1][0] == "ИТОГО"
+    assert [r[0] for r in adj_body] == ["Anna Second"] * 2 + ["Test User"] * 5
+    for name in ("Test User", "Anna Second"):
+        user_sum = sum(r[5] for r in adj_body if r[0] == name)
+        assert user_sum == pytest.approx(
+            body[name][col["Доплаты, ₽"]] + body[name][col["Удержания, ₽"]]
+        )
+    assert adj_rows[-1][5] == pytest.approx(sum(r[5] for r in adj_body))
+    tu_rows = [r for r in adj_body if r[0] == "Test User"]
+    # сортировка по дате; дата в tz отчёта (22:30Z 15.06 → 16.06 по Москве)
+    assert [r[1] for r in tu_rows] == [
+        "03.06.2026",
+        "10.06.2026",
+        "11.06.2026",
+        "12.06.2026",
+        "16.06.2026",
+    ]
+    shift_row = tu_rows[0]
+    assert shift_row[2] == "премия"
+    assert shift_row[6] == "03.06.2026 12:00"  # начало смены 09:00Z по Москве
+    assert shift_row[7] == "Owner"
+    assert tu_rows[1][3] == "Премия за план"
+    assert tu_rows[1][4] == "Июнь"
+    assert tu_rows[1][6] in ("", None)
+    assert tu_rows[2][2] == "Без категории"
+    assert sorted(r[2] for r in adj_body if r[0] == "Anna Second") == ["Форма", "премия"]
+
+    # Лист штрафов
+    pen_rows = _sheet_rows(wb, "Штрафы")
+    assert list(pen_rows[0]) == [
+        "Сотрудник",
+        "Дата",
+        "Причина",
+        "Комментарий",
+        "Сумма, ₽",
+        "Смена",
+        "Кто назначил",
+    ]
+    pen_body = pen_rows[1:-1]
+    assert len(pen_body) == 2  # отменённый штраф не попал
+    for name in ("Test User", "Anna Second"):
+        assert sum(r[4] for r in pen_body if r[0] == name) == pytest.approx(
+            body[name][col["Штраф, ₽"]]
+        )
+    assert pen_rows[-1][0] == "ИТОГО"
+    assert pen_rows[-1][4] == pytest.approx(17.5)
+
+
+async def test_payroll_export_without_adjustments_and_penalties(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export",
+        headers=owner_headers,
+        params={**JUNE, "include_adjustments": "false", "include_penalties": "false"},
+    )
+    wb = load_workbook(BytesIO(resp.content))
+    assert wb.sheetnames == ["Сводка", "Детализация"]
+    header, _ = _summary(wb)
+    assert "Доплаты, ₽" not in header
+    assert "Удержания, ₽" not in header
+    assert not any(
+        h.endswith(", ₽") and h.startswith(("Аванс", "премия", "Без кат")) for h in header
+    )
+
+
+async def test_payroll_export_user_filter_rows_match(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    await _seed_report(
+        client,
+        db_session,
+        owner_headers,
+        org,
+        owner,
+        employee_member,
+        emp2_member,
+        verified_user,
+        emp2_user,
+    )
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export",
+        headers=owner_headers,
+        params={**JUNE, "user_ids": str(verified_user.id)},
+    )
+    wb = load_workbook(BytesIO(resp.content))
+    header, body = _summary(wb)
+    assert list(body) == ["Test User", "ИТОГО"]
+    assert "Форма, ₽" not in header  # категория только у отфильтрованной Anna
+    assert {r[0] for r in _sheet_rows(wb, "Начисления и удержания")[1:-1]} == {"Test User"}
+    assert {r[0] for r in _sheet_rows(wb, "Штрафы")[1:-1]} == {"Test User"}
+
+
+async def test_payroll_export_only_missing_rate_rows_match(
+    client,
+    db_session,
+    owner_headers,
+    owner,
+    org,
+    employee_member,
+    emp2_member,
+    verified_user,
+    emp2_user,
+):
+    """only_missing_rate сужает items: Anna (со ставкой, без штрафов) остаётся только
+    благодаря начислению; при include_adjustments=false она выпадает — строки листов
+    строго по сотрудникам из «Сводки»."""
+    await _make_rate(db_session, emp2_member.id, 10000)
+    await _make_finished_shift(
+        db_session,
+        verified_user.id,
+        org.id,
+        datetime(2026, 6, 3, 9, 0, tzinfo=UTC),
+        datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+    )  # Test User без ставки → остаётся
+    await _make_finished_shift(
+        db_session,
+        emp2_user.id,
+        org.id,
+        datetime(2026, 6, 3, 9, 0, tzinfo=UTC),
+        datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+    )
+    await _make_penalty(
+        db_session,
+        org.id,
+        employee_member.id,
+        owner.id,
+        300,
+        datetime(2026, 6, 4, 9, 0, tzinfo=UTC),
+    )
+    await _adjustment(
+        client, owner_headers, org.id, member_id=str(emp2_member.id), amount_minor=100
+    )
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export",
+        headers=owner_headers,
+        params={**JUNE, "only_missing_rate": "true"},
+    )
+    wb = load_workbook(BytesIO(resp.content))
+    _, body = _summary(wb)
+    assert list(body) == ["Anna Second", "Test User", "ИТОГО"]
+    assert [r[0] for r in _sheet_rows(wb, "Начисления и удержания")[1:-1]] == ["Anna Second"]
+    assert [r[0] for r in _sheet_rows(wb, "Штрафы")[1:-1]] == ["Test User"]
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export",
+        headers=owner_headers,
+        params={**JUNE, "only_missing_rate": "true", "include_adjustments": "false"},
+    )
+    wb = load_workbook(BytesIO(resp.content))
+    _, body = _summary(wb)
+    assert list(body) == ["Test User", "ИТОГО"]
+    assert [r[0] for r in _sheet_rows(wb, "Штрафы")[1:-1]] == ["Test User"]

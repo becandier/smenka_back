@@ -12,6 +12,7 @@ soft-delete (`is_deleted = true`). Каждая операция (создани
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +26,7 @@ from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.notification import NotificationType
 from src.app.models.organization import OrganizationMember
 from src.app.models.shift import Shift
+from src.app.models.user import User
 from src.app.services import audit as audit_service
 from src.app.services import entitlements
 from src.app.services import notification as notification_service
@@ -759,17 +761,41 @@ def parse_category_filter(value: str | None) -> tuple[uuid.UUID | None, bool]:
 
 
 # --- Агрегаты для payroll ----------------------------------------------------
-async def aggregate_adjustments_by_user(
+@dataclass(frozen=True)
+class AdjustmentReportRow:
+    """Неотменённое начисление, попавшее в отчёт payroll (payroll_breakdown).
+
+    Единственный источник и для агрегатов `items[]`/`totals` (суммы, доплаты,
+    удержания, `adjustments_by_category`), и для построчного листа Excel
+    «Начисления и удержания» — фильтры не могут разъехаться.
+    """
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    amount_minor: int
+    reason: str
+    comment: str | None
+    occurred_at: datetime
+    category_id: uuid.UUID | None
+    category_name: str | None
+    shift_started_at: datetime | None
+    created_by_name: str | None
+
+
+async def fetch_report_adjustments(
     session: AsyncSession,
     org_id: uuid.UUID,
     *,
     date_from: datetime | None,
     date_to: datetime | None,
-) -> dict[uuid.UUID, tuple[int, int]]:
-    """user_id → (знаковая сумма активных начислений в копейках, число) за период.
+    user_ids: list[uuid.UUID] | None = None,
+) -> list[AdjustmentReportRow]:
+    """Неотменённые начисления организации за период для отчёта payroll.
 
     Атрибуция к сотруднику — через member_id → organization_members.user_id.
-    Период — по `occurred_at`, `date_to` включительно (UTC). Только is_deleted=false.
+    Период — по `occurred_at`, `date_to` включительно (UTC). `user_ids` —
+    фильтр сотрудников отчёта (пусто/None — все). Имя категории — в т.ч.
+    удалённой; время начала привязанной смены и имя внёсшего — одним запросом.
     """
     conditions = [
         PayrollAdjustment.organization_id == org_id,
@@ -779,18 +805,47 @@ async def aggregate_adjustments_by_user(
         conditions.append(PayrollAdjustment.occurred_at >= date_from)
     if date_to is not None:
         conditions.append(PayrollAdjustment.occurred_at <= date_to)
+    if user_ids:
+        conditions.append(OrganizationMember.user_id.in_(user_ids))
 
     result = await session.execute(
         select(
+            PayrollAdjustment.id,
             OrganizationMember.user_id,
-            func.coalesce(func.sum(PayrollAdjustment.amount_minor), 0),
-            func.count(PayrollAdjustment.id),
+            PayrollAdjustment.amount_minor,
+            PayrollAdjustment.reason,
+            PayrollAdjustment.comment,
+            PayrollAdjustment.occurred_at,
+            PayrollAdjustment.category_id,
+            PayrollAdjustmentCategory.name,
+            Shift.started_at,
+            User.name,
         )
         .join(OrganizationMember, PayrollAdjustment.member_id == OrganizationMember.id)
+        .outerjoin(
+            PayrollAdjustmentCategory,
+            PayrollAdjustment.category_id == PayrollAdjustmentCategory.id,
+        )
+        .outerjoin(Shift, PayrollAdjustment.shift_id == Shift.id)
+        .outerjoin(User, PayrollAdjustment.created_by_user_id == User.id)
         .where(*conditions)
-        .group_by(OrganizationMember.user_id)
+        .order_by(PayrollAdjustment.occurred_at, PayrollAdjustment.id)
     )
-    return {user_id: (int(total), int(count)) for user_id, total, count in result.all()}
+    return [
+        AdjustmentReportRow(
+            id=row[0],
+            user_id=row[1],
+            amount_minor=int(row[2]),
+            reason=row[3],
+            comment=row[4],
+            occurred_at=row[5],
+            category_id=row[6],
+            category_name=row[7],
+            shift_started_at=row[8],
+            created_by_name=row[9],
+        )
+        for row in result.all()
+    ]
 
 
 async def aggregate_member_adjustments(
@@ -830,7 +885,7 @@ async def aggregate_adjustments_by_shift(
 
     Одним запросом для всей страницы смен (shift_history_earnings, ADR-005 п.4) —
     непривязанные к смене начисления сюда не попадают (они видны только в
-    `aggregate_*_by_user`/`aggregate_member_adjustments` за период). Только
+    `fetch_report_adjustments`/`aggregate_member_adjustments` за период). Только
     is_deleted=false.
     """
     if not shift_ids:
