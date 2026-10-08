@@ -57,6 +57,17 @@
 
 ---
 
+## Фича — Разделение начислений в зарплатном отчёте (`payroll_breakdown`) `[~]`
+ТЗ: `../../docs/tasks/payroll_breakdown/backend.md`  STATUS: `../../docs/tasks/payroll_breakdown/STATUS.md`
+- [x] Таблица `payroll_adjustment_categories` (soft-delete, частичный уникальный индекс по `(organization_id, lower(name))` среди живых) + nullable `payroll_adjustments.category_id` (SET NULL), без backfill — миграция `b1c2d3e4f5a6`, `upgrade`/`downgrade`/`upgrade` проверено локально
+- [x] CRUD категорий `.../adjustment-categories` (409 на дубль и гонку, 404 чужой/удалённой), `category_id` в начислениях (PATCH: отсутствие ≠ null), `category_name` в ответах, фильтр `category_id=<uuid>|none`
+- [x] Отчёт payroll: `base_amount_minor`/`overtime_amount_minor` (точная разбивка на смене, также в `breakdown`), `adjustment_accrual_minor`/`adjustment_deduction_minor`/`adjustments_by_category`
+- [x] Excel: разложенная «Сводка» (категорийные колонки), «Детализация» без нулевых колонок, листы «Начисления и удержания»/«Штрафы» из той же выборки, что агрегат
+- [x] Тесты `tests/test_payroll_breakdown.py` (CRUD, права, инварианты на none/day/week/month, hourly с переработкой и per_shift, листы Excel против «Сводки»)
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Ручной учёт времени и начисления (`manual_time_entry`) `[~]`
 ТЗ: `../../docs/tasks/manual_time_entry/backend.md`  STATUS: `../../docs/tasks/manual_time_entry/STATUS.md`
 - [x] `shifts` — 6 nullable-колонок ручного ввода (`created_by_user_id`/`edited_by_user_id`/`edited_at`/`manual_note`/`deleted_by_user_id`/`deleted_at`, FK→`users.id` ON DELETE SET NULL); задействована существующая заготовка `is_deleted` (`fines`)
