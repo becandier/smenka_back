@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from src.app.api.v1.adjustment_categories import router as adjustment_categories_router
 from src.app.api.v1.adjustments import router as adjustments_router
 from src.app.api.v1.admin import router as admin_router
 from src.app.api.v1.admin_payments import router as admin_payments_router
@@ -40,6 +41,7 @@ router.include_router(payroll_router)
 router.include_router(penalties_router)
 router.include_router(manual_shifts_router)
 router.include_router(adjustments_router)
+router.include_router(adjustment_categories_router)
 router.include_router(checklist_templates_router)
 router.include_router(checklist_assignments_router)
 router.include_router(checklist_overrides_router)

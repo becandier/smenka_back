@@ -46,6 +46,9 @@ async def _build_adjustment_payloads(
     user_ids = set(user_by_member.values()) | {a.created_by_user_id for a in adjustments}
     users_result = await session.execute(select(User.id, User.name).where(User.id.in_(user_ids)))
     name_by_user = dict(users_result.tuples().all())
+    category_names = await adjustment_service.get_category_names(
+        session, {a.category_id for a in adjustments if a.category_id is not None}
+    )
 
     payloads: list[AdjustmentResponse] = []
     for a in adjustments:
@@ -60,6 +63,10 @@ async def _build_adjustment_payloads(
                 user_name=user_name,
                 display_name=display_name_by_member.get(a.member_id),
                 shift_id=str(a.shift_id) if a.shift_id is not None else None,
+                category_id=str(a.category_id) if a.category_id is not None else None,
+                category_name=(
+                    category_names.get(a.category_id) if a.category_id is not None else None
+                ),
                 amount_minor=a.amount_minor,
                 currency=a.currency,
                 reason=a.reason,
@@ -75,17 +82,30 @@ async def _build_adjustment_payloads(
     return payloads
 
 
-def _my_adjustment_to_response(adjustment: PayrollAdjustment) -> MyAdjustmentResponse:
-    return MyAdjustmentResponse(
-        id=str(adjustment.id),
-        amount_minor=adjustment.amount_minor,
-        currency=adjustment.currency,
-        reason=adjustment.reason,
-        comment=adjustment.comment,
-        occurred_at=adjustment.occurred_at,
-        shift_id=str(adjustment.shift_id) if adjustment.shift_id is not None else None,
-        created_at=adjustment.created_at,
+async def _build_my_adjustment_payloads(
+    session: AsyncSession,
+    adjustments: list[PayrollAdjustment],
+) -> list[MyAdjustmentResponse]:
+    category_names = await adjustment_service.get_category_names(
+        session, {a.category_id for a in adjustments if a.category_id is not None}
     )
+    return [
+        MyAdjustmentResponse(
+            id=str(a.id),
+            amount_minor=a.amount_minor,
+            currency=a.currency,
+            reason=a.reason,
+            comment=a.comment,
+            occurred_at=a.occurred_at,
+            shift_id=str(a.shift_id) if a.shift_id is not None else None,
+            category_id=str(a.category_id) if a.category_id is not None else None,
+            category_name=(
+                category_names.get(a.category_id) if a.category_id is not None else None
+            ),
+            created_at=a.created_at,
+        )
+        for a in adjustments
+    ]
 
 
 @router.post(
@@ -115,6 +135,7 @@ async def create_adjustment(
         occurred_at=body.occurred_at,
         shift_id=body.shift_id,
         comment=body.comment,
+        category_id=body.category_id,
     )
     await session.commit()
     payloads = await _build_adjustment_payloads(session, [adjustment])
@@ -125,7 +146,7 @@ async def create_adjustment(
     "/adjustments",
     summary="Список ручных начислений организации",
     description=(
-        "Активные начисления под фильтром (member_id/shift_id/период), "
+        "Активные начисления под фильтром (member_id/shift_id/category_id/период), "
         "occurred_at DESC. Owner/admin."
     ),
 )
@@ -135,6 +156,10 @@ async def list_adjustments(
     session: SessionDep,
     member_id: uuid.UUID | None = Query(None, description="Фильтр по сотруднику"),
     shift_id: uuid.UUID | None = Query(None, description="Фильтр по смене"),
+    category_id: str | None = Query(
+        None,
+        description="Фильтр по категории: UUID или спецзначение none — «Без категории»",
+    ),
     date_from: dt_datetime | None = Query(
         None, description="Нижняя граница по occurred_at, включительно (UTC)"
     ),
@@ -145,12 +170,15 @@ async def list_adjustments(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
+    category_uuid, without_category = adjustment_service.parse_category_filter(category_id)
     adjustments, total = await adjustment_service.list_adjustments(
         session,
         org_id,
         user.id,
         member_id=member_id,
         shift_id=shift_id,
+        category_id=category_uuid,
+        without_category=without_category,
         date_from=date_from,
         date_to=date_to,
         include_deleted=include_deleted,
@@ -261,7 +289,7 @@ async def my_adjustments(
     )
     return ApiResponse.success(
         MyAdjustmentListResponse(
-            items=[_my_adjustment_to_response(a) for a in adjustments],
+            items=await _build_my_adjustment_payloads(session, adjustments),
             total=total,
             limit=limit,
             offset=offset,

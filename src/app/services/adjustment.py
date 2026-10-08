@@ -5,6 +5,10 @@
 soft-delete (`is_deleted = true`). Каждая операция (создание/правка/отмена)
 пишет уведомление сотруднику (`payroll_adjustment_changed`) и запись в
 `audit_logs` в той же транзакции — прозрачность для сотрудника (R7).
+
+Категории начислений (payroll_breakdown) — справочник организации
+(`PayrollAdjustmentCategory`, soft-delete по ADR-003): CRUD здесь же, назначение
+категории начислению — `category_id` в create/update. Категория знак не задаёт.
 """
 
 import uuid
@@ -12,10 +16,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.logging import get_logger
-from src.app.models.adjustment import PayrollAdjustment
+from src.app.models.adjustment import PayrollAdjustment, PayrollAdjustmentCategory
 from src.app.models.audit_log import AuditAction, AuditResource
 from src.app.models.notification import NotificationType
 from src.app.models.organization import OrganizationMember
@@ -30,6 +35,9 @@ from src.app.services.shift import ensure_utc, validate_date_range
 logger = get_logger(__name__)
 
 ADJUSTMENT_CURRENCY = "RUB"
+CATEGORY_NAME_MAX_LENGTH = 100
+CATEGORY_UNIQUE_INDEX = "uq_payroll_adjustment_categories_org_name"
+NO_CATEGORY_TOKEN = "none"  # noqa: S105 — спецзначение фильтра, не секрет
 
 
 class AdjustmentError(Exception):
@@ -104,6 +112,82 @@ async def _validate_shift_for_member(
     return shift
 
 
+async def _get_live_category(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    category_id: uuid.UUID,
+) -> PayrollAdjustmentCategory:
+    """Неудалённая категория этой организации; чужая/удалённая/несуществующая →
+    404 ADJUSTMENT_CATEGORY_NOT_FOUND (для PATCH/DELETE и назначения начислению)."""
+    result = await session.execute(
+        select(PayrollAdjustmentCategory).where(
+            PayrollAdjustmentCategory.id == category_id,
+            PayrollAdjustmentCategory.organization_id == org_id,
+            PayrollAdjustmentCategory.is_deleted.is_(False),
+        )
+    )
+    category = result.scalar_one_or_none()
+    if category is None:
+        raise AdjustmentError(
+            "ADJUSTMENT_CATEGORY_NOT_FOUND", "Категория начислений не найдена", 404
+        )
+    return category
+
+
+def _normalize_category_name(name: str) -> str:
+    """trim + 1..100 символов; иначе 422 VALIDATION_ERROR (defense in depth к схеме)."""
+    normalized = name.strip()
+    if not normalized or len(normalized) > CATEGORY_NAME_MAX_LENGTH:
+        raise AdjustmentError(
+            "VALIDATION_ERROR",
+            f"Название категории — от 1 до {CATEGORY_NAME_MAX_LENGTH} символов",
+            422,
+        )
+    return normalized
+
+
+def _category_duplicate_error() -> AdjustmentError:
+    return AdjustmentError(
+        "ADJUSTMENT_CATEGORY_DUPLICATE",
+        "Категория с таким названием уже есть",
+        409,
+    )
+
+
+async def _ensure_category_name_free(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    name: str,
+    *,
+    exclude_id: uuid.UUID | None = None,
+) -> None:
+    """Живой категории с таким именем (без учёта регистра) в org быть не должно.
+
+    Быстрый путь с понятной ошибкой; гонку двух параллельных запросов закрывает
+    частичный уникальный индекс (IntegrityError → тот же 409 в `_flush_category`).
+    """
+    conditions = [
+        PayrollAdjustmentCategory.organization_id == org_id,
+        PayrollAdjustmentCategory.is_deleted.is_(False),
+        func.lower(PayrollAdjustmentCategory.name) == name.lower(),
+    ]
+    if exclude_id is not None:
+        conditions.append(PayrollAdjustmentCategory.id != exclude_id)
+    result = await session.execute(select(PayrollAdjustmentCategory.id).where(*conditions))
+    if result.first() is not None:
+        raise _category_duplicate_error()
+
+
+async def _flush_category(session: AsyncSession) -> None:
+    """flush с переводом нарушения уникального индекса имени в 409 (гонка POST/PATCH)."""
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        if CATEGORY_UNIQUE_INDEX in str(exc.orig):
+            raise _category_duplicate_error() from None
+        raise
+
+
 async def _notify_adjustment_changed(
     session: AsyncSession,
     *,
@@ -147,8 +231,10 @@ async def create_adjustment(
     occurred_at: datetime | None,
     shift_id: uuid.UUID | None,
     comment: str | None,
+    category_id: uuid.UUID | None = None,
 ) -> PayrollAdjustment:
-    """Начислить/удержать. occurred_at по умолчанию = started_at смены при shift_id."""
+    """Начислить/удержать. occurred_at по умолчанию = started_at смены при shift_id.
+    `category_id` — живая категория этой org (иначе 404 ADJUSTMENT_CATEGORY_NOT_FOUND)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
     await entitlements.require_active_subscription(session, org, requester_id)
@@ -160,6 +246,8 @@ async def create_adjustment(
     shift = None
     if shift_id is not None:
         shift = await _validate_shift_for_member(session, org_id, member, shift_id)
+    if category_id is not None:
+        await _get_live_category(session, org_id, category_id)
 
     if occurred_at is not None:
         final_occurred = ensure_utc(occurred_at)
@@ -176,6 +264,7 @@ async def create_adjustment(
         organization_id=org_id,
         member_id=member.id,
         shift_id=shift_id,
+        category_id=category_id,
         amount_minor=amount_minor,
         currency=currency or ADJUSTMENT_CURRENCY,
         reason=reason,
@@ -198,6 +287,7 @@ async def create_adjustment(
             "amount_minor": amount_minor,
             "reason": reason,
             "occurred_at": final_occurred.isoformat(),
+            "category_id": str(category_id) if category_id is not None else None,
         },
     )
     await _notify_adjustment_changed(
@@ -225,13 +315,18 @@ async def list_adjustments(
     *,
     member_id: uuid.UUID | None = None,
     shift_id: uuid.UUID | None = None,
+    category_id: uuid.UUID | None = None,
+    without_category: bool = False,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     include_deleted: bool = False,
     limit: int = 20,
     offset: int = 0,
 ) -> tuple[list[PayrollAdjustment], int]:
-    """Активные начисления организации под фильтром. Returns (adjustments, total)."""
+    """Активные начисления организации под фильтром. Returns (adjustments, total).
+
+    `without_category=True` — только «Без категории» (`category_id IS NULL`);
+    `category_id` — только эта категория (в т.ч. удалённая — фильтр по ссылке)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
 
@@ -243,6 +338,10 @@ async def list_adjustments(
         conditions.append(PayrollAdjustment.member_id == member_id)
     if shift_id is not None:
         conditions.append(PayrollAdjustment.shift_id == shift_id)
+    if without_category:
+        conditions.append(PayrollAdjustment.category_id.is_(None))
+    elif category_id is not None:
+        conditions.append(PayrollAdjustment.category_id == category_id)
     if date_from is not None:
         conditions.append(PayrollAdjustment.occurred_at >= ensure_utc(date_from))
     if date_to is not None:
@@ -288,6 +387,20 @@ async def update_adjustment(
                 "to": str(new_shift_id) if new_shift_id else None,
             }
             adjustment.shift_id = new_shift_id
+
+    # «Не передано» (ключа нет) — не трогаем; явный null — сброс в «Без категории».
+    # Назначаемая (новая) категория должна быть живой; оставить прежнюю (даже
+    # удалённую) — допустимо, валидация не нужна.
+    if "category_id" in fields:
+        new_category_id = fields["category_id"]
+        if new_category_id != adjustment.category_id:
+            if new_category_id is not None:
+                await _get_live_category(session, org_id, new_category_id)
+            changed["category_id"] = {
+                "from": str(adjustment.category_id) if adjustment.category_id else None,
+                "to": str(new_category_id) if new_category_id else None,
+            }
+            adjustment.category_id = new_category_id
 
     if fields.get("amount_minor") is not None:
         if fields["amount_minor"] == 0:
@@ -483,6 +596,166 @@ async def list_my_adjustments(
     )
     result = await session.execute(query)
     return list(result.scalars().all()), total
+
+
+# --- Категории начислений (payroll_breakdown) --------------------------------
+async def count_adjustments_by_category(
+    session: AsyncSession,
+    category_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """category_id → число неотменённых начислений с этой категорией (один запрос)."""
+    if not category_ids:
+        return {}
+    result = await session.execute(
+        select(PayrollAdjustment.category_id, func.count(PayrollAdjustment.id))
+        .where(
+            PayrollAdjustment.category_id.in_(category_ids),
+            PayrollAdjustment.is_deleted.is_(False),
+        )
+        .group_by(PayrollAdjustment.category_id)
+    )
+    return {
+        category_id: int(count) for category_id, count in result.all() if category_id is not None
+    }
+
+
+async def get_category_names(
+    session: AsyncSession,
+    category_ids: set[uuid.UUID],
+) -> dict[uuid.UUID, str]:
+    """category_id → имя, включая удалённые категории (для ответов и отчётов)."""
+    if not category_ids:
+        return {}
+    result = await session.execute(
+        select(PayrollAdjustmentCategory.id, PayrollAdjustmentCategory.name).where(
+            PayrollAdjustmentCategory.id.in_(category_ids)
+        )
+    )
+    return dict(result.tuples().all())
+
+
+async def list_categories(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    *,
+    include_deleted: bool = False,
+) -> list[PayrollAdjustmentCategory]:
+    """Категории организации, сортировка по lower(name). Owner/admin."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+
+    conditions = [PayrollAdjustmentCategory.organization_id == org_id]
+    if not include_deleted:
+        conditions.append(PayrollAdjustmentCategory.is_deleted.is_(False))
+    result = await session.execute(
+        select(PayrollAdjustmentCategory)
+        .where(*conditions)
+        .order_by(
+            func.lower(PayrollAdjustmentCategory.name),
+            PayrollAdjustmentCategory.created_at,
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def create_category(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    *,
+    name: str,
+) -> PayrollAdjustmentCategory:
+    """Создать категорию. Дубль живого имени без учёта регистра → 409."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
+
+    normalized = _normalize_category_name(name)
+    await _ensure_category_name_free(session, org_id, normalized)
+
+    category = PayrollAdjustmentCategory(
+        organization_id=org_id,
+        name=normalized,
+        created_by_user_id=requester_id,
+    )
+    session.add(category)
+    await _flush_category(session)
+    logger.info(
+        "adjustment_category_created",
+        org_id=str(org_id),
+        category_id=str(category.id),
+    )
+    return category
+
+
+async def update_category(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    category_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    *,
+    name: str,
+) -> PayrollAdjustmentCategory:
+    """Переименовать живую категорию (удалённую → 404). Ссылка, не снимок:
+    новое имя видно во всех начислениях и отчётах."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    category = await _get_live_category(session, org_id, category_id)
+
+    normalized = _normalize_category_name(name)
+    if normalized != category.name:
+        await _ensure_category_name_free(session, org_id, normalized, exclude_id=category.id)
+        category.name = normalized
+        await _flush_category(session)
+    logger.info(
+        "adjustment_category_updated",
+        org_id=str(org_id),
+        category_id=str(category_id),
+    )
+    return category
+
+
+async def delete_category(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    category_id: uuid.UUID,
+    requester_id: uuid.UUID,
+) -> None:
+    """Soft-delete (ADR-003). Начисления сохраняют ссылку на категорию.
+    Повторный вызов на удалённой — 404."""
+    org = await org_service.get_organization(session, org_id)
+    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await entitlements.require_active_subscription(session, org, requester_id)
+    category = await _get_live_category(session, org_id, category_id)
+
+    category.is_deleted = True
+    category.deleted_at = datetime.now(UTC)
+    category.deleted_by_user_id = requester_id
+    await session.flush()
+    logger.info(
+        "adjustment_category_deleted",
+        org_id=str(org_id),
+        category_id=str(category_id),
+        deleted_by=str(requester_id),
+    )
+
+
+def parse_category_filter(value: str | None) -> tuple[uuid.UUID | None, bool]:
+    """Фильтр `category_id` списка начислений: UUID или спецзначение `none`
+    («Без категории»). Returns (category_id, only_without_category); битое → 422."""
+    if value is None:
+        return None, False
+    token = value.strip()
+    if token.lower() == NO_CATEGORY_TOKEN:
+        return None, True
+    try:
+        return uuid.UUID(token), False
+    except ValueError:
+        raise AdjustmentError(
+            "VALIDATION_ERROR", f"Некорректный category_id: {value}", 422
+        ) from None
 
 
 # --- Агрегаты для payroll ----------------------------------------------------

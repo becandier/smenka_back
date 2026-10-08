@@ -1,9 +1,15 @@
 import uuid
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 CURRENCY_PATTERN = r"^[A-Z]{3}$"
+
+CategoryName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
 
 
 def _validate_nonzero(value: int) -> int:
@@ -33,6 +39,11 @@ class AdjustmentCreate(BaseModel):
         description="Необязательная привязка к смене этого сотрудника",
     )
     comment: str | None = Field(default=None, max_length=500, description="Свободный комментарий")
+    category_id: uuid.UUID | None = Field(
+        default=None,
+        description="Категория начисления (payroll_adjustment_categories.id) или null — "
+        "«Без категории»; категория должна быть неудалённой и принадлежать организации",
+    )
 
     _amount_nonzero = field_validator("amount_minor")(_validate_nonzero)
 
@@ -47,6 +58,11 @@ class AdjustmentUpdate(BaseModel):
     shift_id: uuid.UUID | None = Field(
         default=None,
         description="Переустановить на другую смену сотрудника или обнулить (null)",
+    )
+    category_id: uuid.UUID | None = Field(
+        default=None,
+        description="Назначить другую (неудалённую) категорию или сбросить в null "
+        "(«Без категории»); поле не передано — категория не меняется",
     )
 
     @field_validator("amount_minor")
@@ -66,6 +82,13 @@ class AdjustmentResponse(BaseModel):
         description="Имя сотрудника в этой организации; null — не задано (member_display_name)",
     )
     shift_id: str | None = Field(default=None, description="UUID смены или null")
+    category_id: str | None = Field(
+        default=None, description="UUID категории начисления или null («Без категории»)"
+    )
+    category_name: str | None = Field(
+        default=None,
+        description="Имя категории (в т.ч. удалённой) или null («Без категории»)",
+    )
     amount_minor: int = Field(description="Знаковая сумма в копейках")
     currency: str = Field(description="Валюта")
     reason: str = Field(description="Основание начисления")
@@ -95,6 +118,13 @@ class MyAdjustmentResponse(BaseModel):
     comment: str | None = Field(default=None, description="Свободный комментарий или null")
     occurred_at: datetime = Field(description="Дата/момент начисления (UTC)")
     shift_id: str | None = Field(default=None, description="UUID смены или null")
+    category_id: str | None = Field(
+        default=None, description="UUID категории начисления или null («Без категории»)"
+    )
+    category_name: str | None = Field(
+        default=None,
+        description="Имя категории (в т.ч. удалённой) или null («Без категории»)",
+    )
     created_at: datetime = Field(description="Момент создания")
 
 
@@ -109,3 +139,38 @@ class MyAdjustmentListResponse(BaseModel):
 
 class AdjustmentDeletedResponse(BaseModel):
     deleted: bool = Field(description="Начисление отменено (soft-delete)")
+
+
+class AdjustmentCategoryCreate(BaseModel):
+    name: CategoryName = Field(
+        description="Название категории (trim, 1..100); уникально среди живых категорий "
+        "организации без учёта регистра",
+    )
+
+
+class AdjustmentCategoryUpdate(BaseModel):
+    """Переименование категории."""
+
+    name: CategoryName = Field(description="Новое название (trim, 1..100)")
+
+
+class AdjustmentCategoryResponse(BaseModel):
+    id: str = Field(description="UUID категории")
+    organization_id: str = Field(description="UUID организации")
+    name: str = Field(description="Название категории")
+    is_deleted: bool = Field(description="Категория удалена (soft-delete, ADR-003)")
+    deleted_at: datetime | None = Field(default=None, description="Момент удаления или null")
+    created_at: datetime = Field(description="Момент создания")
+    adjustments_count: int = Field(
+        description="Число неотменённых начислений с этой категорией (подсказка при удалении)",
+    )
+
+
+class AdjustmentCategoryListResponse(BaseModel):
+    items: list[AdjustmentCategoryResponse] = Field(
+        description="Категории организации, сортировка по lower(name), без пагинации",
+    )
+
+
+class AdjustmentCategoryDeletedResponse(BaseModel):
+    deleted: bool = Field(description="Категория удалена (soft-delete)")
