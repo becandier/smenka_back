@@ -1361,3 +1361,15 @@ async def test_payroll_export_only_missing_rate_rows_match(
     _, body = _summary(wb)
     assert list(body) == ["Test User", "ИТОГО"]
     assert [r[0] for r in _sheet_rows(wb, "Штрафы")[1:-1]] == ["Test User"]
+
+
+async def test_adjustment_list_category_filter_checks_access_first(
+    client, auth_headers, org, employee_member
+):
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/adjustments",
+        headers=auth_headers,
+        params={"category_id": "garbage"},
+    )
+    assert resp.status_code == 403
+    assert _err(resp) == "FORBIDDEN"

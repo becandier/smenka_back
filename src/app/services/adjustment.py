@@ -317,8 +317,7 @@ async def list_adjustments(
     *,
     member_id: uuid.UUID | None = None,
     shift_id: uuid.UUID | None = None,
-    category_id: uuid.UUID | None = None,
-    without_category: bool = False,
+    category_filter: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     include_deleted: bool = False,
@@ -327,10 +326,12 @@ async def list_adjustments(
 ) -> tuple[list[PayrollAdjustment], int]:
     """Активные начисления организации под фильтром. Returns (adjustments, total).
 
-    `without_category=True` — только «Без категории» (`category_id IS NULL`);
-    `category_id` — только эта категория (в т.ч. удалённая — фильтр по ссылке)."""
+    `category_filter` — UUID категории (в т.ч. удалённой — фильтр по ссылке) или
+    спецзначение `none` («Без категории», `category_id IS NULL`); разбирается
+    после проверки прав (битое значение → 422 только для owner/admin)."""
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    category_id, without_category = parse_category_filter(category_filter)
 
     validate_date_range(date_from, date_to)
     conditions = [PayrollAdjustment.organization_id == org_id]

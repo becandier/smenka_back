@@ -170,15 +170,13 @@ async def list_adjustments(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> ApiResponse:
-    category_uuid, without_category = adjustment_service.parse_category_filter(category_id)
     adjustments, total = await adjustment_service.list_adjustments(
         session,
         org_id,
         user.id,
         member_id=member_id,
         shift_id=shift_id,
-        category_id=category_uuid,
-        without_category=without_category,
+        category_filter=category_id,
         date_from=date_from,
         date_to=date_to,
         include_deleted=include_deleted,
