@@ -1373,3 +1373,35 @@ async def test_adjustment_list_category_filter_checks_access_first(
     )
     assert resp.status_code == 403
     assert _err(resp) == "FORBIDDEN"
+
+
+async def test_category_audit_log(client, owner_headers, owner, org, db_session):
+    base = f"/api/v1/organizations/{org.id}/adjustment-categories"
+    cat = await _category_id(client, owner_headers, org.id, "Премия")
+    # переименование в то же имя — не изменение, аудита нет
+    await client.patch(f"{base}/{cat}", headers=owner_headers, json={"name": "Премия"})
+    await client.patch(f"{base}/{cat}", headers=owner_headers, json={"name": "Бонус"})
+    await client.delete(f"{base}/{cat}", headers=owner_headers)
+
+    logs = (
+        (
+            await db_session.execute(
+                select(AuditLog)
+                .where(AuditLog.resource_id == uuid.UUID(cat))
+                .order_by(AuditLog.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [log.action for log in logs] == [
+        "adjustment_category.create",
+        "adjustment_category.update",
+        "adjustment_category.delete",
+    ]
+    assert all(log.resource_type == "adjustment_category" for log in logs)
+    assert all(log.organization_id == org.id for log in logs)
+    assert all(log.actor_user_id == owner.id for log in logs)
+    assert logs[0].summary == {"name": "Премия"}
+    assert logs[1].summary == {"changed": {"name": {"from": "Премия", "to": "Бонус"}}}
+    assert logs[2].summary == {"name": "Бонус"}

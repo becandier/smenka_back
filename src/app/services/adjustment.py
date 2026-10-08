@@ -684,6 +684,15 @@ async def create_category(
     )
     session.add(category)
     await _flush_category(session)
+    await audit_service.record(
+        session,
+        action=AuditAction.adjustment_category_create,
+        resource_type=AuditResource.adjustment_category,
+        organization_id=org_id,
+        actor_user_id=requester_id,
+        resource_id=category.id,
+        summary={"name": normalized},
+    )
     logger.info(
         "adjustment_category_created",
         org_id=str(org_id),
@@ -710,8 +719,18 @@ async def update_category(
     normalized = _normalize_category_name(name)
     if normalized != category.name:
         await _ensure_category_name_free(session, org_id, normalized, exclude_id=category.id)
+        previous_name = category.name
         category.name = normalized
         await _flush_category(session)
+        await audit_service.record(
+            session,
+            action=AuditAction.adjustment_category_update,
+            resource_type=AuditResource.adjustment_category,
+            organization_id=org_id,
+            actor_user_id=requester_id,
+            resource_id=category.id,
+            summary={"changed": {"name": {"from": previous_name, "to": normalized}}},
+        )
     logger.info(
         "adjustment_category_updated",
         org_id=str(org_id),
@@ -737,6 +756,15 @@ async def delete_category(
     category.deleted_at = datetime.now(UTC)
     category.deleted_by_user_id = requester_id
     await session.flush()
+    await audit_service.record(
+        session,
+        action=AuditAction.adjustment_category_delete,
+        resource_type=AuditResource.adjustment_category,
+        organization_id=org_id,
+        actor_user_id=requester_id,
+        resource_id=category.id,
+        summary={"name": category.name},
+    )
     logger.info(
         "adjustment_category_deleted",
         org_id=str(org_id),
