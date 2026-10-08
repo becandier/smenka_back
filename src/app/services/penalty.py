@@ -7,6 +7,7 @@
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +18,7 @@ from src.app.core.logging import get_logger
 from src.app.models.organization import OrganizationMember
 from src.app.models.penalty import OrganizationPenaltyTemplate, Penalty
 from src.app.models.shift import Shift
+from src.app.models.user import User
 from src.app.services import entitlements
 from src.app.services import organization as org_service
 from src.app.services.common import ensure_admin_or_owner
@@ -509,35 +511,76 @@ async def list_my_penalties(
 
 
 # --- Агрегаты для payroll ----------------------------------------------------
-async def aggregate_penalties_by_user(
+@dataclass(frozen=True)
+class PenaltyReportRow:
+    """Неснятый штраф, попавший в отчёт payroll (payroll_breakdown).
+
+    Единственный источник и для `penalty_amount_minor`/`penalties_count`
+    отчёта, и для построчного листа Excel «Штрафы».
+    """
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    amount_minor: int
+    reason: str
+    comment: str | None
+    occurred_at: datetime
+    shift_started_at: datetime | None
+    created_by_name: str | None
+
+
+async def fetch_report_penalties(
     session: AsyncSession,
     org_id: uuid.UUID,
     *,
     date_from: datetime | None,
     date_to: datetime | None,
-) -> dict[uuid.UUID, tuple[int, int]]:
-    """user_id → (сумма active-штрафов в копейках, число штрафов) за период.
+    user_ids: list[uuid.UUID] | None = None,
+) -> list[PenaltyReportRow]:
+    """Неснятые штрафы организации за период для отчёта payroll.
 
     Атрибуция к сотруднику — через member_id → organization_members.user_id.
-    Период — по `occurred_at`, `date_to` включительно (UTC). Только is_deleted=false.
+    Период — по `occurred_at`, `date_to` включительно (UTC). `user_ids` —
+    фильтр сотрудников отчёта (пусто/None — все).
     """
     conditions = [Penalty.organization_id == org_id, Penalty.is_deleted.is_(False)]
     if date_from is not None:
         conditions.append(Penalty.occurred_at >= date_from)
     if date_to is not None:
         conditions.append(Penalty.occurred_at <= date_to)
+    if user_ids:
+        conditions.append(OrganizationMember.user_id.in_(user_ids))
 
     result = await session.execute(
         select(
+            Penalty.id,
             OrganizationMember.user_id,
-            func.coalesce(func.sum(Penalty.amount_minor), 0),
-            func.count(Penalty.id),
+            Penalty.amount_minor,
+            Penalty.reason,
+            Penalty.comment,
+            Penalty.occurred_at,
+            Shift.started_at,
+            User.name,
         )
         .join(OrganizationMember, Penalty.member_id == OrganizationMember.id)
+        .outerjoin(Shift, Penalty.shift_id == Shift.id)
+        .outerjoin(User, Penalty.created_by_user_id == User.id)
         .where(*conditions)
-        .group_by(OrganizationMember.user_id)
+        .order_by(Penalty.occurred_at, Penalty.id)
     )
-    return {user_id: (int(total), int(count)) for user_id, total, count in result.all()}
+    return [
+        PenaltyReportRow(
+            id=row[0],
+            user_id=row[1],
+            amount_minor=int(row[2]),
+            reason=row[3],
+            comment=row[4],
+            occurred_at=row[5],
+            shift_started_at=row[6],
+            created_by_name=row[7],
+        )
+        for row in result.all()
+    ]
 
 
 async def aggregate_member_penalties(
@@ -574,7 +617,7 @@ async def aggregate_penalties_by_shift(
 
     Одним запросом для всей страницы смен (shift_history_earnings, ADR-005 п.4) —
     непривязанные к смене штрафы сюда не попадают (они видны только в
-    `aggregate_penalties_by_user`/`aggregate_member_penalties` за период). Только
+    `fetch_report_penalties`/`aggregate_member_penalties` за период). Только
     is_deleted=false.
     """
     if not shift_ids:

@@ -1,4 +1,4 @@
-from src.app.models.adjustment import PayrollAdjustment
+from src.app.models.adjustment import PayrollAdjustment, PayrollAdjustmentCategory
 from src.app.models.audit_log import AuditAction, AuditLog, AuditResource
 from src.app.models.billing_period import BillingPeriod
 from src.app.models.checklist import (
@@ -116,6 +116,7 @@ __all__ = [
     "PaymentKind",
     "PaymentStatus",
     "PayrollAdjustment",
+    "PayrollAdjustmentCategory",
     "Penalty",
     "PhotoRequirement",
     "PhotoSource",

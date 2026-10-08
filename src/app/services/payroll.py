@@ -16,6 +16,8 @@ import re
 import uuid
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -36,7 +38,9 @@ from src.app.models.work_location import WorkLocation
 from src.app.schemas.payroll import Granularity
 from src.app.services import entitlements
 from src.app.services import organization as org_service
+from src.app.services.adjustment import AdjustmentReportRow
 from src.app.services.common import ensure_admin_or_owner
+from src.app.services.penalty import PenaltyReportRow
 from src.app.services.shift import (
     calculate_worked_seconds,
     compute_late_seconds,
@@ -333,10 +337,18 @@ def _calc_earnings(
     времени `hourly`-ставки, `per_shift` игнорирует (план = факт, дельта 0).
     `late_tolerance_minutes` — допуск организации для подсчёта опозданий
     (R5/R8).
+
+    Разбивка gross (payroll_breakdown) — тоже на атоме смены, поэтому
+    `base + overtime == gross` точно на любом уровне агрегации:
+    `base = amount(rate, seconds)`, `overtime = amount(rate, seconds +
+    overtime_seconds) − base`. Для `per_shift` сумма от секунд не зависит →
+    `overtime = 0`.
     """
     overtime_map = overtime_minutes_by_shift or {}
 
     gross = 0
+    base_amount = 0
+    overtime_amount = 0
     planned = 0
     worked_seconds = 0
     overtime_seconds = 0
@@ -375,7 +387,11 @@ def _calc_earnings(
             unpaid_shifts_count += 1
             continue
 
-        gross += _shift_amount_minor(rate, paid_seconds)
+        shift_gross = _shift_amount_minor(rate, paid_seconds)
+        shift_base = _shift_amount_minor(rate, seconds)
+        gross += shift_gross
+        base_amount += shift_base
+        overtime_amount += shift_gross - shift_base
         planned += _shift_amount_minor(rate, shift_planned_seconds)
 
     return {
@@ -383,6 +399,8 @@ def _calc_earnings(
         "overtime_seconds": overtime_seconds,
         "shifts_count": len(shifts),
         "gross_amount_minor": gross,
+        "base_amount_minor": base_amount,
+        "overtime_amount_minor": overtime_amount,
         "unpaid_seconds": unpaid_seconds,
         "unpaid_shifts_count": unpaid_shifts_count,
         "has_missing_rate": unpaid_shifts_count > 0,
@@ -538,6 +556,8 @@ _BREAKDOWN_SUM_FIELDS = (
     "overtime_seconds",
     "shifts_count",
     "gross_amount_minor",
+    "base_amount_minor",
+    "overtime_amount_minor",
     "unpaid_seconds",
     "unpaid_shifts_count",
     "planned_seconds",
@@ -609,7 +629,113 @@ def _build_breakdown(
     return breakdown, aggregate
 
 
-async def get_org_payroll(
+@dataclass(frozen=True)
+class PayrollComputation:
+    """Отчёт payroll + строки операций, из которых посчитаны его агрегаты."""
+
+    report: dict[str, Any]
+    adjustment_rows: list[AdjustmentReportRow]
+    penalty_rows: list[PenaltyReportRow]
+
+
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
+
+def _category_sort_key(
+    created_at_by_category: dict[str, datetime],
+) -> Callable[[dict[str, Any]], tuple[Any, ...]]:
+    """Детерминированная сортировка `adjustments_by_category`: lower(имени), затем
+    живые раньше удалённых (одно имя может быть у удалённой и у новой живой
+    категории), затем created_at категории, затем id; «Без категории» — последней."""
+
+    def key(entry: dict[str, Any]) -> tuple[Any, ...]:
+        category_id = entry["category_id"]
+        name = entry["category_name"]
+        if category_id is None or name is None:
+            return (1, "", False, _EPOCH, "")
+        return (
+            0,
+            name.lower(),
+            entry["category_is_deleted"],
+            created_at_by_category.get(category_id, _EPOCH),
+            category_id,
+        )
+
+    return key
+
+
+def _empty_category_entry(
+    category_id: str | None, category_name: str | None, category_is_deleted: bool
+) -> dict[str, Any]:
+    return {
+        "category_id": category_id,
+        "category_name": category_name,
+        "category_is_deleted": category_is_deleted,
+        "amount_minor": 0,
+        "accrual_minor": 0,
+        "deduction_minor": 0,
+        "count": 0,
+    }
+
+
+def _adjustment_fields(
+    rows: list[AdjustmentReportRow],
+    created_at_by_category: dict[str, datetime],
+) -> dict[str, Any]:
+    """Поля начислений строки отчёта из строк операций (payroll_breakdown).
+
+    Инварианты: `accrual − deduction == amount`, `sum(by_category.amount) ==
+    amount`, `sum(by_category.count) == count`. Пусто → нули и `[]`.
+    `category_is_deleted` — false для «Без категории».
+    """
+    by_category: dict[uuid.UUID | None, dict[str, Any]] = {}
+    for row in rows:
+        has_category = row.category_id is not None
+        acc = by_category.setdefault(
+            row.category_id,
+            _empty_category_entry(
+                str(row.category_id) if has_category else None,
+                row.category_name if has_category else None,
+                row.category_is_deleted if has_category else False,
+            ),
+        )
+        acc["amount_minor"] += row.amount_minor
+        if row.amount_minor > 0:
+            acc["accrual_minor"] += row.amount_minor
+        else:
+            acc["deduction_minor"] += -row.amount_minor
+        acc["count"] += 1
+    return {
+        "adjustment_amount_minor": sum(r.amount_minor for r in rows),
+        "adjustment_accrual_minor": sum(r.amount_minor for r in rows if r.amount_minor > 0),
+        "adjustment_deduction_minor": sum(-r.amount_minor for r in rows if r.amount_minor < 0),
+        "adjustments_count": len(rows),
+        "adjustments_by_category": sorted(
+            by_category.values(), key=_category_sort_key(created_at_by_category)
+        ),
+    }
+
+
+def _merge_category_amounts(
+    lists: list[list[dict[str, Any]]],
+    created_at_by_category: dict[str, datetime],
+) -> list[dict[str, Any]]:
+    """`totals.adjustments_by_category` — агрегат по всем items, та же форма/сортировка."""
+    merged: dict[str | None, dict[str, Any]] = {}
+    for entries in lists:
+        for entry in entries:
+            acc = merged.setdefault(
+                entry["category_id"],
+                _empty_category_entry(
+                    entry["category_id"], entry["category_name"], entry["category_is_deleted"]
+                ),
+            )
+            for field in ("amount_minor", "accrual_minor", "deduction_minor", "count"):
+                acc[field] += entry[field]
+    return sorted(merged.values(), key=_category_sort_key(created_at_by_category))
+
+
+async def _compute_org_payroll(
     session: AsyncSession,
     org_id: uuid.UUID,
     requester_id: uuid.UUID,
@@ -623,7 +749,7 @@ async def get_org_payroll(
     only_missing_rate: bool = False,
     include_penalties: bool = True,
     include_adjustments: bool = True,
-) -> dict[str, Any]:
+) -> PayrollComputation:
     """Отчёт «сколько кому заплатить» за период (owner/admin).
 
     Учитываются все завершённые смены организации в периоде, включая смены
@@ -642,6 +768,11 @@ async def get_org_payroll(
     расхождение, см. ADR-005 «Последствия»).
     `include_adjustments` (manual_time_entry) — учитывать ли ручные начисления
     (`payroll_adjustments`) в `net`; знаковая сумма — на `gross` не влияет.
+
+    payroll_breakdown: штрафы и начисления выбираются построчно ОДИН раз
+    (`fetch_report_penalties`/`fetch_report_adjustments`), агрегаты отчёта
+    считаются из этих строк, а сами строки (уже суженные до сотрудников из
+    `items`) возвращаются для листов Excel — один источник выборки.
     """
     org = await org_service.get_organization(session, org_id)
     await ensure_admin_or_owner(session, org, requester_id)
@@ -685,31 +816,44 @@ async def get_org_payroll(
     # Штрафы периода: атрибутируются сотруднику (member → user), вычитаются из net.
     # Сотрудник только со штрафами (без завершённых смен) тоже попадает в items —
     # иначе штраф «потеряется» (см. backend.md).
-    penalties_by_user: dict[uuid.UUID, tuple[int, int]] = {}
+    penalty_rows: list[PenaltyReportRow] = []
     if include_penalties:
         from src.app.services import penalty as penalty_service
 
-        penalties_by_user = await penalty_service.aggregate_penalties_by_user(
-            session, org_id, date_from=norm_from, date_to=norm_to
+        penalty_rows = await penalty_service.fetch_report_penalties(
+            session,
+            org_id,
+            date_from=norm_from,
+            date_to=norm_to,
+            user_ids=parsed_user_ids or None,
         )
-        if parsed_user_ids:
-            allowed = set(parsed_user_ids)
-            penalties_by_user = {u: v for u, v in penalties_by_user.items() if u in allowed}
+    penalties_by_user: dict[uuid.UUID, list[PenaltyReportRow]] = defaultdict(list)
+    for penalty_row in penalty_rows:
+        penalties_by_user[penalty_row.user_id].append(penalty_row)
 
     # Ручные начисления периода (manual_time_entry): знаковые, на gross не влияют,
     # только на net. Сотрудник только с начислением (без смен/штрафов) тоже
     # попадает в items — иначе начисление «потеряется» из отчёта (то же правило,
     # что и для штрафов).
-    adjustments_by_user: dict[uuid.UUID, tuple[int, int]] = {}
+    adjustment_rows: list[AdjustmentReportRow] = []
     if include_adjustments:
         from src.app.services import adjustment as adjustment_service
 
-        adjustments_by_user = await adjustment_service.aggregate_adjustments_by_user(
-            session, org_id, date_from=norm_from, date_to=norm_to
+        adjustment_rows = await adjustment_service.fetch_report_adjustments(
+            session,
+            org_id,
+            date_from=norm_from,
+            date_to=norm_to,
+            user_ids=parsed_user_ids or None,
         )
-        if parsed_user_ids:
-            allowed = set(parsed_user_ids)
-            adjustments_by_user = {u: v for u, v in adjustments_by_user.items() if u in allowed}
+    adjustments_by_user: dict[uuid.UUID, list[AdjustmentReportRow]] = defaultdict(list)
+    created_at_by_category: dict[str, datetime] = {}
+    for adjustment_row in adjustment_rows:
+        adjustments_by_user[adjustment_row.user_id].append(adjustment_row)
+        if adjustment_row.category_id is not None and adjustment_row.category_created_at:
+            created_at_by_category[str(adjustment_row.category_id)] = (
+                adjustment_row.category_created_at
+            )
 
     all_user_ids = list(shift_user_ids | set(penalties_by_user) | set(adjustments_by_user))
     users_map: dict[uuid.UUID, str] = {}
@@ -764,14 +908,13 @@ async def get_org_payroll(
                     late_tolerance_minutes=late_tolerance_minutes,
                 ),
             }
-        penalty_amount, penalties_count = penalties_by_user.get(uid, (0, 0))
-        adjustment_amount, adjustments_count = adjustments_by_user.get(uid, (0, 0))
+        user_penalties = penalties_by_user.get(uid, [])
+        penalty_amount = sum(p.amount_minor for p in user_penalties)
         entry["penalty_amount_minor"] = penalty_amount
-        entry["penalties_count"] = penalties_count
-        entry["adjustment_amount_minor"] = adjustment_amount
-        entry["adjustments_count"] = adjustments_count
+        entry["penalties_count"] = len(user_penalties)
+        entry.update(_adjustment_fields(adjustments_by_user.get(uid, []), created_at_by_category))
         entry["net_amount_minor"] = (
-            entry["gross_amount_minor"] - penalty_amount + adjustment_amount
+            entry["gross_amount_minor"] - penalty_amount + entry["adjustment_amount_minor"]
         )
         items.append(entry)
 
@@ -792,10 +935,17 @@ async def get_org_payroll(
         "overtime_seconds": sum(i["overtime_seconds"] for i in items),
         "shifts_count": sum(i["shifts_count"] for i in items),
         "gross_amount_minor": sum(i["gross_amount_minor"] for i in items),
+        "base_amount_minor": sum(i["base_amount_minor"] for i in items),
+        "overtime_amount_minor": sum(i["overtime_amount_minor"] for i in items),
         "penalty_amount_minor": sum(i["penalty_amount_minor"] for i in items),
         "penalties_count": sum(i["penalties_count"] for i in items),
         "adjustment_amount_minor": sum(i["adjustment_amount_minor"] for i in items),
+        "adjustment_accrual_minor": sum(i["adjustment_accrual_minor"] for i in items),
+        "adjustment_deduction_minor": sum(i["adjustment_deduction_minor"] for i in items),
         "adjustments_count": sum(i["adjustments_count"] for i in items),
+        "adjustments_by_category": _merge_category_amounts(
+            [i["adjustments_by_category"] for i in items], created_at_by_category
+        ),
         "net_amount_minor": sum(i["net_amount_minor"] for i in items),
         "planned_seconds": sum(i["planned_seconds"] for i in items),
         "planned_amount_minor": sum(i["planned_amount_minor"] for i in items),
@@ -812,7 +962,48 @@ async def get_org_payroll(
     if detailed:
         report["granularity"] = granularity
         report["tz"] = tz
-    return report
+
+    # Строки операций — только сотрудников, оставшихся в items (only_missing_rate
+    # мог их сузить): суммы листов Excel обязаны совпасть со «Сводкой».
+    report_user_ids = {uuid.UUID(item["user_id"]) for item in items}
+    return PayrollComputation(
+        report=report,
+        adjustment_rows=[r for r in adjustment_rows if r.user_id in report_user_ids],
+        penalty_rows=[r for r in penalty_rows if r.user_id in report_user_ids],
+    )
+
+
+async def get_org_payroll(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    requester_id: uuid.UUID,
+    *,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    granularity: str = Granularity.none,
+    user_ids: list[str] | None = None,
+    location_ids: list[str] | None = None,
+    tz: str = "UTC",
+    only_missing_rate: bool = False,
+    include_penalties: bool = True,
+    include_adjustments: bool = True,
+) -> dict[str, Any]:
+    """Отчёт payroll (см. `_compute_org_payroll`) без построчных операций."""
+    computation = await _compute_org_payroll(
+        session,
+        org_id,
+        requester_id,
+        date_from=date_from,
+        date_to=date_to,
+        granularity=granularity,
+        user_ids=user_ids,
+        location_ids=location_ids,
+        tz=tz,
+        only_missing_rate=only_missing_rate,
+        include_penalties=include_penalties,
+        include_adjustments=include_adjustments,
+    )
+    return computation.report
 
 
 async def get_my_earnings(
@@ -1031,31 +1222,97 @@ def _org_filename_slug(name: str) -> str:
     return slug or "org"
 
 
-def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
-    """Книга Excel: лист «Сводка» (агрегат по сотрудникам) + «Детализация».
+NO_CATEGORY_LABEL = "Без категории"
+# Первые символы, с которых Excel/LibreOffice начинают формулу или DDE-команду
+# (CSV/formula injection, OWASP): такие строки пользовательского ввода
+# экранируем апострофом, чтобы ячейка осталась текстом.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 
-    Часы и деньги — числами (часы с 2 знаками, деньги в рублях), чтобы Excel
-    суммировал колонки. Детализация уже отсортирована (сотрудник, bucket_start).
+
+def _safe_text(value: str | None) -> str:
+    """Строка пользовательского ввода для ячейки xlsx (reason, comment, имена
+    сотрудников/авторов/категорий): `None` → пусто; если начинается с `=`, `+`,
+    `-`, `@`, табуляции или CR — префикс-апостроф (защита от formula injection)."""
+    if value is None:
+        return ""
+    if value.startswith(_FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
+DELETED_CATEGORY_SUFFIX = " (удалена)"
+
+
+def _category_label(
+    category_id: object | None, category_name: str | None, category_is_deleted: bool
+) -> str:
+    """Подпись категории в Excel: имя, у удалённой — с суффиксом « (удалена)»
+    (иначе удалённая «Премия» и новая живая «премия» неразличимы)."""
+    if category_id is None or category_name is None:
+        return NO_CATEGORY_LABEL
+    return category_name + (DELETED_CATEGORY_SUFFIX if category_is_deleted else "")
+
+
+def _local_date(value: datetime, zone: ZoneInfo) -> str:
+    """Дата в таймзоне отчёта, ДД.ММ.ГГГГ."""
+    return value.astimezone(zone).strftime("%d.%m.%Y")
+
+
+def _local_datetime(value: datetime | None, zone: ZoneInfo) -> str:
+    """Дата/время начала смены в таймзоне отчёта (ДД.ММ.ГГГГ ЧЧ:ММ) или пусто."""
+    if value is None:
+        return ""
+    return value.astimezone(zone).strftime("%d.%m.%Y %H:%M")
+
+
+def _append_summary_sheet(
+    wb: Workbook,
+    report: dict[str, Any],
+    org_name: str,
+    *,
+    include_adjustments: bool,
+) -> None:
+    """Лист «Сводка»: строка на сотрудника + ИТОГО по всем денежным колонкам.
+
+    «Удержания» — отрицательным числом, чтобы К выплате = Начислено − Штраф +
+    Доплаты + Удержания читалось суммой. Категорийные колонки (знаковые) — из
+    `totals.adjustments_by_category` в его порядке; «Без категории» — только
+    если такие начисления есть. При `include_adjustments=false` колонок
+    доплат/удержаний/категорий нет.
     """
     period = report["period"]
-    date_from = _filename_date(period["date_from"])
-    date_to = _filename_date(period["date_to"])
+    totals = report["totals"]
+    categories: list[dict[str, Any]] = (
+        list(totals["adjustments_by_category"]) if include_adjustments else []
+    )
 
-    wb = Workbook()
     summary = wb.active
+    if summary is None:
+        summary = wb.create_sheet("Сводка")
     summary.title = "Сводка"
     summary.append([f"Организация: {org_name}"])
-    summary.append([f"Период: {date_from} — {date_to}"])
+    summary.append(
+        [f"Период: {_filename_date(period['date_from'])} — {_filename_date(period['date_to'])}"]
+    )
     summary.append([f"Валюта: {report['currency']}"])
     summary.append([])
+
+    adjustment_headers: list[str] = []
+    if include_adjustments:
+        adjustment_headers = ["Доплаты, ₽", "Удержания, ₽"]
+        for c in categories:
+            label = _category_label(c["category_id"], c["category_name"], c["category_is_deleted"])
+            adjustment_headers.append(_safe_text(f"{label}, ₽"))
     summary.append(
         [
             "Сотрудник",
             "Часы",
             "Смены",
             "Начислено, ₽",
+            "в т.ч. за время, ₽",
+            "в т.ч. переработка, ₽",
             "Штраф, ₽",
-            "Начисления/удержания, ₽",
+            *adjustment_headers,
             "К выплате, ₽",
             "Без ставки (смен)",
             "Без ставки (часов)",
@@ -1067,15 +1324,28 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             "Опоздания, мин",
         ]
     )
+
+    def adjustment_cells(row: dict[str, Any]) -> list[float]:
+        if not include_adjustments:
+            return []
+        by_category = {c["category_id"]: c["amount_minor"] for c in row["adjustments_by_category"]}
+        return [
+            _money(row["adjustment_accrual_minor"]),
+            _money(-row["adjustment_deduction_minor"]),
+            *(_money(by_category.get(c["category_id"], 0)) for c in categories),
+        ]
+
     for item in report["items"]:
         summary.append(
             [
-                item["user_name"],
+                _safe_text(item["user_name"]),
                 _hours(item["worked_seconds"]),
                 item["shifts_count"],
                 _money(item["gross_amount_minor"]),
+                _money(item["base_amount_minor"]),
+                _money(item["overtime_amount_minor"]),
                 _money(item["penalty_amount_minor"]),
-                _money(item["adjustment_amount_minor"]),
+                *adjustment_cells(item),
                 _money(item["net_amount_minor"]),
                 item["unpaid_shifts_count"],
                 _hours(item["unpaid_seconds"]),
@@ -1087,15 +1357,16 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
                 round(item["late_seconds_total"] / 60, 1),
             ]
         )
-    totals = report["totals"]
     summary.append(
         [
             "ИТОГО",
             _hours(totals["worked_seconds"]),
             totals["shifts_count"],
             _money(totals["gross_amount_minor"]),
+            _money(totals["base_amount_minor"]),
+            _money(totals["overtime_amount_minor"]),
             _money(totals["penalty_amount_minor"]),
-            _money(totals["adjustment_amount_minor"]),
+            *adjustment_cells(totals),
             _money(totals["net_amount_minor"]),
             "",
             "",
@@ -1108,8 +1379,10 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
         ]
     )
 
-    # В «Детализации» штрафы не разбиваются по дням (период-уровень) — суммарный
-    # штраф/«к выплате» сотрудника смотрите в «Сводке»; здесь Штраф=0, К выплате=Начислено.
+
+def _append_detail_sheet(wb: Workbook, report: dict[str, Any]) -> None:
+    """Лист «Детализация» (сотрудник × корзина). Штрафы/начисления по корзинам не
+    раскладываются — они период-уровня и видны в «Сводке» и листах операций."""
     detail = wb.create_sheet("Детализация")
     detail.append(
         [
@@ -1118,8 +1391,8 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
             "Часы",
             "Смены",
             "Начислено, ₽",
-            "Штраф, ₽",
-            "К выплате, ₽",
+            "в т.ч. за время, ₽",
+            "в т.ч. переработка, ₽",
             "Без ставки (часов)",
             "По графику, ч",
             "По графику, ₽",
@@ -1130,19 +1403,133 @@ def _build_payroll_xlsx(report: dict[str, Any], org_name: str) -> bytes:
         for bucket in item.get("breakdown", []):
             detail.append(
                 [
-                    item["user_name"],
+                    _safe_text(item["user_name"]),
                     bucket["bucket_start"],
                     _hours(bucket["worked_seconds"]),
                     bucket["shifts_count"],
                     _money(bucket["gross_amount_minor"]),
-                    _money(0),
-                    _money(bucket["gross_amount_minor"]),
+                    _money(bucket["base_amount_minor"]),
+                    _money(bucket["overtime_amount_minor"]),
                     _hours(bucket["unpaid_seconds"]),
                     _hours(bucket["planned_seconds"]),
                     _money(bucket["planned_amount_minor"]),
                     _money(bucket["delta_amount_minor"]),
                 ]
             )
+
+
+def _append_adjustments_sheet(
+    wb: Workbook,
+    rows: list[AdjustmentReportRow],
+    *,
+    user_order: dict[uuid.UUID, int],
+    user_names: dict[uuid.UUID, str],
+    zone: ZoneInfo,
+) -> None:
+    """Лист «Начисления и удержания»: строка на неотменённое начисление отчёта
+    (те же строки, из которых посчитаны «Доплаты»/«Удержания» в «Сводке»)."""
+    sheet = wb.create_sheet("Начисления и удержания")
+    sheet.append(
+        [
+            "Сотрудник",
+            "Дата",
+            "Категория",
+            "Причина",
+            "Комментарий",
+            "Сумма, ₽",
+            "Смена",
+            "Кто внёс",
+        ]
+    )
+    ordered = sorted(rows, key=lambda r: (user_order.get(r.user_id, 0), r.occurred_at, str(r.id)))
+    for row in ordered:
+        sheet.append(
+            [
+                _safe_text(user_names.get(row.user_id, "Unknown")),
+                _local_date(row.occurred_at, zone),
+                _safe_text(
+                    _category_label(row.category_id, row.category_name, row.category_is_deleted)
+                ),
+                _safe_text(row.reason),
+                _safe_text(row.comment),
+                _money(row.amount_minor),
+                _local_datetime(row.shift_started_at, zone),
+                _safe_text(row.created_by_name),
+            ]
+        )
+    sheet.append(["ИТОГО", "", "", "", "", _money(sum(r.amount_minor for r in rows)), "", ""])
+
+
+def _append_penalties_sheet(
+    wb: Workbook,
+    rows: list[PenaltyReportRow],
+    *,
+    user_order: dict[uuid.UUID, int],
+    user_names: dict[uuid.UUID, str],
+    zone: ZoneInfo,
+) -> None:
+    """Лист «Штрафы»: строка на неснятый штраф отчёта (сумма положительная, как в
+    «Сводке»)."""
+    sheet = wb.create_sheet("Штрафы")
+    sheet.append(
+        ["Сотрудник", "Дата", "Причина", "Комментарий", "Сумма, ₽", "Смена", "Кто назначил"]
+    )
+    ordered = sorted(rows, key=lambda r: (user_order.get(r.user_id, 0), r.occurred_at, str(r.id)))
+    for row in ordered:
+        sheet.append(
+            [
+                _safe_text(user_names.get(row.user_id, "Unknown")),
+                _local_date(row.occurred_at, zone),
+                _safe_text(row.reason),
+                _safe_text(row.comment),
+                _money(row.amount_minor),
+                _local_datetime(row.shift_started_at, zone),
+                _safe_text(row.created_by_name),
+            ]
+        )
+    sheet.append(["ИТОГО", "", "", "", _money(sum(r.amount_minor for r in rows)), "", ""])
+
+
+def _build_payroll_xlsx(
+    computation: PayrollComputation,
+    org_name: str,
+    *,
+    include_penalties: bool,
+    include_adjustments: bool,
+) -> bytes:
+    """Книга Excel: «Сводка», «Детализация», а также «Начисления и удержания»
+    (при `include_adjustments`) и «Штрафы» (при `include_penalties`).
+
+    Часы и деньги — числами (часы с 2 знаками, деньги в рублях), чтобы Excel
+    суммировал колонки. Детализация уже отсортирована (сотрудник, bucket_start).
+    Строки листов операций — те же, из которых посчитаны агрегаты «Сводки»
+    (`PayrollComputation`), имя сотрудника — по тому же правилу (User.name),
+    сортировка — как в «Сводке», затем по дате.
+    """
+    report = computation.report
+    zone = _validate_tz(report.get("tz", "UTC"))
+    user_order = {uuid.UUID(item["user_id"]): idx for idx, item in enumerate(report["items"])}
+    user_names = {uuid.UUID(item["user_id"]): item["user_name"] for item in report["items"]}
+
+    wb = Workbook()
+    _append_summary_sheet(wb, report, org_name, include_adjustments=include_adjustments)
+    _append_detail_sheet(wb, report)
+    if include_adjustments:
+        _append_adjustments_sheet(
+            wb,
+            computation.adjustment_rows,
+            user_order=user_order,
+            user_names=user_names,
+            zone=zone,
+        )
+    if include_penalties:
+        _append_penalties_sheet(
+            wb,
+            computation.penalty_rows,
+            user_order=user_order,
+            user_names=user_names,
+            zone=zone,
+        )
 
     buffer = io.BytesIO()
     wb.save(buffer)
@@ -1167,13 +1554,14 @@ async def export_org_payroll(
     """Сформировать .xlsx отчёта payroll и имя файла.
 
     Детализация — смысл выгрузки: если `granularity` не задан (или none), берём
-    `day`. Расчёт и фильтры идентичны `get_org_payroll`.
+    `day`. Расчёт и фильтры идентичны `get_org_payroll` (общий
+    `_compute_org_payroll`, он же отдаёт строки для листов операций).
     """
     if granularity and granularity != Granularity.none:
         effective = granularity
     else:
         effective = Granularity.day.value
-    report = await get_org_payroll(
+    computation = await _compute_org_payroll(
         session,
         org_id,
         requester_id,
@@ -1189,10 +1577,16 @@ async def export_org_payroll(
     )
 
     org = await org_service.get_organization(session, org_id)
-    content = _build_payroll_xlsx(report, org.name)
+    content = _build_payroll_xlsx(
+        computation,
+        org.name,
+        include_penalties=include_penalties,
+        include_adjustments=include_adjustments,
+    )
+    period = computation.report["period"]
     filename = (
         f"payroll_{_org_filename_slug(org.name)}"
-        f"_{_filename_date(report['period']['date_from'])}"
-        f"_{_filename_date(report['period']['date_to'])}.xlsx"
+        f"_{_filename_date(period['date_from'])}"
+        f"_{_filename_date(period['date_to'])}.xlsx"
     )
     return content, filename

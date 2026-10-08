@@ -47,6 +47,10 @@ class AuditAction(enum.StrEnum):
     adjustment_update = "adjustment.update"
     adjustment_delete = "adjustment.delete"
     adjustment_restore = "adjustment.restore"
+    # --- payroll_breakdown: справочник категорий начислений ---
+    adjustment_category_create = "adjustment_category.create"
+    adjustment_category_update = "adjustment_category.update"
+    adjustment_category_delete = "adjustment_category.delete"
 
 
 class AuditResource(enum.StrEnum):
@@ -60,6 +64,7 @@ class AuditResource(enum.StrEnum):
     pause = "pause"
     overtime = "overtime"
     adjustment = "adjustment"
+    adjustment_category = "adjustment_category"
 
 
 class AuditLog(Base):
