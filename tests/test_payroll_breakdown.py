@@ -899,6 +899,7 @@ async def test_payroll_breakdown_invariants(
         {
             "category_id": seeded["advance"],
             "category_name": "Аванс",
+            "category_is_deleted": False,
             "amount_minor": -2000,
             "accrual_minor": 0,
             "deduction_minor": 2000,
@@ -907,6 +908,7 @@ async def test_payroll_breakdown_invariants(
         {
             "category_id": seeded["bonus"],
             "category_name": "премия",
+            "category_is_deleted": False,
             "amount_minor": 8000,
             "accrual_minor": 8000,
             "deduction_minor": 0,
@@ -915,6 +917,7 @@ async def test_payroll_breakdown_invariants(
         {
             "category_id": None,
             "category_name": None,
+            "category_is_deleted": False,
             "amount_minor": -300,
             "accrual_minor": 700,
             "deduction_minor": 1000,
@@ -928,6 +931,7 @@ async def test_payroll_breakdown_invariants(
         {
             "category_id": seeded["bonus"],
             "category_name": "премия",
+            "category_is_deleted": False,
             "amount_minor": 100,
             "accrual_minor": 100,
             "deduction_minor": 0,
@@ -936,6 +940,7 @@ async def test_payroll_breakdown_invariants(
         {
             "category_id": seeded["gone"],
             "category_name": "Форма",
+            "category_is_deleted": True,
             "amount_minor": -400,
             "accrual_minor": 0,
             "deduction_minor": 400,
@@ -948,9 +953,14 @@ async def test_payroll_breakdown_invariants(
     assert totals["adjustment_accrual_minor"] == 8800
     assert totals["adjustment_deduction_minor"] == 3400
     assert [
-        (c["category_name"], c["amount_minor"], c["count"])
+        (c["category_name"], c["category_is_deleted"], c["amount_minor"], c["count"])
         for c in totals["adjustments_by_category"]
-    ] == [("Аванс", -2000, 1), ("премия", 8100, 3), ("Форма", -400, 1), (None, -300, 2)]
+    ] == [
+        ("Аванс", False, -2000, 1),
+        ("премия", False, 8100, 3),
+        ("Форма", True, -400, 1),
+        (None, False, -300, 2),
+    ]
 
 
 async def test_payroll_breakdown_include_adjustments_false(
@@ -1091,7 +1101,7 @@ async def test_payroll_export_breakdown_sheets(
         "Удержания, ₽",
         "Аванс, ₽",
         "премия, ₽",
-        "Форма, ₽",
+        "Форма (удалена), ₽",
         "Без категории, ₽",
         "К выплате, ₽",
         "Без ставки (смен)",
@@ -1112,11 +1122,11 @@ async def test_payroll_export_breakdown_sheets(
     assert tu[col["Удержания, ₽"]] == -30.0
     assert tu[col["Аванс, ₽"]] == -20.0
     assert tu[col["премия, ₽"]] == 80.0
-    assert tu[col["Форма, ₽"]] == 0
+    assert tu[col["Форма (удалена), ₽"]] == 0
     assert tu[col["Без категории, ₽"]] == -3.0
     anna = body["Anna Second"]
     assert anna[col["в т.ч. переработка, ₽"]] == 0
-    assert anna[col["Форма, ₽"]] == -4.0
+    assert anna[col["Форма (удалена), ₽"]] == -4.0
 
     # К выплате = Начислено − Штраф + Доплаты + Удержания; Начислено = время + переработка
     for row in body.values():
@@ -1129,7 +1139,10 @@ async def test_payroll_export_breakdown_sheets(
         assert row[col["Начислено, ₽"]] == pytest.approx(
             row[col["в т.ч. за время, ₽"]] + row[col["в т.ч. переработка, ₽"]]
         )
-        cats = sum(row[col[h]] for h in ("Аванс, ₽", "премия, ₽", "Форма, ₽", "Без категории, ₽"))
+        cats = sum(
+            row[col[h]]
+            for h in ("Аванс, ₽", "премия, ₽", "Форма (удалена), ₽", "Без категории, ₽")
+        )
         assert cats == pytest.approx(row[col["Доплаты, ₽"]] + row[col["Удержания, ₽"]])
     # ИТОГО — по всем денежным колонкам, включая категорийные
     for name in (
@@ -1141,7 +1154,7 @@ async def test_payroll_export_breakdown_sheets(
         "Удержания, ₽",
         "Аванс, ₽",
         "премия, ₽",
-        "Форма, ₽",
+        "Форма (удалена), ₽",
         "Без категории, ₽",
         "К выплате, ₽",
     ):
@@ -1205,7 +1218,7 @@ async def test_payroll_export_breakdown_sheets(
     assert tu_rows[1][4] == "Июнь"
     assert tu_rows[1][6] in ("", None)
     assert tu_rows[2][2] == "Без категории"
-    assert sorted(r[2] for r in adj_body if r[0] == "Anna Second") == ["Форма", "премия"]
+    assert sorted(r[2] for r in adj_body if r[0] == "Anna Second") == ["Форма (удалена)", "премия"]
 
     # Лист штрафов
     pen_rows = _sheet_rows(wb, "Штрафы")
@@ -1295,7 +1308,7 @@ async def test_payroll_export_user_filter_rows_match(
     wb = load_workbook(BytesIO(resp.content))
     header, body = _summary(wb)
     assert list(body) == ["Test User", "ИТОГО"]
-    assert "Форма, ₽" not in header  # категория только у отфильтрованной Anna
+    assert "Форма (удалена), ₽" not in header  # категория только у отфильтрованной Anna
     assert {r[0] for r in _sheet_rows(wb, "Начисления и удержания")[1:-1]} == {"Test User"}
     assert {r[0] for r in _sheet_rows(wb, "Штрафы")[1:-1]} == {"Test User"}
 
@@ -1405,3 +1418,56 @@ async def test_category_audit_log(client, owner_headers, owner, org, db_session)
     assert logs[0].summary == {"name": "Премия"}
     assert logs[1].summary == {"changed": {"name": {"from": "Премия", "to": "Бонус"}}}
     assert logs[2].summary == {"name": "Бонус"}
+
+
+async def test_payroll_deleted_and_live_category_same_name(
+    client, db_session, owner_headers, org, employee_member, verified_user
+):
+    """Удалённая «Премия» и новая живая «премия»: две записи, живая раньше
+    удалённой, в Excel удалённая — с суффиксом « (удалена)»."""
+    await _make_rate(db_session, employee_member.id, 18000)
+    member = str(employee_member.id)
+    old = await _category_id(client, owner_headers, org.id, "Премия")
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=100,
+        category_id=old,
+        occurred_at="2026-06-02T10:00:00Z",
+    )
+    await client.delete(
+        f"/api/v1/organizations/{org.id}/adjustment-categories/{old}", headers=owner_headers
+    )
+    new = await _category_id(client, owner_headers, org.id, "премия")
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=member,
+        amount_minor=200,
+        category_id=new,
+        occurred_at="2026-06-03T10:00:00Z",
+    )
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll", headers=owner_headers, params=JUNE
+    )
+    by_cat = _data(resp)["totals"]["adjustments_by_category"]
+    assert [(c["category_id"], c["category_is_deleted"], c["amount_minor"]) for c in by_cat] == [
+        (new, False, 200),
+        (old, True, 100),
+    ]
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export", headers=owner_headers, params=JUNE
+    )
+    wb = load_workbook(BytesIO(resp.content))
+    header, body = _summary(wb)
+    assert "премия, ₽" in header
+    assert "Премия (удалена), ₽" in header
+    assert header.index("премия, ₽") < header.index("Премия (удалена), ₽")
+    assert body["Test User"][header.index("Премия (удалена), ₽")] == 1.0
+    labels = [r[2] for r in _sheet_rows(wb, "Начисления и удержания")[1:-1]]
+    assert labels == ["Премия (удалена)", "премия"]

@@ -807,6 +807,8 @@ class AdjustmentReportRow:
     occurred_at: datetime
     category_id: uuid.UUID | None
     category_name: str | None
+    category_is_deleted: bool
+    category_created_at: datetime | None
     shift_started_at: datetime | None
     created_by_name: str | None
 
@@ -847,6 +849,8 @@ async def fetch_report_adjustments(
             PayrollAdjustment.occurred_at,
             PayrollAdjustment.category_id,
             PayrollAdjustmentCategory.name,
+            PayrollAdjustmentCategory.is_deleted,
+            PayrollAdjustmentCategory.created_at,
             Shift.started_at,
             User.name,
         )
@@ -870,8 +874,10 @@ async def fetch_report_adjustments(
             occurred_at=row[5],
             category_id=row[6],
             category_name=row[7],
-            shift_started_at=row[8],
-            created_by_name=row[9],
+            category_is_deleted=bool(row[8]),
+            category_created_at=row[9],
+            shift_started_at=row[10],
+            created_by_name=row[11],
         )
         for row in result.all()
     ]

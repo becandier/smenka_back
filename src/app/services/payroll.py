@@ -16,6 +16,7 @@ import re
 import uuid
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -637,32 +638,66 @@ class PayrollComputation:
     penalty_rows: list[PenaltyReportRow]
 
 
-def _category_sort_key(entry: dict[str, Any]) -> tuple[int, str, str]:
-    """Сортировка `adjustments_by_category`: по lower(имени), «Без категории» — последней."""
-    name = entry["category_name"]
-    if entry["category_id"] is None or name is None:
-        return (1, "", "")
-    return (0, name.lower(), entry["category_id"])
+_EPOCH = datetime.min.replace(tzinfo=UTC)
 
 
-def _adjustment_fields(rows: list[AdjustmentReportRow]) -> dict[str, Any]:
+def _category_sort_key(
+    created_at_by_category: dict[str, datetime],
+) -> Callable[[dict[str, Any]], tuple[Any, ...]]:
+    """Детерминированная сортировка `adjustments_by_category`: lower(имени), затем
+    живые раньше удалённых (одно имя может быть у удалённой и у новой живой
+    категории), затем created_at категории, затем id; «Без категории» — последней."""
+
+    def key(entry: dict[str, Any]) -> tuple[Any, ...]:
+        category_id = entry["category_id"]
+        name = entry["category_name"]
+        if category_id is None or name is None:
+            return (1, "", False, _EPOCH, "")
+        return (
+            0,
+            name.lower(),
+            entry["category_is_deleted"],
+            created_at_by_category.get(category_id, _EPOCH),
+            category_id,
+        )
+
+    return key
+
+
+def _empty_category_entry(
+    category_id: str | None, category_name: str | None, category_is_deleted: bool
+) -> dict[str, Any]:
+    return {
+        "category_id": category_id,
+        "category_name": category_name,
+        "category_is_deleted": category_is_deleted,
+        "amount_minor": 0,
+        "accrual_minor": 0,
+        "deduction_minor": 0,
+        "count": 0,
+    }
+
+
+def _adjustment_fields(
+    rows: list[AdjustmentReportRow],
+    created_at_by_category: dict[str, datetime],
+) -> dict[str, Any]:
     """Поля начислений строки отчёта из строк операций (payroll_breakdown).
 
     Инварианты: `accrual − deduction == amount`, `sum(by_category.amount) ==
     amount`, `sum(by_category.count) == count`. Пусто → нули и `[]`.
+    `category_is_deleted` — false для «Без категории».
     """
     by_category: dict[uuid.UUID | None, dict[str, Any]] = {}
     for row in rows:
+        has_category = row.category_id is not None
         acc = by_category.setdefault(
             row.category_id,
-            {
-                "category_id": str(row.category_id) if row.category_id is not None else None,
-                "category_name": row.category_name if row.category_id is not None else None,
-                "amount_minor": 0,
-                "accrual_minor": 0,
-                "deduction_minor": 0,
-                "count": 0,
-            },
+            _empty_category_entry(
+                str(row.category_id) if has_category else None,
+                row.category_name if has_category else None,
+                row.category_is_deleted if has_category else False,
+            ),
         )
         acc["amount_minor"] += row.amount_minor
         if row.amount_minor > 0:
@@ -675,29 +710,29 @@ def _adjustment_fields(rows: list[AdjustmentReportRow]) -> dict[str, Any]:
         "adjustment_accrual_minor": sum(r.amount_minor for r in rows if r.amount_minor > 0),
         "adjustment_deduction_minor": sum(-r.amount_minor for r in rows if r.amount_minor < 0),
         "adjustments_count": len(rows),
-        "adjustments_by_category": sorted(by_category.values(), key=_category_sort_key),
+        "adjustments_by_category": sorted(
+            by_category.values(), key=_category_sort_key(created_at_by_category)
+        ),
     }
 
 
-def _merge_category_amounts(lists: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+def _merge_category_amounts(
+    lists: list[list[dict[str, Any]]],
+    created_at_by_category: dict[str, datetime],
+) -> list[dict[str, Any]]:
     """`totals.adjustments_by_category` — агрегат по всем items, та же форма/сортировка."""
     merged: dict[str | None, dict[str, Any]] = {}
     for entries in lists:
         for entry in entries:
             acc = merged.setdefault(
                 entry["category_id"],
-                {
-                    "category_id": entry["category_id"],
-                    "category_name": entry["category_name"],
-                    "amount_minor": 0,
-                    "accrual_minor": 0,
-                    "deduction_minor": 0,
-                    "count": 0,
-                },
+                _empty_category_entry(
+                    entry["category_id"], entry["category_name"], entry["category_is_deleted"]
+                ),
             )
             for field in ("amount_minor", "accrual_minor", "deduction_minor", "count"):
                 acc[field] += entry[field]
-    return sorted(merged.values(), key=_category_sort_key)
+    return sorted(merged.values(), key=_category_sort_key(created_at_by_category))
 
 
 async def _compute_org_payroll(
@@ -812,8 +847,13 @@ async def _compute_org_payroll(
             user_ids=parsed_user_ids or None,
         )
     adjustments_by_user: dict[uuid.UUID, list[AdjustmentReportRow]] = defaultdict(list)
+    created_at_by_category: dict[str, datetime] = {}
     for adjustment_row in adjustment_rows:
         adjustments_by_user[adjustment_row.user_id].append(adjustment_row)
+        if adjustment_row.category_id is not None and adjustment_row.category_created_at:
+            created_at_by_category[str(adjustment_row.category_id)] = (
+                adjustment_row.category_created_at
+            )
 
     all_user_ids = list(shift_user_ids | set(penalties_by_user) | set(adjustments_by_user))
     users_map: dict[uuid.UUID, str] = {}
@@ -872,7 +912,7 @@ async def _compute_org_payroll(
         penalty_amount = sum(p.amount_minor for p in user_penalties)
         entry["penalty_amount_minor"] = penalty_amount
         entry["penalties_count"] = len(user_penalties)
-        entry.update(_adjustment_fields(adjustments_by_user.get(uid, [])))
+        entry.update(_adjustment_fields(adjustments_by_user.get(uid, []), created_at_by_category))
         entry["net_amount_minor"] = (
             entry["gross_amount_minor"] - penalty_amount + entry["adjustment_amount_minor"]
         )
@@ -904,7 +944,7 @@ async def _compute_org_payroll(
         "adjustment_deduction_minor": sum(i["adjustment_deduction_minor"] for i in items),
         "adjustments_count": sum(i["adjustments_count"] for i in items),
         "adjustments_by_category": _merge_category_amounts(
-            [i["adjustments_by_category"] for i in items]
+            [i["adjustments_by_category"] for i in items], created_at_by_category
         ),
         "net_amount_minor": sum(i["net_amount_minor"] for i in items),
         "planned_seconds": sum(i["planned_seconds"] for i in items),
@@ -1183,6 +1223,17 @@ def _org_filename_slug(name: str) -> str:
 
 
 NO_CATEGORY_LABEL = "Без категории"
+DELETED_CATEGORY_SUFFIX = " (удалена)"
+
+
+def _category_label(
+    category_id: object | None, category_name: str | None, category_is_deleted: bool
+) -> str:
+    """Подпись категории в Excel: имя, у удалённой — с суффиксом « (удалена)»
+    (иначе удалённая «Премия» и новая живая «премия» неразличимы)."""
+    if category_id is None or category_name is None:
+        return NO_CATEGORY_LABEL
+    return category_name + (DELETED_CATEGORY_SUFFIX if category_is_deleted else "")
 
 
 def _local_date(value: datetime, zone: ZoneInfo) -> str:
@@ -1232,9 +1283,7 @@ def _append_summary_sheet(
     adjustment_headers: list[str] = []
     if include_adjustments:
         adjustment_headers = ["Доплаты, ₽", "Удержания, ₽"] + [
-            f"{c['category_name']}, ₽"
-            if c["category_id"] is not None
-            else f"{NO_CATEGORY_LABEL}, ₽"
+            f"{_category_label(c['category_id'], c['category_name'], c['category_is_deleted'])}, ₽"
             for c in categories
         ]
     summary.append(
@@ -1381,9 +1430,7 @@ def _append_adjustments_sheet(
             [
                 user_names.get(row.user_id, "Unknown"),
                 _local_date(row.occurred_at, zone),
-                row.category_name
-                if row.category_id is not None and row.category_name is not None
-                else NO_CATEGORY_LABEL,
+                _category_label(row.category_id, row.category_name, row.category_is_deleted),
                 row.reason,
                 row.comment or "",
                 _money(row.amount_minor),

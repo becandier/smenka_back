@@ -107,6 +107,11 @@ class PayrollCategoryAmount(BaseModel):
         default=None,
         description="Имя категории (в т.ч. удалённой) или null — «Без категории»",
     )
+    category_is_deleted: bool = Field(
+        default=False,
+        description="Категория удалена (soft-delete); false для «Без категории». При "
+        "одинаковом имени живая идёт раньше удалённой",
+    )
     amount_minor: int = Field(description="Знаковая сумма начислений категории, в копейках")
     accrual_minor: int = Field(description="Сумма положительных начислений категории (≥ 0)")
     deduction_minor: int = Field(description="Сумма удержаний категории по модулю (≥ 0)")
