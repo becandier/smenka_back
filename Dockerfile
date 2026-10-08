@@ -10,8 +10,15 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 
-COPY pyproject.toml .
-RUN uv pip install --system --no-cache .
+# Зависимости ставятся строго по uv.lock: без него `uv pip install .` берёт
+# свежие версии в пределах `>=` из pyproject, и пересборка образа без
+# изменений кода может притащить несовместимый мажор (так SQLAlchemy 2.1
+# сменил драйвер `postgresql://` по умолчанию на psycopg v3 и уронил alembic).
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-dev --no-emit-project --no-hashes -o /tmp/requirements.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && uv pip install --system --no-cache --no-deps . \
+    && rm /tmp/requirements.txt
 
 COPY src/ ./src/
 
@@ -40,5 +47,7 @@ CMD ["uvicorn", "src.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # поэтому ruff/mypy/pytest никогда не попадают в то, что уезжает в ghcr.io.
 FROM app AS dev
 USER root
-RUN uv pip install --system --no-cache ".[dev]"
+RUN uv export --frozen --extra dev --no-emit-project --no-hashes -o /tmp/requirements-dev.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements-dev.txt \
+    && rm /tmp/requirements-dev.txt
 USER appuser
