@@ -1223,6 +1223,23 @@ def _org_filename_slug(name: str) -> str:
 
 
 NO_CATEGORY_LABEL = "Без категории"
+# Первые символы, с которых Excel/LibreOffice начинают формулу или DDE-команду
+# (CSV/formula injection, OWASP): такие строки пользовательского ввода
+# экранируем апострофом, чтобы ячейка осталась текстом.
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_text(value: str | None) -> str:
+    """Строка пользовательского ввода для ячейки xlsx (reason, comment, имена
+    сотрудников/авторов/категорий): `None` → пусто; если начинается с `=`, `+`,
+    `-`, `@`, табуляции или CR — префикс-апостроф (защита от formula injection)."""
+    if value is None:
+        return ""
+    if value.startswith(_FORMULA_TRIGGERS):
+        return "'" + value
+    return value
+
+
 DELETED_CATEGORY_SUFFIX = " (удалена)"
 
 
@@ -1282,10 +1299,10 @@ def _append_summary_sheet(
 
     adjustment_headers: list[str] = []
     if include_adjustments:
-        adjustment_headers = ["Доплаты, ₽", "Удержания, ₽"] + [
-            f"{_category_label(c['category_id'], c['category_name'], c['category_is_deleted'])}, ₽"
-            for c in categories
-        ]
+        adjustment_headers = ["Доплаты, ₽", "Удержания, ₽"]
+        for c in categories:
+            label = _category_label(c["category_id"], c["category_name"], c["category_is_deleted"])
+            adjustment_headers.append(_safe_text(f"{label}, ₽"))
     summary.append(
         [
             "Сотрудник",
@@ -1321,7 +1338,7 @@ def _append_summary_sheet(
     for item in report["items"]:
         summary.append(
             [
-                item["user_name"],
+                _safe_text(item["user_name"]),
                 _hours(item["worked_seconds"]),
                 item["shifts_count"],
                 _money(item["gross_amount_minor"]),
@@ -1386,7 +1403,7 @@ def _append_detail_sheet(wb: Workbook, report: dict[str, Any]) -> None:
         for bucket in item.get("breakdown", []):
             detail.append(
                 [
-                    item["user_name"],
+                    _safe_text(item["user_name"]),
                     bucket["bucket_start"],
                     _hours(bucket["worked_seconds"]),
                     bucket["shifts_count"],
@@ -1428,14 +1445,16 @@ def _append_adjustments_sheet(
     for row in ordered:
         sheet.append(
             [
-                user_names.get(row.user_id, "Unknown"),
+                _safe_text(user_names.get(row.user_id, "Unknown")),
                 _local_date(row.occurred_at, zone),
-                _category_label(row.category_id, row.category_name, row.category_is_deleted),
-                row.reason,
-                row.comment or "",
+                _safe_text(
+                    _category_label(row.category_id, row.category_name, row.category_is_deleted)
+                ),
+                _safe_text(row.reason),
+                _safe_text(row.comment),
                 _money(row.amount_minor),
                 _local_datetime(row.shift_started_at, zone),
-                row.created_by_name or "",
+                _safe_text(row.created_by_name),
             ]
         )
     sheet.append(["ИТОГО", "", "", "", "", _money(sum(r.amount_minor for r in rows)), "", ""])
@@ -1459,13 +1478,13 @@ def _append_penalties_sheet(
     for row in ordered:
         sheet.append(
             [
-                user_names.get(row.user_id, "Unknown"),
+                _safe_text(user_names.get(row.user_id, "Unknown")),
                 _local_date(row.occurred_at, zone),
-                row.reason,
-                row.comment or "",
+                _safe_text(row.reason),
+                _safe_text(row.comment),
                 _money(row.amount_minor),
                 _local_datetime(row.shift_started_at, zone),
-                row.created_by_name or "",
+                _safe_text(row.created_by_name),
             ]
         )
     sheet.append(["ИТОГО", "", "", "", _money(sum(r.amount_minor for r in rows)), "", ""])

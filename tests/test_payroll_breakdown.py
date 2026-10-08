@@ -1471,3 +1471,90 @@ async def test_payroll_deleted_and_live_category_same_name(
     assert body["Test User"][header.index("Премия (удалена), ₽")] == 1.0
     labels = [r[2] for r in _sheet_rows(wb, "Начисления и удержания")[1:-1]]
     assert labels == ["Премия (удалена)", "премия"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("=1+1", "'=1+1"),
+        ("+7", "'+7"),
+        ("-5", "'-5"),
+        ("@SUM(A1)", "'@SUM(A1)"),
+        ("\tX", "'\tX"),
+        ("\rX", "'\rX"),
+        ("Премия", "Премия"),
+        ("a=b", "a=b"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_safe_text(raw, expected):
+    from src.app.services.payroll import _safe_text
+
+    assert _safe_text(raw) == expected
+
+
+async def test_payroll_export_escapes_formula_injection(
+    client, db_session, owner_headers, owner, org, employee_member, verified_user
+):
+    verified_user.name = "=cmd|' /C calc'!A0"
+    evil_admin = await _make_user(db_session, "pb_evil@example.com", "@evil")
+    await db_session.commit()
+    await _make_rate(db_session, employee_member.id, 18000)
+    await _make_finished_shift(
+        db_session,
+        verified_user.id,
+        org.id,
+        datetime(2026, 6, 3, 9, 0, tzinfo=UTC),
+        datetime(2026, 6, 3, 10, 0, tzinfo=UTC),
+    )
+    cat = await _category_id(client, owner_headers, org.id, "+Бонус")
+    await _adjustment(
+        client,
+        owner_headers,
+        org.id,
+        member_id=str(employee_member.id),
+        amount_minor=100,
+        category_id=cat,
+        reason='=HYPERLINK("http://evil","x")',
+        comment="-2+3",
+    )
+    await _make_penalty(
+        db_session,
+        org.id,
+        employee_member.id,
+        evil_admin.id,
+        50,
+        datetime(2026, 6, 4, 9, 0, tzinfo=UTC),
+        reason="\tTAB",
+    )
+
+    resp = await client.get(
+        f"/api/v1/organizations/{org.id}/payroll/export", headers=owner_headers, params=JUNE
+    )
+    assert resp.status_code == 200, resp.text
+    wb = load_workbook(BytesIO(resp.content))
+
+    # ни одной формулы во всей книге
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                assert cell.data_type != "f", (ws.title, cell.coordinate, cell.value)
+
+    header, body = _summary(wb)
+    assert "'+Бонус, ₽" in header
+    assert "'=cmd|' /C calc'!A0" in body
+    detail_names = {r[0] for r in _sheet_rows(wb, "Детализация")[1:]}
+    assert detail_names == {"'=cmd|' /C calc'!A0"}
+
+    adj = _sheet_rows(wb, "Начисления и удержания")[1]
+    assert adj[0] == "'=cmd|' /C calc'!A0"
+    assert adj[2] == "'+Бонус"
+    assert adj[3] == '\'=HYPERLINK("http://evil","x")'
+    assert adj[4] == "'-2+3"
+    assert adj[7] == "Owner"
+
+    pen = _sheet_rows(wb, "Штрафы")[1]
+    assert pen[0] == "'=cmd|' /C calc'!A0"
+    assert pen[2] == "'\tTAB"
+    assert pen[6] == "'@evil"
