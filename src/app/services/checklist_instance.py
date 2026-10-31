@@ -31,7 +31,7 @@ from src.app.models.work_location import WorkLocation
 from src.app.services.checklist_assignment import _compute_effective
 from src.app.services.checklist_location import get_location_ids_for_templates, matches_location
 from src.app.services.checklist_template import ChecklistError
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission, has_permission
 from src.app.services.organization import get_organization
 from src.app.services.shift import ensure_utc, validate_date_range
 
@@ -322,7 +322,7 @@ async def _check_shift_access(
     if shift.organization_id is None:
         raise ChecklistError("FORBIDDEN", "Нет доступа к чек-листам смены", 403)
 
-    from src.app.models.organization import MemberRole, Organization
+    from src.app.models.organization import Organization
 
     org_result = await session.execute(
         select(Organization).where(Organization.id == shift.organization_id)
@@ -330,17 +330,12 @@ async def _check_shift_access(
     org = org_result.scalar_one_or_none()
     if org is None:
         raise ChecklistError("FORBIDDEN", "Нет доступа к чек-листам смены", 403)
-    if org.owner_id == requester_id:
-        return
-
-    member_result = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == shift.organization_id,
-            OrganizationMember.user_id == requester_id,
-            OrganizationMember.role == MemberRole.admin,
-        )
-    )
-    if member_result.scalar_one_or_none() is None:
+    # owner / member admin / обладатель профиля с `checklist_instances:view`.
+    # super_admin сюда исторически не допускался — поведение сохранено
+    # (access_profiles не расширяет доступ сверх каталога).
+    if not await has_permission(
+        session, org, requester_id, "checklist_instances", "view", allow_super_admin=False
+    ):
         raise ChecklistError("FORBIDDEN", "Нет доступа к чек-листам смены", 403)
 
 
@@ -1020,12 +1015,7 @@ async def list_org_checklist_instances(
     и `is_deleted=true` не попадают в выдачу никогда (`checklist_reports`).
     """
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(
-        session,
-        org,
-        requester_id,
-        message="Нет прав на просмотр чек-листов организации",
-    )
+    await ensure_permission(session, org, requester_id, "checklist_instances", "view")
 
     validate_date_range(date_from, date_to)
 

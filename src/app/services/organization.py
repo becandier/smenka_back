@@ -1,6 +1,7 @@
 import re
 import secrets
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -8,10 +9,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.app.core.access_catalog import full_permissions
 from src.app.core.logging import get_logger
+from src.app.models.access_profile import OrganizationAccessProfile
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
+from src.app.models.organization_role import OrganizationRole
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner, ensure_member, ensure_owner
+from src.app.services.common import (
+    effective_from_member,
+    ensure_admin_or_owner,
+    ensure_can_manage_member,
+    ensure_member,
+    ensure_owner,
+    ensure_permission,
+    profile_permissions,
+)
 
 logger = get_logger(__name__)
 
@@ -107,45 +119,74 @@ async def get_user_organizations(
     return owned + member_orgs
 
 
+@dataclass(frozen=True)
+class MyOrgAccess:
+    """Роль и права текущего пользователя в организации (для `OrganizationResponse`)."""
+
+    role: str | None
+    custom_role: OrganizationRole | None = None
+    permissions: dict[str, str] = field(default_factory=dict)
+    access_profile: OrganizationAccessProfile | None = None
+
+
+NO_ORG_ACCESS = MyOrgAccess(role=None)
+
+
 async def batch_get_my_roles(
     session: AsyncSession,
     orgs: list[Organization],
     user_id: uuid.UUID,
-) -> dict[uuid.UUID, tuple[str | None, object | None]]:
-    """Return {org_id: (my_role, my_custom_role)} for the given orgs in one membership query.
+    *,
+    is_super_admin: bool = False,
+) -> dict[uuid.UUID, MyOrgAccess]:
+    """`{org_id: MyOrgAccess}` для списка организаций одним запросом членства.
 
-    my_role is 'owner'/'admin'/'employee' or None if the user is neither
-    owner nor member (possible for super_admin viewing /organizations/all).
-    my_custom_role is OrganizationRole or None.
+    `role` — 'owner'/'admin'/'employee' или None, если пользователь не владелец
+    и не участник (возможно для super_admin в /organizations/all).
+    `permissions` (access_profiles) — эффективные права: owner / admin /
+    super_admin — все разделы каталога на максимальном уровне; employee — права
+    активного профиля или `{}`; не участник — `{}`. Профиль и кастомная роль
+    подгружаются `selectinload` — без N+1 по организациям.
     """
     if not orgs:
         return {}
 
-    result: dict[uuid.UUID, tuple[str | None, object | None]] = {}
-    non_owned_ids: list[uuid.UUID] = []
-    for org in orgs:
-        if org.owner_id == user_id:
-            result[org.id] = ("owner", None)
-        else:
-            non_owned_ids.append(org.id)
-
+    non_owned_ids = [org.id for org in orgs if org.owner_id != user_id]
+    by_org: dict[uuid.UUID, OrganizationMember] = {}
     if non_owned_ids:
         member_result = await session.execute(
             select(OrganizationMember)
-            .options(selectinload(OrganizationMember.custom_role))
+            .options(
+                selectinload(OrganizationMember.custom_role),
+                selectinload(OrganizationMember.access_profile),
+            )
             .where(
                 OrganizationMember.user_id == user_id,
                 OrganizationMember.organization_id.in_(non_owned_ids),
             )
         )
         by_org = {m.organization_id: m for m in member_result.scalars().all()}
-        for org_id in non_owned_ids:
-            member = by_org.get(org_id)
-            if member is None:
-                result[org_id] = (None, None)
-            else:
-                result[org_id] = (member.role.value, member.custom_role)
 
+    full = full_permissions()
+    result: dict[uuid.UUID, MyOrgAccess] = {}
+    for org in orgs:
+        member = None if org.owner_id == user_id else by_org.get(org.id)
+        permissions = effective_from_member(org, user_id, member, is_super_admin=is_super_admin)
+        if org.owner_id == user_id:
+            role: str | None = "owner"
+        else:
+            role = member.role.value if member is not None else None
+        # Профиль показываем, только когда права действительно из него: при
+        # полных правах (super_admin, сам состоящий employee с профилем) — null.
+        profile = None
+        if member is not None and permissions != full and profile_permissions(member):
+            profile = member.access_profile
+        result[org.id] = MyOrgAccess(
+            role=role,
+            custom_role=member.custom_role if member is not None else None,
+            permissions=permissions,
+            access_profile=profile,
+        )
     return result
 
 
@@ -169,8 +210,8 @@ async def update_organization(
     timezone: str | None = None,
 ) -> Organization:
     org = await get_organization(session, org_id)
-    # Управляющее действие: доступно owner, admin-участнику и super_admin.
-    await ensure_admin_or_owner(session, org, actor_id)
+    # Управляющее действие: полный админ или обладатель `settings:manage`.
+    await ensure_permission(session, org, actor_id, "settings", "manage")
     await entitlements.require_active_subscription(session, org, actor_id)
     if name is not None:
         org.name = name
@@ -201,8 +242,8 @@ async def rotate_invite_code(
     actor_id: uuid.UUID,
 ) -> str:
     org = await get_organization(session, org_id)
-    # Онбординг сотрудников — функция админа: ротировать код может owner и admin.
-    await ensure_admin_or_owner(session, org, actor_id)
+    # Онбординг сотрудников: полный админ или обладатель `invites:manage`.
+    await ensure_permission(session, org, actor_id, "invites", "manage")
     await entitlements.require_active_subscription(session, org, actor_id)
     org.invite_code = _generate_invite_code()
     await session.flush()
@@ -268,6 +309,7 @@ async def get_members(
         .options(
             selectinload(OrganizationMember.user),
             selectinload(OrganizationMember.custom_role),
+            selectinload(OrganizationMember.access_profile),
         )
         .where(OrganizationMember.organization_id == org_id)
     )
@@ -290,6 +332,7 @@ async def get_member(
         .options(
             selectinload(OrganizationMember.user),
             selectinload(OrganizationMember.custom_role),
+            selectinload(OrganizationMember.access_profile),
         )
         .where(
             OrganizationMember.organization_id == org_id,
@@ -334,16 +377,13 @@ async def remove_member(
         await session.flush()
         return member_id
 
-    # Admin can remove
-    requester_member = await session.execute(
-        select(OrganizationMember).where(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.user_id == requester_id,
-        )
+    # Owner / admin / обладатель `members:manage` (последний — только
+    # участников-employee без профиля, access_profiles п.6/6a). super_admin
+    # удалять участников не мог и до фичи — поведение сохранено (п.3).
+    actor_is_full = await ensure_permission(
+        session, org, requester_id, "members", "manage", allow_super_admin=False
     )
-    req = requester_member.scalar_one_or_none()
-    if req is None or req.role != MemberRole.admin:
-        raise OrgError("FORBIDDEN", "Нет прав для удаления участника", 403)
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
 
     await session.delete(member)
     await session.flush()
@@ -406,6 +446,7 @@ async def update_member_role(
         .options(
             selectinload(OrganizationMember.user),
             selectinload(OrganizationMember.custom_role),
+            selectinload(OrganizationMember.access_profile),
         )
         .where(
             OrganizationMember.organization_id == org_id,
@@ -417,6 +458,11 @@ async def update_member_role(
         raise OrgError("MEMBER_NOT_FOUND", "Участник не найден", 404)
 
     member.role = role_enum
+    # access_profiles: admin всегда полный — профиль у него не хранится.
+    # При admin → employee профиль остаётся пустым до явной выдачи.
+    if role_enum == MemberRole.admin:
+        member.access_profile_id = None
+        member.access_profile = None
     await session.flush()
     logger.info(
         "member_role_updated",

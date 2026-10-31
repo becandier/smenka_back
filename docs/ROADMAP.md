@@ -6,6 +6,17 @@
 
 ---
 
+## Фича — Профили доступа к веб-кабинету (`access_profiles`) `[~]`
+ТЗ: `../../docs/tasks/access_profiles/backend.md`  STATUS: `../../docs/tasks/access_profiles/STATUS.md`  ADR: `../../docs/decisions/006-access-profiles.md`
+- [x] Каталог разделов `core/access_catalog.py` + `GET /access-permissions`
+- [x] Таблица `organization_access_profiles`, `organization_members.access_profile_id`; миграция `a2fdde8505d1` (аддитивная, обратима)
+- [x] `get_effective_permissions` / `ensure_permission` / `ensure_can_manage_member` в `services/common.py`; проход по всем org-guard'ам, локальные `_check_admin_or_owner` удалены; `allow_super_admin=False` сохранён
+- [x] CRUD профилей + restore, выдача участнику, `access_profile_id` при создании, `access_profile` в `MemberResponse`, `my_permissions`/`my_access_profile` в `OrganizationResponse`, `ensure_member` на `GET /organizations/{id}`
+- [x] Аудит `access_profile.*`, `member.access_profile_update`; тесты `tests/test_access_profiles.py`
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Окно дозаполнения чек-листа после закрытия смены (`checklist_grace_period`) `[~]`
 ТЗ: `../../docs/tasks/checklist_grace_period/backend.md`  STATUS: `../../docs/tasks/checklist_grace_period/STATUS.md`  ADR: `docs/decisions/004-checklist-grace-period-deferred-finalization.md`
 - [x] `OrganizationSettings.checklist_grace_minutes` (int, 0–240, default/server_default `30`) — сколько минут после `finished_at` разрешено дозаполнять чек-листы завершённой смены; `0` = прежнее поведение (`SHIFT_FINISHED` сразу). Миграция `5856058d23ab` (колонка), обратима. Частичный индекс `ix_checklist_instances_pending_required` вынесен в отдельную non-transactional миграцию `d43e672a012a` (`CREATE INDEX CONCURRENTLY` — таблица растёт на каждый старт org-смены, блокирующий `CREATE INDEX` внутри общей транзакции на живом проде неприемлем)

@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from src.app.api.v1.access_profiles import router as access_profiles_router
 from src.app.api.v1.adjustment_categories import router as adjustment_categories_router
 from src.app.api.v1.adjustments import router as adjustments_router
 from src.app.api.v1.admin import router as admin_router
@@ -37,6 +38,7 @@ router.include_router(shifts_router)
 router.include_router(users_router)
 router.include_router(organizations_router)
 router.include_router(organization_roles_router)
+router.include_router(access_profiles_router)
 router.include_router(payroll_router)
 router.include_router(penalties_router)
 router.include_router(manual_shifts_router)

@@ -1,6 +1,14 @@
 # Архитектура — текущее состояние
 
-Последнее обновление: 2026-10-08 (payroll_breakdown — разделение начислений в
+Последнее обновление: 2026-10-31 (access_profiles — профили доступа к
+веб-кабинету организации, ADR-006 корня). Новая таблица
+`organization_access_profiles` и nullable `organization_members.access_profile_id`
+(FK ON DELETE SET NULL), каталог разделов `core/access_catalog.py`, guard
+`ensure_permission(section, level)` вместо `ensure_admin_or_owner` во всех
+операциях, относящихся к разделу кабинета. Миграция `a2fdde8505d1`. Подробности —
+секция «Профили доступа (`access_profiles`)» ниже.
+
+Предыдущее обновление: 2026-10-08 (payroll_breakdown — разделение начислений в
 зарплатном отчёте). Новая таблица `payroll_adjustment_categories` (справочник
 категорий ручных начислений организации, soft-delete по ADR-003, частичный
 уникальный индекс `(organization_id, lower(name)) WHERE is_deleted = false`) и
@@ -311,6 +319,33 @@ FK→`users.id` ON DELETE SET NULL, индексы `ix_*_is_archived` переи
 Последнее обновление (checklist_reports): управленческие отчёты по чек-листам — query-параметр `checklists` (`none`/`all_completed`/`has_incomplete`/`required_incomplete`) в `GET /organizations/{id}/shifts`, additive nullable `checklists_summary` в `ShiftResponse` (только орг-эндпоинты списка/детали смены), новый реестр `GET /organizations/{id}/checklist-instances` с фильтрами/сортировкой/пагинацией; индексы `ix_checklist_instances_template_id` и составной `ix_checklist_instances_shift_id_status`
 
 ---
+
+## Профили доступа (`access_profiles`)
+
+ТЗ `../docs/tasks/access_profiles/backend.md`, ADR-006 корня (`../docs/decisions/006-access-profiles.md`). Профиль доступа — именованный набор прав по разделам веб-кабинета, выдаётся участнику с системной ролью `employee`. Системные роли, ADR-001 (owner ≠ member) и ADR-002 не меняются; кастомная «Роль» (`organization_roles`) прав не несёт.
+
+**Каталог** — `src/app/core/access_catalog.py`, единый источник правды: `ACCESS_SECTIONS` (код, группа, уровни, русское название для сообщений), порядок записей = порядок конструктора на клиенте. Уровни `view` / `manage`, `manage` покрывает `view`; `checklist_instances`, `stats`, `audit` — только `view`. Отдаётся клиентам через `GET /api/v1/access-permissions` (authenticated). Новый раздел кабинета = одна запись в каталоге + `ensure_permission` в сервисе.
+
+**Модель.** `OrganizationAccessProfile` (`organization_access_profiles`): `name` (уникально без регистра среди живых — частичный индекс `uq_organization_access_profiles_org_name`), `description`, `permissions` JSONB `{section: level}` (валидация только Pydantic по каталогу — неизвестный раздел / недопустимый уровень / пустой объект → 422; CHECK в БД нет), soft-delete `is_deleted/deleted_at/deleted_by_user_id`. `OrganizationMember.access_profile_id` — инвариант «не NULL только у `employee`» держит сервис: `update_member_role` обнуляет профиль при повышении до `admin`, выдача участнику-admin → `409 ACCESS_PROFILE_REQUIRES_EMPLOYEE`.
+
+**Эффективные права** (вычисляются на каждый запрос, не хранятся, JWT не меняется) — `services/common.py`:
+- `effective_from_member(org, user_id, member, *, is_super_admin)` — единственное место вычисления прав над уже загруженным членством: owner / member `admin` / `super_admin` → `full_permissions()`; `employee` с живым профилем → `profile.permissions`; иначе `{}`. Используется и guard'ом, и `batch_get_my_roles` (`my_permissions`).
+- `ensure_permission(session, org, user_id, section, level, *, allow_super_admin=True) -> bool` — один SELECT членства с `joinedload` профиля (запрос роли super_admin — только если ни роль, ни профиль не дали доступ); возвращает «вызывающий — полный админ» для правил эскалации без повторного запроса. Полный админ проходит сразу (super_admin — только при `allow_super_admin=True`), `employee` — если уровень профиля покрывает требуемый; иначе `AccessError 403 FORBIDDEN` с сообщением `Недостаточно прав: требуется «<раздел>» — <просмотр|управление>`. Порядок ADR-004: guard (403) до `require_active_subscription` (402).
+- `has_permission` — булева форма (видимость `current_rate`, доступ к чек-листам смены), `profile_permissions(member)` — права загруженного профиля, `ensure_can_manage_member(target, actor_is_full_admin=...)` — защита от эскалации (п.6/6a): над участником-`admin` и над любым участником с профилем доступа (даже таким же) действует только полный админ.
+- `ensure_admin_or_owner` остаётся только для операций «полного администратора»: биллинг/подписка, смена системной роли, управление профилями и их выдача. Удаление организации — `ensure_owner`. Локальные `_check_admin_or_owner` (`organization_role`, `checklist_template`, `work_schedule`, `work_location`, `organization_settings`) удалены.
+
+**Классификация guard'ов.** Чтение → `view`, создание/изменение/удаление/восстановление/рассмотрение → `manage`:
+`shifts` — `GET /organizations/{id}/shifts[/{shift_id}]`, гео-фото смены (`file_storage`), ручные смены/правки/удаление/восстановление (`manual_shift`, `allow_super_admin=False`); `overtime` — реестр/рассмотрение; `schedules` — все `work_schedule` (кроме `/my-schedules`), включая `members/{uid}/schedules`, overrides, смену графика у смены; `members` — `POST/PATCH/DELETE /members`, `reset-password`, `custom-role` (+ `ensure_can_manage_member`; `members:view` читает список профилей); `roles` — create/update/delete ролей; `checklist_instances` — реестр, чтение чек-листов чужой смены (`_check_shift_access`, super_admin по-прежнему не допускается), фото чек-листов; `checklist_templates` — шаблоны/пункты/назначения/точки/графики/overrides, effective-чек-листы другого участника; `tests` — шаблоны, валидация (`manage`), назначения, попытки; `payroll` — отчёт/экспорт/ставки (`view`), запись ставок, начисления и категории (`manage`; начисления и категории — `allow_super_admin=False`, их список — `payroll:view`); `penalties`; `stats`; `knowledge` — мутации узлов, reorder, `GET/PUT .../access`, загрузка и удаление файлов `knowledge_base` (обладатель `knowledge:manage` в `_resolve_viewer` — «manager», видит всё дерево); `work_locations` — create/update/delete (список — member-level); `invites` — `rotate-invite`; `settings` — `GET/PATCH /settings`, `PATCH /organizations/{id}`; `audit` — `GET /audit-logs`. Member-level доступы (`ensure_member`) не сужались.
+
+**Эскалация.** Обладатель `members:manage` создаёт только `employee` без профиля (`role=admin` или `access_profile_id` → 403); правка логина/имени, сброс пароля, удаление и кастомная роль — только для `employee` без профиля (админ или участник с любым профилем → 403, правило 6a: иначе сброс пароля сотруднику с более широким профилем даёт вход под ним); системные роли не меняет. `DELETE /members/{uid}` — `allow_super_admin=False`, как до фичи. Профиль нельзя выдать/снять себе (403, кроме super_admin).
+
+**API** (`api/v1/access_profiles.py`, сервис `services/access_profile.py`, ошибки `AccessProfileError`): `GET/POST /organizations/{id}/access-profiles`, `GET/PATCH/DELETE .../{profile_id}`, `POST .../{profile_id}/restore`; `PATCH /organizations/{id}/members/{uid}/access-profile` (в `api/v1/organizations.py`). Чтение — `members:view` (полный админ проходит guard сразу), остальное — полный админ + `require_active_subscription`. `members_count` — одним `GROUP BY`. Удаление — soft-delete + явная отвязка участников в той же транзакции (`detached_members` в ответе), restore участников не возвращает. Коды: `ACCESS_PROFILE_NOT_FOUND` (404), `ACCESS_PROFILE_NAME_TAKEN` (409, в т.ч. гонка по индексу), `ACCESS_PROFILE_NOT_DELETED` (409), `ACCESS_PROFILE_REQUIRES_EMPLOYEE` (409).
+
+**Расширение контрактов (аддитивно).** `MemberResponse.access_profile: {id,name}|null` (у admin всегда null); `MemberCreateRequest.access_profile_id`; `OrganizationResponse.my_permissions` / `my_access_profile` — считаются в `batch_get_my_roles` (теперь возвращает `MyOrgAccess`; профиль и кастомная роль — `selectinload`, без N+1; super_admin определяется по `user.role` без запроса). `GET /organizations/{id}` закрыт `ensure_member` (раньше любой аутентифицированный получал `invite_code` по UUID); блок `subscription` заполняется любому с непустыми `my_permissions` (полный админ и обладатель профиля — режим «только чтение» подписки в админке). `my_access_profile` — null, если права полные (super_admin, сам состоящий employee с профилем). `current_rate` в списке участников и `PATCH .../members/{uid}` — полному админу или `payroll:view`.
+
+**Аудит.** `access_profile.create|update|delete|restore` (resource `access_profile`; update — `changed_fields` и новый `permissions`, delete — `detached_members`), `member.access_profile_update` (`user_id`, `access_profile_id`, `access_profile_name`), `access_profile_id` в summary `member.create`.
+
+**Тесты** — `tests/test_access_profiles.py`: CRUD и валидация, выдача, матрица «view читает / 403 на мутацию; manage мутирует; без раздела — 403» для каждого раздела каталога (тест сверяет покрытие матрицы с `ACCESS_SECTIONS`), эскалация, `my_permissions`, закрытие `GET /organizations/{id}`, исключения `allow_super_admin=False`, аудит.
 
 ## Модели (SQLAlchemy)
 

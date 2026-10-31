@@ -32,14 +32,12 @@ from src.app.models.notification import Notification, NotificationType
 from src.app.models.organization import OrganizationMember
 from src.app.services import entitlements
 from src.app.services import notification as notification_service
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.notification import NotificationInput
 from src.app.services.organization import get_organization
 from src.app.services.shift import ensure_utc
 
 logger = get_logger(__name__)
-
-_ADMIN_MESSAGE = "Нет прав для управления тестами"
 
 
 class TestError(Exception):
@@ -190,7 +188,7 @@ async def create_template(
     questions: list[QuestionInput],
 ) -> TestTemplate:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     if not title or not title.strip():
@@ -228,7 +226,7 @@ async def validate_template_only(
 ) -> tuple[int, int]:
     """Сухая проверка без записи в БД. Возвращает (question_count, total_points)."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_feature(session, org, entitlements.PlanFeature.test_import)
     return validate_template_payload(
         pass_threshold_percent=pass_threshold_percent,
@@ -248,7 +246,7 @@ async def list_templates(
 ) -> tuple[list[tuple[TestTemplate, int, int, int]], int]:
     """Возвращает [(template, question_count, total_points, assignments_count)], total."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "view")
 
     conditions = [TestTemplate.organization_id == org_id]
     if not include_deleted:
@@ -299,7 +297,7 @@ async def get_template_detail(
     requester_id: uuid.UUID,
 ) -> TestTemplate:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "view")
     return await _get_template(session, org_id, template_id, with_questions=True)
 
 
@@ -313,7 +311,7 @@ async def update_template(
     """`fields` — `model_dump(exclude_unset=True)` тела PATCH. Если ключ `questions`
     присутствует — полная замена набора вопросов (снимки уже сданных попыток не трогает)."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if template.is_deleted:
@@ -387,7 +385,7 @@ async def delete_template(
     существует, но проверка ниже отклоняет его явно, чтобы отличать от
     восстановления)."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if template.is_deleted:
@@ -414,7 +412,7 @@ async def restore_template(
 ) -> TestTemplate:
     """Восстановление удалённого шаблона. На не-удалённом — 409 TEST_TEMPLATE_NOT_DELETED."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, with_questions=True)
     if not template.is_deleted:
@@ -469,7 +467,7 @@ async def assign_template(
     уведомление `test_assigned` в той же транзакции (`notifications`).
     Возвращает (assignments, created, updated)."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id)
     if template.is_deleted:
@@ -565,7 +563,7 @@ async def list_template_assignments(
     requester_id: uuid.UUID,
 ) -> list[TestAssignment]:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "view")
     await _get_template(session, org_id, template_id)
 
     result = await session.execute(
@@ -593,7 +591,7 @@ async def list_org_assignments(
     test_assignment_unassign). `True` — показывает все, чтобы админ мог найти
     и разобрать назначения удалённого теста."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "view")
 
     conditions = [TestTemplate.organization_id == org_id]
     if not include_deleted:
@@ -662,7 +660,7 @@ async def delete_assignment(
     иначе у сотрудника в ленте остаётся тап в 404. Новых уведомлений не
     создаём, история не сохраняется."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     assignment = await _get_org_assignment(session, org_id, assignment_id)
 
@@ -684,7 +682,7 @@ async def get_attempt_review(
     requester_id: uuid.UUID,
 ) -> TestAttempt:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, message=_ADMIN_MESSAGE)
+    await ensure_permission(session, org, requester_id, "tests", "view")
 
     result = await session.execute(
         select(TestAttempt)

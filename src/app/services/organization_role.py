@@ -5,10 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
-from src.app.models.organization import Organization, OrganizationMember
+from src.app.models.organization import OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_can_manage_member, ensure_permission
 from src.app.services.organization import _check_org_access, get_organization
 
 logger = get_logger(__name__)
@@ -19,20 +19,6 @@ class RoleError(Exception):
         self.code = code
         self.message = message
         self.status_code = status_code
-
-
-async def _check_admin_or_owner(
-    session: AsyncSession,
-    org: Organization,
-    user_id: uuid.UUID,
-) -> None:
-    """Владелец, admin или super_admin. Делегирует в services.common."""
-    await ensure_admin_or_owner(
-        session,
-        org,
-        user_id,
-        message="Нет прав для управления ролями",
-    )
 
 
 async def get_role(
@@ -59,7 +45,7 @@ async def create_role(
     requester_id: uuid.UUID,
 ) -> OrganizationRole:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "roles", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     existing = await session.execute(
@@ -106,7 +92,7 @@ async def update_role(
     requester_id: uuid.UUID,
 ) -> OrganizationRole:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "roles", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     role = await get_role(session, org_id, role_id)
 
@@ -141,7 +127,7 @@ async def delete_role(
     requester_id: uuid.UUID,
 ) -> None:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "roles", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     role = await get_role(session, org_id, role_id)
     await session.delete(role)
@@ -161,7 +147,7 @@ async def assign_role_to_member(
     requester_id: uuid.UUID,
 ) -> OrganizationMember:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    actor_is_full = await ensure_permission(session, org, requester_id, "members", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     if role_id is not None:
@@ -172,6 +158,7 @@ async def assign_role_to_member(
         .options(
             selectinload(OrganizationMember.user),
             selectinload(OrganizationMember.custom_role),
+            selectinload(OrganizationMember.access_profile),
         )
         .where(
             OrganizationMember.organization_id == org_id,
@@ -181,6 +168,7 @@ async def assign_role_to_member(
     member = result.scalar_one_or_none()
     if member is None:
         raise RoleError("MEMBER_NOT_FOUND", "Участник не найден", 404)
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
 
     member.role_id = role_id
     await session.flush()

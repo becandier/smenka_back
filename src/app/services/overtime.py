@@ -20,7 +20,7 @@ from src.app.models.shift_overtime_request import OvertimeRequestStatus, ShiftOv
 from src.app.models.user import User
 from src.app.models.work_location import WorkLocation
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.organization import get_organization
 from src.app.services.organization_settings import get_settings_for_org
 from src.app.services.shift import ensure_utc, validate_date_range
@@ -169,12 +169,7 @@ async def review_overtime_request(
     review_comment: str | None,
 ) -> ShiftOvertimeRequest:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(
-        session,
-        org,
-        requester_id,
-        message="Нет прав для рассмотрения заявок на переработку",
-    )
+    await ensure_permission(session, org, requester_id, "overtime", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     try:
@@ -239,12 +234,7 @@ async def list_org_overtime_requests(
     offset: int = 0,
 ) -> tuple[list[OrgOvertimeRow], int]:
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(
-        session,
-        org,
-        requester_id,
-        message="Нет прав для просмотра заявок на переработку",
-    )
+    await ensure_permission(session, org, requester_id, "overtime", "view")
 
     status_enum = None
     if status is not None:

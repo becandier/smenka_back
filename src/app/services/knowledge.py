@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from src.app.core.logging import get_logger
 from src.app.models.file import File, FileCategory
@@ -33,7 +34,7 @@ from src.app.models.organization_role import OrganizationRole
 from src.app.models.user import User, UserRole
 from src.app.services import entitlements
 from src.app.services import organization as org_service
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission, profile_permissions
 from src.app.services.file_storage import delete_file, presigned_urls_for
 
 logger = get_logger(__name__)
@@ -84,7 +85,9 @@ async def _resolve_viewer(
         return "manager", None
     member = (
         await session.execute(
-            select(OrganizationMember).where(
+            select(OrganizationMember)
+            .options(selectinload(OrganizationMember.access_profile))
+            .where(
                 OrganizationMember.organization_id == org.id,
                 OrganizationMember.user_id == user.id,
             )
@@ -93,6 +96,10 @@ async def _resolve_viewer(
     if member is None:
         raise KnowledgeError("FORBIDDEN", "Нет доступа к организации", 403)
     if member.role == MemberRole.admin:
+        return "manager", None
+    # access_profiles: обладатель `knowledge:manage` управляет всем деревом —
+    # видит его целиком, как полный админ (ACL ограничивает только читателей).
+    if profile_permissions(member).get("knowledge") == "manage":
         return "manager", None
     return "employee", member
 
@@ -216,7 +223,7 @@ async def create_node(
     position: int | None,
 ) -> KnowledgeNode:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     await entitlements.require_active_subscription(session, org, user.id)
     if parent_id is not None:
         await _get_node(session, org_id, parent_id)  # родитель строго в этой org
@@ -393,7 +400,7 @@ async def update_node(
     fields: dict[str, Any],
 ) -> tuple[KnowledgeNode, list[tuple[uuid.UUID, str]], list[dict[str, Any]] | None]:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id, for_update="parent_id" in fields)
 
@@ -571,7 +578,7 @@ async def delete_node(
 ) -> None:
     """Удалить узел и поддерево; файлы поддерева — из S3 и `files` ДО каскада (приватность)."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id)
 
@@ -642,7 +649,7 @@ async def reorder_nodes(
     ordered_ids: list[uuid.UUID],
 ) -> None:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     await entitlements.require_active_subscription(session, org, user.id)
     if parent_id is not None:
         await _get_node(session, org_id, parent_id)
@@ -684,7 +691,7 @@ async def get_access(
     user: User,
 ) -> tuple[bool, list[KnowledgeNodeAccess]]:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     node = await _get_node(session, org_id, node_id)
     rules = list(
         (
@@ -711,7 +718,7 @@ async def replace_access(
 ) -> tuple[bool, list[KnowledgeNodeAccess]]:
     """Bulk-замена набора правил + all_members в одной транзакции."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "knowledge", "manage")
     await entitlements.require_active_subscription(session, org, user.id)
     node = await _get_node(session, org_id, node_id, for_update=True)
 

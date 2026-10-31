@@ -32,11 +32,11 @@ from src.app.models.work_location import WorkLocation
 from src.app.services import entitlements
 from src.app.services.checklist_template import (
     ChecklistError,
-    _check_admin_or_owner,
     _ensure_ids_belong_to_org,
     _get_template,
     _replace_m2m_links,
 )
+from src.app.services.common import ensure_permission
 from src.app.services.organization import get_organization
 
 logger = get_logger(__name__)
@@ -68,7 +68,7 @@ async def set_template_locations(
 ) -> list[uuid.UUID]:
     """PUT-семантика: полный список точек шаблона (замена)."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
@@ -185,7 +185,7 @@ async def set_location_templates(
 ) -> list[uuid.UUID]:
     """PUT-семантика: полный список шаблонов, привязанных к точке (замена)."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_org_location(session, org_id, location_id)
 
@@ -232,7 +232,7 @@ async def get_location_templates(
     админ должен видеть, что привязка существует; в расчёт эффективного
     набора архивные по-прежнему не идут)."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "view")
     await _get_org_location(session, org_id, location_id)
 
     result = await session.execute(

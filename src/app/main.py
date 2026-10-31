@@ -18,6 +18,7 @@ from src.app.core.logging import get_logger, setup_logging
 from src.app.core.rate_limit import limiter
 from src.app.core.sentry import init_sentry
 from src.app.schemas.base import ApiResponse
+from src.app.services.access_profile import AccessProfileError
 from src.app.services.adjustment import AdjustmentError
 from src.app.services.admin import AdminError
 from src.app.services.auth import AuthError
@@ -404,6 +405,14 @@ async def checklist_error_handler(
     request: Request,
     exc: ChecklistError,
 ) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(AccessProfileError)
+async def access_profile_error_handler(request: Request, exc: AccessProfileError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),

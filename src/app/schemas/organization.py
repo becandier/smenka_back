@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from src.app.core.security import validate_login_format, validate_required_text
+from src.app.schemas.access_profile import AccessProfileRef
 from src.app.schemas.organization_role import RoleResponse
 from src.app.schemas.payroll import CurrentRateResponse
 
@@ -83,6 +84,16 @@ class OrganizationResponse(BaseModel):
         "для employee и в других эндпоинтах (list) — всегда null. Additive-поле, "
         "старые клиенты игнорируют. Только в GET /organizations/{org_id}.",
     )
+    my_permissions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Эффективные права текущего пользователя по разделам кабинета "
+        "(access_profiles): owner/admin/super_admin — все разделы на максимальном "
+        "уровне; employee — права профиля доступа или {}; не участник — {}",
+    )
+    my_access_profile: AccessProfileRef | None = Field(
+        default=None,
+        description="Профиль доступа текущего пользователя (только у employee с профилем)",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -119,6 +130,10 @@ class MemberResponse(BaseModel):
     custom_role: RoleResponse | None = Field(
         default=None,
         description="Кастомная роль организации (или null)",
+    )
+    access_profile: AccessProfileRef | None = Field(
+        default=None,
+        description="Профиль доступа к веб-кабинету (access_profiles); для admin всегда null",
     )
     joined_at: datetime = Field(description="Дата присоединения")
     current_rate: CurrentRateResponse | None = Field(

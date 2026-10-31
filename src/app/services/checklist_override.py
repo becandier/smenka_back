@@ -14,9 +14,9 @@ from src.app.services import entitlements
 from src.app.services.checklist_assignment import _get_member
 from src.app.services.checklist_template import (
     ChecklistError,
-    _check_admin_or_owner,
     _get_template,
 )
+from src.app.services.common import ensure_permission
 from src.app.services.organization import _check_org_access, get_organization
 
 logger = get_logger(__name__)
@@ -32,7 +32,7 @@ async def list_member_overrides(
     org = await get_organization(session, org_id)
 
     if requester_id != user_id:
-        await _check_admin_or_owner(session, org, requester_id)
+        await ensure_permission(session, org, requester_id, "checklist_templates", "view")
     else:
         await _check_org_access(session, org, requester_id)
 
@@ -63,7 +63,7 @@ async def upsert_override(
 ) -> OverrideType:
     """Idempotent upsert of one override via INSERT ... ON CONFLICT DO UPDATE."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     try:
@@ -119,7 +119,7 @@ async def delete_override(
 ) -> None:
     """Idempotent delete — no error if override doesn't exist."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     # Validate template belongs to org (consistent with PUT).

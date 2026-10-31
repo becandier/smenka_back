@@ -4,6 +4,7 @@
 хотя бы один обязателен) и сброс пароля учётке, которую завела эта организация.
 """
 
+import uuid
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
@@ -33,9 +34,15 @@ class MemberCreateRequest(BaseModel):
     role: Literal["employee", "admin"] = Field(
         default="employee",
         description="Системная роль: employee (по умолчанию) или admin — "
-        "роль admin при создании доступна только владельцу организации",
+        "роль admin при создании доступна только полному администратору "
+        "(owner / admin / super_admin)",
     )
     role_id: str | None = Field(default=None, description="UUID кастомной роли организации")
+    access_profile_id: uuid.UUID | None = Field(
+        default=None,
+        description="UUID профиля доступа (access_profiles): только с role=employee "
+        "(иначе 409 ACCESS_PROFILE_REQUIRES_EMPLOYEE) и только полным администратором",
+    )
     display_name: str | None = Field(
         default=None,
         description="Имя сотрудника в этой организации (member_display_name); "
