@@ -27,6 +27,7 @@ from src.app.services.common import (
     AccessError,
     ensure_admin_or_owner,
     ensure_member,
+    ensure_permission,
 )
 from src.app.services.organization import get_organization
 
@@ -224,9 +225,7 @@ async def _check_upload_access(
         )
     org = await get_organization(session, organization_id)
     if category == FileCategory.knowledge_base:
-        await ensure_admin_or_owner(
-            session, org, user.id, message="Нет прав на загрузку в базу знаний"
-        )
+        await ensure_permission(session, org, user.id, "knowledge", "manage")
     else:  # checklist_photo / shift_geo_photo — любой участник организации
         await ensure_member(session, org, user.id, message="Нужно быть участником организации")
     return organization_id
@@ -350,9 +349,13 @@ async def _ensure_can_read(session: AsyncSession, file: File, user: User) -> Non
         if file.category == FileCategory.knowledge_base:
             await ensure_member(session, org, user.id, message="Нет доступа к файлу")
             return
-        # Фото сотрудника (чек-лист / гео-фолбэк старта) разбирает admin/owner org.
-        if file.category in (FileCategory.checklist_photo, FileCategory.shift_geo_photo):
-            await ensure_admin_or_owner(session, org, user.id, message="Нет доступа к файлу")
+        # Фото сотрудника разбирает admin/owner org или обладатель профиля:
+        # фото чек-листа — `checklist_instances:view`, гео-фото старта — `shifts:view`.
+        if file.category == FileCategory.checklist_photo:
+            await ensure_permission(session, org, user.id, "checklist_instances", "view")
+            return
+        if file.category == FileCategory.shift_geo_photo:
+            await ensure_permission(session, org, user.id, "shifts", "view")
             return
     raise AccessError("FORBIDDEN", "Нет доступа к файлу", 403)
 
@@ -362,7 +365,14 @@ async def _ensure_can_delete(session: AsyncSession, file: File, user: User) -> N
         return
     if file.organization_id is not None:
         org = await get_organization(session, file.organization_id)
-        await ensure_admin_or_owner(session, org, user.id, message="Нет прав на удаление файла")
+        # access_profiles: файлы базы знаний удаляет и обладатель
+        # `knowledge:manage`; остальные категории — только полный админ.
+        if file.category == FileCategory.knowledge_base:
+            await ensure_permission(session, org, user.id, "knowledge", "manage")
+        else:
+            await ensure_admin_or_owner(
+                session, org, user.id, message="Нет прав на удаление файла"
+            )
         return
     raise AccessError("FORBIDDEN", "Нет прав на удаление файла", 403)
 

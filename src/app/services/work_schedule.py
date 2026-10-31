@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, selectinload
 
 from src.app.core.logging import get_logger
-from src.app.models.organization import Organization, OrganizationMember
+from src.app.models.organization import OrganizationMember
 from src.app.models.organization_role import OrganizationRole
 from src.app.models.work_location import WorkLocation
 from src.app.models.work_schedule import (
@@ -32,7 +32,7 @@ from src.app.models.work_schedule import (
 )
 from src.app.services import entitlements
 from src.app.services.checklist_location import _get_org_location, matches_location
-from src.app.services.common import ensure_admin_or_owner, ensure_member
+from src.app.services.common import ensure_member, ensure_permission
 from src.app.services.organization import get_organization
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ async def replace_weekly_rules(
     rules: list[dict[str, object]],
 ) -> list[WorkScheduleWeeklyRule]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_schedule(session, org_id, schedule_id)
     seen: set[int] = set()
@@ -175,19 +175,6 @@ class WorkScheduleError(Exception):
         self.status_code = status_code
 
 
-async def _check_admin_or_owner(
-    session: AsyncSession,
-    org: Organization,
-    user_id: uuid.UUID,
-) -> None:
-    await ensure_admin_or_owner(
-        session,
-        org,
-        user_id,
-        message="Нет прав для управления графиками работы",
-    )
-
-
 async def _get_member(
     session: AsyncSession,
     org_id: uuid.UUID,
@@ -275,7 +262,7 @@ async def create_schedule(
     end_time: time,
 ) -> WorkSchedule:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     if start_time == end_time:
@@ -340,7 +327,7 @@ async def list_schedules(
     include_paused: bool = False,
 ) -> list[tuple[WorkSchedule, list[uuid.UUID], list[uuid.UUID]]]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "view")
 
     query = select(WorkSchedule).where(WorkSchedule.organization_id == org_id)
     if not include_paused:
@@ -364,7 +351,7 @@ async def get_schedule_detail(
     requester_id: uuid.UUID,
 ) -> tuple[WorkSchedule, list[uuid.UUID], list[uuid.UUID]]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "view")
     schedule = await _get_schedule(session, org_id, schedule_id)
 
     role_ids = (await get_role_ids_for_schedules(session, [schedule.id])).get(schedule.id, [])
@@ -386,7 +373,7 @@ async def update_schedule(
     is_paused: bool | None = None,
 ) -> WorkSchedule:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     schedule = await _get_schedule(session, org_id, schedule_id)
 
@@ -421,7 +408,7 @@ async def delete_schedule(
     становится NULL (FK SET NULL), но `schedule_name`/`scheduled_*` — снимок,
     история не рушится. Привязки удаляются каскадом."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     schedule = await _get_schedule(session, org_id, schedule_id)
 
@@ -441,7 +428,7 @@ async def set_schedule_roles(
     requester_id: uuid.UUID,
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_schedule(session, org_id, schedule_id)
 
@@ -482,7 +469,7 @@ async def set_schedule_locations(
     requester_id: uuid.UUID,
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_schedule(session, org_id, schedule_id)
 
@@ -522,7 +509,7 @@ async def get_schedule_assignments(
     requester_id: uuid.UUID,
 ) -> tuple[list[uuid.UUID], list[OrganizationMember], list[OrganizationMember], list[uuid.UUID]]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "view")
     await _get_schedule(session, org_id, schedule_id)
 
     role_ids = (await get_role_ids_for_schedules(session, [schedule_id])).get(schedule_id, [])
@@ -569,7 +556,7 @@ async def set_member_schedule_overrides(
     requester_id: uuid.UUID,
 ) -> list[tuple[uuid.UUID, ScheduleOverrideType]]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, user_id)
 
@@ -758,12 +745,7 @@ async def get_member_effective_schedules(
 ) -> list[tuple[WorkSchedule, str]]:
     """`GET .../members/{user_id}/schedules` — только owner/admin."""
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(
-        session,
-        org,
-        requester_id,
-        message="Нет прав для просмотра графиков сотрудника",
-    )
+    await ensure_permission(session, org, requester_id, "schedules", "view")
     if work_location_id is not None:
         await _get_org_location(session, org_id, work_location_id)
     member = await _get_member(session, org_id, user_id)
@@ -1014,7 +996,7 @@ async def change_shift_schedule(
     from src.app.services.shift import get_org_shift_detail
 
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "schedules", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     shift = await get_org_shift_detail(session, org_id, shift_id)
 

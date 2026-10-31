@@ -14,9 +14,8 @@ from src.app.models.checklist import (
     PhotoRequirement,
     PhotoSource,
 )
-from src.app.models.organization import Organization
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.organization import get_organization
 
 logger = get_logger(__name__)
@@ -27,20 +26,6 @@ class ChecklistError(Exception):
         self.code = code
         self.message = message
         self.status_code = status_code
-
-
-async def _check_admin_or_owner(
-    session: AsyncSession,
-    org: Organization,
-    user_id: uuid.UUID,
-) -> None:
-    """Владелец, admin или super_admin. Делегирует в services.common."""
-    await ensure_admin_or_owner(
-        session,
-        org,
-        user_id,
-        message="Нет прав для управления чек-листами",
-    )
 
 
 async def _ensure_ids_belong_to_org(
@@ -141,7 +126,7 @@ async def create_template(
     requester_id: uuid.UUID,
 ) -> ChecklistTemplate:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     template = ChecklistTemplate(
@@ -167,7 +152,7 @@ async def get_templates(
     include_deleted: bool = False,
 ) -> list[tuple[ChecklistTemplate, int]]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "view")
 
     query = select(ChecklistTemplate).where(
         ChecklistTemplate.organization_id == org_id,
@@ -201,7 +186,7 @@ async def get_template_detail(
     requester_id: uuid.UUID,
 ) -> ChecklistTemplate:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "view")
     return await _get_template(session, org_id, template_id, with_items=True)
 
 
@@ -216,7 +201,7 @@ async def update_template(
     is_required: bool | None = None,
 ) -> tuple[ChecklistTemplate, int]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id)
 
@@ -261,7 +246,7 @@ async def delete_template(
     """Мягкое удаление. Повторный вызов на уже удалённом шаблоне — 404
     (`_get_template` с `include_deleted=False` его не находит)."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, include_deleted=False)
     template.is_deleted = True
@@ -284,7 +269,7 @@ async def restore_template(
 ) -> tuple[ChecklistTemplate, int]:
     """Восстановление удалённого шаблона. На не-удалённом — 409 TEMPLATE_NOT_DELETED."""
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     template = await _get_template(session, org_id, template_id, include_deleted=True)
     if not template.is_deleted:
@@ -314,7 +299,7 @@ async def add_item(
     photo_source: PhotoSource = PhotoSource.camera,
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 
@@ -377,7 +362,7 @@ async def update_item(
     photo_source: PhotoSource | None = None,
 ) -> ChecklistTemplateItem:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
     item = await _get_item(session, template_id, item_id)
@@ -406,7 +391,7 @@ async def delete_item(
     requester_id: uuid.UUID,
 ) -> None:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
     item = await _get_item(session, template_id, item_id)
@@ -422,7 +407,7 @@ async def reorder_items(
     requester_id: uuid.UUID,
 ) -> list[ChecklistTemplateItem]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 

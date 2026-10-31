@@ -31,7 +31,7 @@ from src.app.services import audit as audit_service
 from src.app.services import entitlements
 from src.app.services import notification as notification_service
 from src.app.services import organization as org_service
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.shift import ensure_utc, validate_date_range
 
 logger = get_logger(__name__)
@@ -238,7 +238,9 @@ async def create_adjustment(
     """Начислить/удержать. occurred_at по умолчанию = started_at смены при shift_id.
     `category_id` — живая категория этой org (иначе 404 ADJUSTMENT_CATEGORY_NOT_FOUND)."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
 
@@ -330,7 +332,7 @@ async def list_adjustments(
     спецзначение `none` («Без категории», `category_id IS NULL`); разбирается
     после проверки прав (битое значение → 422 только для owner/admin)."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(session, org, requester_id, "payroll", "view", allow_super_admin=False)
     category_id, without_category = parse_category_filter(category_filter)
 
     validate_date_range(date_from, date_to)
@@ -373,7 +375,9 @@ async def update_adjustment(
 ) -> PayrollAdjustment:
     """Исправить запись начисления. member_id не меняется."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id)
 
@@ -464,7 +468,9 @@ async def delete_adjustment(
 ) -> None:
     """Отменить начисление (soft-delete). Повторный вызов на уже отменённом — 404."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id)
 
@@ -514,7 +520,9 @@ async def restore_adjustment(
 ) -> PayrollAdjustment:
     """Восстановить отменённое начисление. На не-отменённом — 409 ADJUSTMENT_NOT_DELETED."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     adjustment = await _get_adjustment(session, org_id, adjustment_id, include_deleted=True)
     if not adjustment.is_deleted:
@@ -646,7 +654,7 @@ async def list_categories(
 ) -> list[PayrollAdjustmentCategory]:
     """Категории организации, сортировка по lower(name). Owner/admin."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(session, org, requester_id, "payroll", "view", allow_super_admin=False)
 
     conditions = [PayrollAdjustmentCategory.organization_id == org_id]
     if not include_deleted:
@@ -671,7 +679,9 @@ async def create_category(
 ) -> PayrollAdjustmentCategory:
     """Создать категорию. Дубль живого имени без учёта регистра → 409."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
 
     normalized = _normalize_category_name(name)
@@ -712,7 +722,9 @@ async def update_category(
     """Переименовать живую категорию (удалённую → 404). Ссылка, не снимок:
     новое имя видно во всех начислениях и отчётах."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     category = await _get_live_category(session, org_id, category_id)
 
@@ -748,7 +760,9 @@ async def delete_category(
     """Soft-delete (ADR-003). Начисления сохраняют ссылку на категорию.
     Повторный вызов на удалённой — 404."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "payroll", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     category = await _get_live_category(session, org_id, category_id)
 

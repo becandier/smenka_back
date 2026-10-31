@@ -12,10 +12,10 @@ from src.app.models.work_schedule import WorkSchedule
 from src.app.services import entitlements
 from src.app.services.checklist_template import (
     ChecklistError,
-    _check_admin_or_owner,
     _get_template,
     _replace_m2m_links,
 )
+from src.app.services.common import ensure_permission
 from src.app.services.organization import get_organization
 
 logger = get_logger(__name__)
@@ -29,7 +29,7 @@ async def set_template_schedules(
     requester_id: uuid.UUID,
 ) -> list[uuid.UUID]:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "checklist_templates", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_template(session, org_id, template_id)
 

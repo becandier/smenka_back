@@ -29,7 +29,7 @@ from src.app.services import audit as audit_service
 from src.app.services import entitlements
 from src.app.services import notification as notification_service
 from src.app.services import organization as org_service
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.shift import ShiftError, calculate_worked_seconds, ensure_utc
 
 logger = get_logger(__name__)
@@ -266,7 +266,9 @@ async def create_manual_shift(
     note: str | None,
 ) -> Shift:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "shifts", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     await _get_member_by_user(session, org_id, user_id)
 
@@ -351,7 +353,9 @@ async def update_manual_shift(
     fields: dict[str, Any],
 ) -> Shift:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "shifts", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     shift = await _get_manual_shift(session, org_id, shift_id)
 
@@ -504,7 +508,9 @@ async def delete_shift(
     note: str | None,
 ) -> Shift:
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "shifts", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     shift = await _get_manual_shift(session, org_id, shift_id)
 
@@ -566,7 +572,9 @@ async def restore_shift(
     """Восстановление неудалённой смены — идемпотентно, возвращает её как есть
     (не ошибка). 404 — только если смена не существует вовсе (backend.md, A4)."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id, allow_super_admin=False)
+    await ensure_permission(
+        session, org, requester_id, "shifts", "manage", allow_super_admin=False
+    )
     await entitlements.require_active_subscription(session, org, requester_id)
     shift = await _get_manual_shift(session, org_id, shift_id, include_deleted=True)
 

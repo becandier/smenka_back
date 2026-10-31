@@ -39,7 +39,7 @@ from src.app.schemas.payroll import Granularity
 from src.app.services import entitlements
 from src.app.services import organization as org_service
 from src.app.services.adjustment import AdjustmentReportRow
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.penalty import PenaltyReportRow
 from src.app.services.shift import (
     calculate_worked_seconds,
@@ -117,7 +117,7 @@ async def create_rate(
 ) -> OrganizationMemberRate:
     """Добавить новую строку истории (назначение ставки «с даты»)."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "payroll", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
 
@@ -162,7 +162,7 @@ async def list_rates(
 ) -> list[OrganizationMemberRate]:
     """Вся история ставок участника, effective_from DESC."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "payroll", "view")
     member = await _get_member(session, org_id, member_id)
 
     result = await session.execute(
@@ -200,7 +200,7 @@ async def update_rate(
 ) -> OrganizationMemberRate:
     """Исправить запись истории (опечатка). Для новой ставки «с даты» — POST."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "payroll", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
     rate = await _get_rate(session, member.id, rate_id)
@@ -252,7 +252,7 @@ async def delete_rate(
 ) -> None:
     """Удалить ошибочную запись истории. Расчёты сразу увидят изменение."""
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "payroll", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     member = await _get_member(session, org_id, member_id)
     rate = await _get_rate(session, member.id, rate_id)
@@ -775,7 +775,7 @@ async def _compute_org_payroll(
     `items`) возвращаются для листов Excel — один источник выборки.
     """
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "payroll", "view")
 
     if granularity not in set(Granularity):
         raise PayrollError("VALIDATION_ERROR", f"Неизвестная granularity: {granularity}", 422)

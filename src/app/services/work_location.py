@@ -7,11 +7,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.logging import get_logger
-from src.app.models.organization import Organization
 from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.work_location import WorkLocation
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import ensure_permission
 from src.app.services.organization import OrgError, _check_org_access, get_organization
 from src.app.utils.geo import haversine_distance
 
@@ -131,7 +130,7 @@ async def create_work_location(
     address: str | None = None,
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "work_locations", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
     await entitlements.require_capacity(session, org, entitlements.LimitKind.locations)
 
@@ -171,7 +170,7 @@ async def update_work_location(
     **fields: Any,
 ) -> WorkLocation:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "work_locations", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     location = await _get_location(session, org_id, location_id)
@@ -189,7 +188,7 @@ async def delete_work_location(
     requester_id: uuid.UUID,
 ) -> None:
     org = await get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, requester_id)
+    await ensure_permission(session, org, requester_id, "work_locations", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     location = await _get_location(session, org_id, location_id)
@@ -273,18 +272,4 @@ async def get_org_location_distance(
         distance_meters=haversine_distance(
             latitude, longitude, location.latitude, location.longitude
         ),
-    )
-
-
-async def _check_admin_or_owner(
-    session: AsyncSession,
-    org: Organization,
-    user_id: uuid.UUID,
-) -> None:
-    """Владелец, admin или super_admin. Делегирует в services.common."""
-    await ensure_admin_or_owner(
-        session,
-        org,
-        user_id,
-        message="Нет прав для управления точками",
     )
