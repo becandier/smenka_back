@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.app.core.database import Base
 
 if TYPE_CHECKING:
+    from src.app.models.access_profile import OrganizationAccessProfile
     from src.app.models.member_rate import OrganizationMemberRate
     from src.app.models.organization_role import OrganizationRole
     from src.app.models.organization_settings import OrganizationSettings
@@ -118,6 +119,14 @@ class OrganizationMember(Base):
         nullable=True,
         index=True,
     )
+    # access_profiles (ADR-006): профиль доступа к веб-кабинету. Инвариант
+    # «не NULL только при role=employee» держит сервис, не CHECK.
+    access_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_access_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     display_name: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
@@ -132,6 +141,9 @@ class OrganizationMember(Base):
     user: Mapped["User"] = relationship(back_populates="memberships")
     custom_role: Mapped["OrganizationRole | None"] = relationship(
         foreign_keys=[role_id],
+    )
+    access_profile: Mapped["OrganizationAccessProfile | None"] = relationship(
+        foreign_keys=[access_profile_id],
     )
     rates: Mapped[list["OrganizationMemberRate"]] = relationship(
         back_populates="member",

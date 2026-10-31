@@ -1,3 +1,4 @@
+from src.app.models.access_profile import OrganizationAccessProfile
 from src.app.models.adjustment import PayrollAdjustment, PayrollAdjustmentCategory
 from src.app.models.audit_log import AuditAction, AuditLog, AuditResource
 from src.app.models.billing_period import BillingPeriod
@@ -104,6 +105,7 @@ __all__ = [
     "OAuthProvider",
     "OAuthProviderSetting",
     "Organization",
+    "OrganizationAccessProfile",
     "OrganizationMember",
     "OrganizationMemberRate",
     "OrganizationPenaltyTemplate",
