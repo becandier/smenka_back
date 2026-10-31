@@ -26,7 +26,6 @@ from src.app.services.common import (
     AccessError,
     ensure_can_manage_member,
     ensure_permission,
-    is_full_admin,
 )
 from src.app.services.organization import (
     OrgError,
@@ -94,11 +93,9 @@ async def create_member(
     # role) могут завести сотрудника с любой ролью, включая role=admin, и сразу
     # выдать профиль доступа. Обладатель профиля с `members:manage`
     # (access_profiles, п.7) заводит только employee без профиля.
-    await ensure_permission(session, org, actor_id, "members", "manage")
+    actor_is_full = await ensure_permission(session, org, actor_id, "members", "manage")
     role_enum = MemberRole(role)
-    if (role_enum == MemberRole.admin or access_profile_id is not None) and not (
-        await is_full_admin(session, org, actor_id)
-    ):
+    if (role_enum == MemberRole.admin or access_profile_id is not None) and not actor_is_full:
         raise AccessError(
             "FORBIDDEN",
             "Назначить роль admin или профиль доступа может только полный администратор",
@@ -194,9 +191,9 @@ async def reset_password(
     счётчик lockout по его идентификаторам (login/email).
     """
     org = await get_organization(session, org_id)
-    await ensure_permission(session, org, actor_id, "members", "manage")
+    actor_is_full = await ensure_permission(session, org, actor_id, "members", "manage")
     member = await get_member(session, org_id, target_user_id)
-    await ensure_can_manage_member(session, org, actor_id, member)
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
     await entitlements.require_active_subscription(session, org, actor_id)
     user = member.user
     _ensure_managed_by_org(user, org_id)

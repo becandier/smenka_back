@@ -67,7 +67,7 @@ def level_covers(granted: str | None, required: str) -> bool:
     """True, если выданный уровень покрывает требуемый (`manage` ⊇ `view`)."""
     if granted is None:
         return False
-    return _LEVEL_RANK.get(granted, 0) >= _LEVEL_RANK[required]
+    return _LEVEL_RANK.get(granted, 0) >= _LEVEL_RANK.get(required, len(_LEVEL_RANK) + 1)
 
 
 def validate_permissions(raw: dict[str, str]) -> dict[str, str]:

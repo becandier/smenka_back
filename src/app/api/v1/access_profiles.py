@@ -236,6 +236,7 @@ async def restore_access_profile(
     request: Request,
 ) -> ApiResponse:
     profile = await profile_service.restore_profile(session, org_id, profile_id, user.id)
+    counts = await profile_service.count_members(session, [profile.id])
     await audit_service.record(
         session,
         action=AuditAction.access_profile_restore,
@@ -247,4 +248,4 @@ async def restore_access_profile(
         ip_address=get_client_ip(request),
     )
     await session.commit()
-    return ApiResponse.success(_profile_to_response(profile, 0))
+    return ApiResponse.success(_profile_to_response(profile, counts.get(profile.id, 0)))

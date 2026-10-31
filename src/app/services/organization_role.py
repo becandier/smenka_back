@@ -147,7 +147,7 @@ async def assign_role_to_member(
     requester_id: uuid.UUID,
 ) -> OrganizationMember:
     org = await get_organization(session, org_id)
-    await ensure_permission(session, org, requester_id, "members", "manage")
+    actor_is_full = await ensure_permission(session, org, requester_id, "members", "manage")
     await entitlements.require_active_subscription(session, org, requester_id)
 
     if role_id is not None:
@@ -168,7 +168,7 @@ async def assign_role_to_member(
     member = result.scalar_one_or_none()
     if member is None:
         raise RoleError("MEMBER_NOT_FOUND", "Участник не найден", 404)
-    await ensure_can_manage_member(session, org, requester_id, member)
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
 
     member.role_id = role_id
     await session.flush()

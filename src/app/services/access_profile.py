@@ -20,7 +20,7 @@ from src.app.core.logging import get_logger
 from src.app.models.access_profile import OrganizationAccessProfile
 from src.app.models.organization import MemberRole, Organization, OrganizationMember
 from src.app.services import entitlements
-from src.app.services.common import ensure_admin_or_owner, ensure_permission, is_full_admin
+from src.app.services.common import ensure_admin_or_owner, ensure_permission
 from src.app.services.organization import get_organization
 
 logger = get_logger(__name__)
@@ -49,9 +49,7 @@ def _name_taken() -> AccessProfileError:
 async def _ensure_can_read_profiles(
     session: AsyncSession, org: Organization, user_id: uuid.UUID
 ) -> None:
-    """Полный админ или обладатель `members:view`."""
-    if await is_full_admin(session, org, user_id):
-        return
+    """Полный админ или обладатель `members:view` (полный админ проходит guard сразу)."""
     await ensure_permission(session, org, user_id, "members", "view")
 
 

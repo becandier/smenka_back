@@ -14,7 +14,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from src.app.core.access_catalog import (
     AccessLevel,
@@ -120,9 +120,10 @@ async def _get_membership_with_profile(
     org_id: uuid.UUID,
     user_id: uuid.UUID,
 ) -> OrganizationMember | None:
+    """Членство с профилем одним SELECT (many-to-one → joinedload)."""
     result = await session.execute(
         select(OrganizationMember)
-        .options(selectinload(OrganizationMember.access_profile))
+        .options(joinedload(OrganizationMember.access_profile))
         .where(
             OrganizationMember.organization_id == org_id,
             OrganizationMember.user_id == user_id,
@@ -131,10 +132,19 @@ async def _get_membership_with_profile(
     return result.scalar_one_or_none()
 
 
+def _is_org_admin(
+    org: Organization, user_id: uuid.UUID, member: OrganizationMember | None
+) -> bool:
+    """owner или member `admin` — полный администратор организации (без super_admin)."""
+    if org.owner_id == user_id:
+        return True
+    return member is not None and member.role == MemberRole.admin
+
+
 def profile_permissions(member: OrganizationMember | None) -> dict[str, str]:
     """Права профиля участника-`employee`; `{}` без профиля или с удалённым.
 
-    Ожидает загруженный `member.access_profile` (selectinload) — без lazy-load.
+    Ожидает загруженный `member.access_profile` (joinedload/selectinload).
     """
     if member is None or member.role != MemberRole.employee:
         return {}
@@ -144,24 +154,46 @@ def profile_permissions(member: OrganizationMember | None) -> dict[str, str]:
     return dict(profile.permissions)
 
 
-async def get_effective_permissions(
-    session: AsyncSession,
+def effective_from_member(
     org: Organization,
     user_id: uuid.UUID,
+    member: OrganizationMember | None,
+    *,
+    is_super_admin: bool,
 ) -> dict[str, str]:
-    """Эффективные права пользователя в организации (вычисляются, не хранятся).
+    """Единственное место вычисления эффективных прав (вычисляются, не хранятся).
 
     owner / member `admin` / `super_admin` — все разделы каталога на
     максимальном уровне; member `employee` — права активного профиля; иначе `{}`.
+    `member` — уже загруженное членство пользователя в `org` (с профилем) или None.
     """
-    if org.owner_id == user_id:
-        return full_permissions()
-    member = await _get_membership_with_profile(session, org.id, user_id)
-    if member is not None and member.role == MemberRole.admin:
-        return full_permissions()
-    if await is_super_admin(session, user_id):
+    if is_super_admin or _is_org_admin(org, user_id, member):
         return full_permissions()
     return profile_permissions(member)
+
+
+async def _check_permission(
+    session: AsyncSession,
+    org: Organization,
+    user_id: uuid.UUID,
+    section: str,
+    level: AccessLevel,
+    *,
+    allow_super_admin: bool,
+) -> tuple[bool, bool]:
+    """(доступ есть, вызывающий — полный админ). Один запрос членства; запрос роли
+    super_admin — только если ни роль в org, ни профиль доступ не дали."""
+    member = None
+    if org.owner_id != user_id:
+        member = await _get_membership_with_profile(session, org.id, user_id)
+    if _is_org_admin(org, user_id, member):
+        return True, True
+    granted = effective_from_member(org, user_id, member, is_super_admin=False).get(section)
+    if level_covers(granted, level):
+        return True, False
+    if allow_super_admin and await is_super_admin(session, user_id):
+        return True, True
+    return False, False
 
 
 async def has_permission(
@@ -174,14 +206,10 @@ async def has_permission(
     allow_super_admin: bool = True,
 ) -> bool:
     """Булева форма `ensure_permission` — для условной видимости полей ответа."""
-    if org.owner_id == user_id:
-        return True
-    member = await _get_membership_with_profile(session, org.id, user_id)
-    if member is not None and member.role == MemberRole.admin:
-        return True
-    if level_covers(profile_permissions(member).get(section), level):
-        return True
-    return allow_super_admin and await is_super_admin(session, user_id)
+    allowed, _ = await _check_permission(
+        session, org, user_id, section, level, allow_super_admin=allow_super_admin
+    )
+    return allowed
 
 
 async def ensure_permission(
@@ -192,7 +220,7 @@ async def ensure_permission(
     level: AccessLevel,
     *,
     allow_super_admin: bool = True,
-) -> None:
+) -> bool:
     """Допускает полного администратора или обладателя профиля с нужным правом.
 
     Полный администратор (owner / member `admin` / `super_admin`, последний —
@@ -200,45 +228,36 @@ async def ensure_permission(
     проходит, если уровень раздела в его активном профиле покрывает требуемый
     (`manage` ⊇ `view`). Иначе 403 `FORBIDDEN` с названием раздела и уровня.
 
+    Возвращает True, если вызывающий прошёл как полный администратор, — чтобы
+    вызывающий код не делал повторный запрос для правил эскалации. super_admin,
+    который сам состоит в org как employee и прошёл по профилю, считается
+    обладателем профиля (консервативно).
+
     Права читаются из БД на каждый вызов — смена профиля действует немедленно.
     Порядок проверок ADR-004: этот guard (403) идёт до
     `require_active_subscription` (402).
     """
-    if await has_permission(
+    allowed, full = await _check_permission(
         session, org, user_id, section, level, allow_super_admin=allow_super_admin
-    ):
-        return
-    raise AccessError("FORBIDDEN", forbidden_message(section, level), 403)
-
-
-async def is_full_admin(
-    session: AsyncSession,
-    org: Organization,
-    user_id: uuid.UUID,
-) -> bool:
-    """Булева форма `ensure_admin_or_owner` (owner / member `admin` / `super_admin`)."""
-    try:
-        await ensure_admin_or_owner(session, org, user_id)
-    except AccessError:
-        return False
-    return True
-
-
-async def ensure_can_manage_member(
-    session: AsyncSession,
-    org: Organization,
-    actor_id: uuid.UUID,
-    target: OrganizationMember,
-) -> None:
-    """Защита от эскалации (access_profiles, п.6): обладатель профиля с
-    `members:manage` работает только с участниками роли `employee`. Операции над
-    участником-`admin` — только полный администратор."""
-    if target.role != MemberRole.admin:
-        return
-    if await is_full_admin(session, org, actor_id):
-        return
-    raise AccessError(
-        "FORBIDDEN",
-        "Действия с администраторами организации доступны только полным администраторам",
-        403,
     )
+    if not allowed:
+        raise AccessError("FORBIDDEN", forbidden_message(section, level), 403)
+    return full
+
+
+def ensure_can_manage_member(target: OrganizationMember, *, actor_is_full_admin: bool) -> None:
+    """Защита от эскалации (access_profiles, п.6/6a): обладатель профиля с
+    `members:manage` работает только с участниками-`employee` БЕЗ профиля
+    доступа. Участник-`admin` и любой участник с профилем (даже таким же, как у
+    действующего) — зона полного администратора: иначе сброс пароля сотруднику
+    с более широким профилем даёт вход под ним. `actor_is_full_admin` — результат
+    `ensure_permission` того же запроса."""
+    if actor_is_full_admin:
+        return
+    if target.role == MemberRole.admin or target.access_profile_id is not None:
+        raise AccessError(
+            "FORBIDDEN",
+            "Действия с администраторами и сотрудниками с профилем доступа доступны "
+            "только полным администраторам",
+            403,
+        )

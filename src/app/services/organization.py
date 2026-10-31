@@ -16,6 +16,7 @@ from src.app.models.organization import MemberRole, Organization, OrganizationMe
 from src.app.models.organization_role import OrganizationRole
 from src.app.services import entitlements
 from src.app.services.common import (
+    effective_from_member,
     ensure_admin_or_owner,
     ensure_can_manage_member,
     ensure_member,
@@ -150,15 +151,8 @@ async def batch_get_my_roles(
     if not orgs:
         return {}
 
-    full = full_permissions()
-    result: dict[uuid.UUID, MyOrgAccess] = {}
-    non_owned_ids: list[uuid.UUID] = []
-    for org in orgs:
-        if org.owner_id == user_id:
-            result[org.id] = MyOrgAccess(role="owner", permissions=full)
-        else:
-            non_owned_ids.append(org.id)
-
+    non_owned_ids = [org.id for org in orgs if org.owner_id != user_id]
+    by_org: dict[uuid.UUID, OrganizationMember] = {}
     if non_owned_ids:
         member_result = await session.execute(
             select(OrganizationMember)
@@ -172,23 +166,27 @@ async def batch_get_my_roles(
             )
         )
         by_org = {m.organization_id: m for m in member_result.scalars().all()}
-        for org_id in non_owned_ids:
-            member = by_org.get(org_id)
-            if member is None:
-                result[org_id] = MyOrgAccess(role=None, permissions=full if is_super_admin else {})
-                continue
-            profile_perms = profile_permissions(member)
-            if member.role == MemberRole.admin or is_super_admin:
-                permissions = full
-            else:
-                permissions = profile_perms
-            result[org_id] = MyOrgAccess(
-                role=member.role.value,
-                custom_role=member.custom_role,
-                permissions=permissions,
-                access_profile=member.access_profile if profile_perms else None,
-            )
 
+    full = full_permissions()
+    result: dict[uuid.UUID, MyOrgAccess] = {}
+    for org in orgs:
+        member = None if org.owner_id == user_id else by_org.get(org.id)
+        permissions = effective_from_member(org, user_id, member, is_super_admin=is_super_admin)
+        if org.owner_id == user_id:
+            role: str | None = "owner"
+        else:
+            role = member.role.value if member is not None else None
+        # Профиль показываем, только когда права действительно из него: при
+        # полных правах (super_admin, сам состоящий employee с профилем) — null.
+        profile = None
+        if member is not None and permissions != full and profile_permissions(member):
+            profile = member.access_profile
+        result[org.id] = MyOrgAccess(
+            role=role,
+            custom_role=member.custom_role if member is not None else None,
+            permissions=permissions,
+            access_profile=profile,
+        )
     return result
 
 
@@ -379,10 +377,13 @@ async def remove_member(
         await session.flush()
         return member_id
 
-    # Admin / super_admin / обладатель `members:manage` (последний — только
-    # участников-employee, access_profiles п.6).
-    await ensure_permission(session, org, requester_id, "members", "manage")
-    await ensure_can_manage_member(session, org, requester_id, member)
+    # Owner / admin / обладатель `members:manage` (последний — только
+    # участников-employee без профиля, access_profiles п.6/6a). super_admin
+    # удалять участников не мог и до фичи — поведение сохранено (п.3).
+    actor_is_full = await ensure_permission(
+        session, org, requester_id, "members", "manage", allow_super_admin=False
+    )
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
 
     await session.delete(member)
     await session.flush()

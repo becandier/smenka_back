@@ -242,12 +242,10 @@ async def get_organization(
     # access_profiles: раньше любой аутентифицированный получал invite_code
     # чужой организации по UUID — теперь только owner / участник / super_admin.
     await ensure_member(session, org, user.id)
-    is_super_admin = user.role == UserRole.super_admin
     roles = await org_service.batch_get_my_roles(
-        session, [org], user.id, is_super_admin=is_super_admin
+        session, [org], user.id, is_super_admin=user.role == UserRole.super_admin
     )
     access = roles.get(org.id, org_service.NO_ORG_ACCESS)
-    my_role = access.role
 
     # tariffs: additive-поле subscription — только owner/admin/super_admin,
     # для employee всегда null (backend.md, п.3 API-контрактов). Организация
@@ -256,7 +254,9 @@ async def get_organization(
     # обход сервиса) не должна ронять весь эндпоинт: additive-поле просто
     # остаётся null, тем же fail-open духом, что и require_active_subscription.
     subscription_payload: dict[str, Any] | None = None
-    if my_role in ("owner", "admin") or is_super_admin:
+    # access_profiles: и обладателю профиля (непустые эффективные права) —
+    # админке нужен режим «только чтение» подписки; employee без профиля — null.
+    if access.permissions:
         try:
             subscription_payload = await subscription_service.build_subscription_payload(
                 session, org_id
@@ -666,9 +666,9 @@ async def update_member(
     # access_profiles: полный админ или `members:manage` (последний — только
     # участников-employee).
     org = await org_service.get_organization(session, org_id)
-    await ensure_permission(session, org, user.id, "members", "manage")
+    actor_is_full = await ensure_permission(session, org, user.id, "members", "manage")
     member = await org_service.get_member(session, org_id, member_user_id)
-    await ensure_can_manage_member(session, org, user.id, member)
+    ensure_can_manage_member(member, actor_is_full_admin=actor_is_full)
     await entitlements.require_active_subscription(session, org, user.id)
 
     if "display_name" in body.model_fields_set:
