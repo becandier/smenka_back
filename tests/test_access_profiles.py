@@ -150,9 +150,7 @@ async def admin_member(
 
 
 @pytest.fixture
-async def admin_headers(
-    admin_member: OrganizationMember, client: AsyncClient
-) -> dict[str, str]:
+async def admin_headers(admin_member: OrganizationMember, client: AsyncClient) -> dict[str, str]:
     return await _login(client, "ap-admin@example.com")
 
 
@@ -413,22 +411,23 @@ class TestProfileCrud:
         assert resp.status_code == 201
         new_id = resp.json()["data"]["id"]
 
+        restore_url = f"{_profiles_url(org.id, profile.id)}/restore"
         # Restore при занятом имени — 409.
-        resp = await client.post(f"{_profiles_url(org.id, profile.id)}/restore", headers=owner_headers)
+        resp = await client.post(restore_url, headers=owner_headers)
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "ACCESS_PROFILE_NAME_TAKEN"
 
         # Освобождаем имя и восстанавливаем; участник не возвращается.
         resp = await client.delete(_profiles_url(org.id, new_id), headers=owner_headers)
         assert resp.status_code == 200
-        resp = await client.post(f"{_profiles_url(org.id, profile.id)}/restore", headers=owner_headers)
+        resp = await client.post(restore_url, headers=owner_headers)
         assert resp.status_code == 200, resp.text
         data = resp.json()["data"]
         assert data["is_deleted"] is False
         assert data["members_count"] == 0
 
         # Restore активного — 409.
-        resp = await client.post(f"{_profiles_url(org.id, profile.id)}/restore", headers=owner_headers)
+        resp = await client.post(restore_url, headers=owner_headers)
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "ACCESS_PROFILE_NOT_DELETED"
 
