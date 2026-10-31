@@ -1109,6 +1109,159 @@ class TestEscalation:
         assert resp.status_code == 403
 
 
+class TestEscalationMembersWithProfile:
+    """Правило 6a: обладатель `members:manage` не трогает участников с профилем."""
+
+    @pytest.mark.parametrize("action", ["patch", "reset_password", "custom_role", "delete"])
+    async def test_members_manage_vs_profiled_and_plain_employee(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        org: Organization,
+        owner_headers: dict[str, str],
+        action: str,
+    ) -> None:
+        headers, _ = await _make_holder(db_session, client, org, {"members": "manage"})
+        role_resp = await client.post(
+            f"/api/v1/organizations/{org.id}/roles",
+            headers=owner_headers,
+            json={"name": "Кассир"},
+        )
+        role_id = role_resp.json()["data"]["id"]
+
+        # Обе учётки заведены организацией — reset-password для них легален.
+        wide = await _create_profile(
+            db_session, org, {"payroll": "manage", "settings": "manage"}, name="Широкий"
+        )
+        targets = {}
+        for key, profile_id in (("profiled", str(wide.id)), ("plain", None)):
+            body: dict[str, Any] = {"name": f"Цель {key}", "login": f"target_{key}_{action}"}
+            if profile_id is not None:
+                body["access_profile_id"] = profile_id
+            resp = await client.post(
+                f"/api/v1/organizations/{org.id}/members", headers=owner_headers, json=body
+            )
+            assert resp.status_code == 201, resp.text
+            targets[key] = resp.json()["data"]["member"]["user_id"]
+
+        base = f"/api/v1/organizations/{org.id}/members"
+        method, suffix, body = {
+            "patch": ("PATCH", "", {"login": f"renamed_{action}"}),
+            "reset_password": ("POST", "/reset-password", {}),
+            "custom_role": ("PATCH", "/custom-role", {"role_id": role_id}),
+            "delete": ("DELETE", "", None),
+        }[action]
+
+        resp = await client.request(
+            method, f"{base}/{targets['profiled']}{suffix}", headers=headers, json=body
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+        resp = await client.request(
+            method, f"{base}/{targets['plain']}{suffix}", headers=headers, json=body
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Полный админ — без ограничений.
+        owner_body = {"login": f"by_owner_{action}"} if action == "patch" else body
+        resp = await client.request(
+            method,
+            f"{base}/{targets['profiled']}{suffix}",
+            headers=owner_headers,
+            json=owner_body,
+        )
+        assert resp.status_code == 200, resp.text
+
+    async def test_same_profile_is_also_protected(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        org: Organization,
+    ) -> None:
+        headers, holder = await _make_holder(db_session, client, org, {"members": "manage"})
+        peer = await _create_user(db_session, "peer@example.com")
+        profile = await db_session.get(OrganizationAccessProfile, holder.access_profile_id)
+        await _add_member(db_session, org, peer, profile=profile)
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/members/{peer.id}", headers=headers
+        )
+        assert resp.status_code == 403
+
+
+class TestSuperAdminRemoveMember:
+    async def test_super_admin_cannot_remove_member(
+        self,
+        client: AsyncClient,
+        org: Organization,
+        super_admin_headers: dict[str, str],
+        employee_member: OrganizationMember,
+        employee_user: User,
+    ) -> None:
+        resp = await client.delete(
+            f"/api/v1/organizations/{org.id}/members/{employee_user.id}",
+            headers=super_admin_headers,
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "FORBIDDEN"
+
+
+class TestSubscriptionBlock:
+    async def test_profile_holder_gets_subscription_employee_does_not(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        owner_headers: dict[str, str],
+        super_admin_headers: dict[str, str],
+    ) -> None:
+        # Организация через API — с автосозданной подпиской (триал).
+        resp = await client.post(
+            "/api/v1/organizations", headers=super_admin_headers, json={"name": "С подпиской"}
+        )
+        assert resp.status_code == 201, resp.text
+        org_id = uuid.UUID(resp.json()["data"]["id"])
+        org = await db_session.get(Organization, org_id)
+        assert org is not None
+
+        holder_headers, _ = await _make_holder(db_session, client, org, {"stats": "view"})
+        resp = await client.get(f"/api/v1/organizations/{org_id}", headers=holder_headers)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["subscription"] is not None
+
+        plain = await _create_user(db_session, "plain-sub@example.com")
+        await _add_member(db_session, org, plain)
+        plain_headers = await _login(client, "plain-sub@example.com")
+        resp = await client.get(f"/api/v1/organizations/{org_id}", headers=plain_headers)
+        assert resp.status_code == 200
+        assert resp.json()["data"]["subscription"] is None
+
+
+class TestFullPermissionsHideProfile:
+    async def test_super_admin_employee_with_profile(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        org: Organization,
+        super_admin_user: User,
+        super_admin_headers: dict[str, str],
+    ) -> None:
+        profile = await _create_profile(db_session, org, {"stats": "view"})
+        await _add_member(db_session, org, super_admin_user, profile=profile)
+        resp = await client.get(f"/api/v1/organizations/{org.id}", headers=super_admin_headers)
+        data = resp.json()["data"]
+        assert data["my_permissions"] == full_permissions()
+        assert data["my_access_profile"] is None
+
+
+def test_level_covers_unknown_level_is_false() -> None:
+    from src.app.core.access_catalog import level_covers
+
+    assert level_covers("manage", "view") is True
+    assert level_covers("view", "manage") is False
+    assert level_covers("manage", "admin") is False
+    assert level_covers(None, "view") is False
+
+
 # ─── my_permissions / my_access_profile ───────────────────────────────────────
 
 
