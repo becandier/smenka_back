@@ -51,6 +51,12 @@ class AuditAction(enum.StrEnum):
     adjustment_category_create = "adjustment_category.create"
     adjustment_category_update = "adjustment_category.update"
     adjustment_category_delete = "adjustment_category.delete"
+    # --- access_profiles: профили доступа к веб-кабинету (ADR-006) ---
+    access_profile_create = "access_profile.create"
+    access_profile_update = "access_profile.update"
+    access_profile_delete = "access_profile.delete"
+    access_profile_restore = "access_profile.restore"
+    member_access_profile_update = "member.access_profile_update"
 
 
 class AuditResource(enum.StrEnum):
@@ -65,6 +71,7 @@ class AuditResource(enum.StrEnum):
     overtime = "overtime"
     adjustment = "adjustment"
     adjustment_category = "adjustment_category"
+    access_profile = "access_profile"
 
 
 class AuditLog(Base):

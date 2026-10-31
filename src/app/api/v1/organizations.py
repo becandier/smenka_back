@@ -3,13 +3,17 @@ from datetime import datetime as dt_datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Query, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.api.deps import CurrentUserDep, SessionDep, SuperAdminDep
 from src.app.api.v1.checklist_instances import _org_instance_row_to_response
 from src.app.api.v1.shifts import _shift_to_response
+from src.app.core.access_catalog import full_permissions
 from src.app.models.audit_log import AuditAction, AuditResource
+from src.app.models.organization import MemberRole
 from src.app.models.organization_settings import DEFAULT_CHECKLIST_GRACE_MINUTES
 from src.app.models.user import UserRole
+from src.app.schemas.access_profile import MemberAccessProfileUpdate
 from src.app.schemas.audit import AuditLogEntry, AuditLogListResponse
 from src.app.schemas.base import ApiResponse
 from src.app.schemas.checklist import OrgChecklistInstanceListResponse
@@ -37,6 +41,7 @@ from src.app.schemas.organization_settings import (
 )
 from src.app.schemas.organization_stats import OrgStatsResponse
 from src.app.schemas.shift import ShiftListResponse, ShiftResponse
+from src.app.services import access_profile as access_profile_service
 from src.app.services import audit as audit_service
 from src.app.services import checklist_instance as checklist_instance_service
 from src.app.services import entitlements
@@ -46,6 +51,12 @@ from src.app.services import organization_settings as settings_service
 from src.app.services import overtime as overtime_service
 from src.app.services import shift as shift_service
 from src.app.services import subscription as subscription_service
+from src.app.services.common import (
+    ensure_can_manage_member,
+    ensure_member,
+    ensure_permission,
+    has_permission,
+)
 from src.app.services.overtime import DEFAULT_OVERTIME_REQUEST_DAYS
 from src.app.utils.request import get_client_ip
 
@@ -57,10 +68,15 @@ if TYPE_CHECKING:
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 
+def _access_profile_ref(profile: Any) -> dict[str, str] | None:
+    if profile is None:
+        return None
+    return {"id": str(profile.id), "name": profile.name}
+
+
 def _org_to_response(
     org: "Organization",
-    my_role: str | None = None,
-    my_custom_role: Any = None,
+    access: org_service.MyOrgAccess = org_service.NO_ORG_ACCESS,
     subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     geo_check = org.settings.geo_check_enabled if org.settings else False
@@ -74,6 +90,7 @@ def _org_to_response(
     checklist_grace_minutes = (
         org.settings.checklist_grace_minutes if org.settings else DEFAULT_CHECKLIST_GRACE_MINUTES
     )
+    my_custom_role = access.custom_role
     custom_role_payload = None
     if my_custom_role is not None:
         custom_role_payload = {
@@ -94,9 +111,11 @@ def _org_to_response(
         overtime_request_days=overtime_request_days,
         checklist_grace_minutes=checklist_grace_minutes,
         created_at=org.created_at,
-        my_role=my_role,
+        my_role=access.role,
         my_custom_role=custom_role_payload,
         subscription=subscription,
+        my_permissions=access.permissions,
+        my_access_profile=_access_profile_ref(access.access_profile),
     ).model_dump(mode="json")
 
 
@@ -127,6 +146,13 @@ def _member_to_response(
         display_name=member.display_name,
         role=member.role.value,
         custom_role=custom_role,
+        # Инвариант access_profiles: у admin профиля нет (сервис обнуляет его
+        # при смене роли) — дополнительно не показываем на случай рассинхрона.
+        access_profile=(
+            _access_profile_ref(member.access_profile)
+            if member.role == MemberRole.employee
+            else None
+        ),
         joined_at=member.joined_at,
         current_rate=current_rate_payload(current_rate),
     ).model_dump(mode="json")
@@ -149,7 +175,8 @@ async def create_organization(
 ) -> ApiResponse:
     org = await org_service.create_organization(session, body.name, user.id)
     await session.commit()
-    return ApiResponse.success(_org_to_response(org, "owner", None))
+    access = org_service.MyOrgAccess(role="owner", permissions=full_permissions())
+    return ApiResponse.success(_org_to_response(org, access))
 
 
 @router.get(
@@ -166,10 +193,12 @@ async def list_organizations(
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_user_organizations(session, user.id)
-    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
+    roles = await org_service.batch_get_my_roles(
+        session, orgs, user.id, is_super_admin=user.role == UserRole.super_admin
+    )
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o, *roles.get(o.id, (None, None))) for o in orgs],
+            items=[_org_to_response(o, roles.get(o.id, org_service.NO_ORG_ACCESS)) for o in orgs],
         ).model_dump(mode="json")
     )
 
@@ -188,10 +217,10 @@ async def list_all_organizations(
     session: SessionDep,
 ) -> ApiResponse:
     orgs = await org_service.get_all_organizations(session)
-    roles = await org_service.batch_get_my_roles(session, orgs, user.id)
+    roles = await org_service.batch_get_my_roles(session, orgs, user.id, is_super_admin=True)
     return ApiResponse.success(
         OrganizationListResponse(
-            items=[_org_to_response(o, *roles.get(o.id, (None, None))) for o in orgs],
+            items=[_org_to_response(o, roles.get(o.id, org_service.NO_ORG_ACCESS)) for o in orgs],
         ).model_dump(mode="json")
     )
 
@@ -210,8 +239,15 @@ async def get_organization(
     session: SessionDep,
 ) -> ApiResponse:
     org = await org_service.get_organization(session, org_id)
-    roles = await org_service.batch_get_my_roles(session, [org], user.id)
-    my_role, my_custom_role = roles.get(org.id, (None, None))
+    # access_profiles: раньше любой аутентифицированный получал invite_code
+    # чужой организации по UUID — теперь только owner / участник / super_admin.
+    await ensure_member(session, org, user.id)
+    is_super_admin = user.role == UserRole.super_admin
+    roles = await org_service.batch_get_my_roles(
+        session, [org], user.id, is_super_admin=is_super_admin
+    )
+    access = roles.get(org.id, org_service.NO_ORG_ACCESS)
+    my_role = access.role
 
     # tariffs: additive-поле subscription — только owner/admin/super_admin,
     # для employee всегда null (backend.md, п.3 API-контрактов). Организация
@@ -220,7 +256,7 @@ async def get_organization(
     # обход сервиса) не должна ронять весь эндпоинт: additive-поле просто
     # остаётся null, тем же fail-open духом, что и require_active_subscription.
     subscription_payload: dict[str, Any] | None = None
-    if my_role in ("owner", "admin") or user.role == UserRole.super_admin:
+    if my_role in ("owner", "admin") or is_super_admin:
         try:
             subscription_payload = await subscription_service.build_subscription_payload(
                 session, org_id
@@ -228,9 +264,7 @@ async def get_organization(
         except entitlements.SubscriptionError:
             subscription_payload = None
 
-    return ApiResponse.success(
-        _org_to_response(org, my_role, my_custom_role, subscription_payload)
-    )
+    return ApiResponse.success(_org_to_response(org, access, subscription_payload))
 
 
 @router.patch(
@@ -268,9 +302,10 @@ async def update_organization(
         ip_address=get_client_ip(request),
     )
     await session.commit()
-    roles = await org_service.batch_get_my_roles(session, [org], user.id)
-    my_role, my_custom_role = roles.get(org.id, (None, None))
-    return ApiResponse.success(_org_to_response(org, my_role, my_custom_role))
+    roles = await org_service.batch_get_my_roles(
+        session, [org], user.id, is_super_admin=user.role == UserRole.super_admin
+    )
+    return ApiResponse.success(_org_to_response(org, roles.get(org.id, org_service.NO_ORG_ACCESS)))
 
 
 @router.delete(
@@ -404,6 +439,7 @@ async def create_member(
         role=body.role,
         role_id=role_uuid,
         display_name=body.display_name,
+        access_profile_id=body.access_profile_id,
     )
     await audit_service.record(
         session,
@@ -417,6 +453,9 @@ async def create_member(
             "role": member.role.value,
             "login": member.user.login,
             "has_email": member.user.email is not None,
+            "access_profile_id": (
+                str(member.access_profile_id) if member.access_profile_id else None
+            ),
         },
         ip_address=get_client_ip(request),
     )
@@ -444,30 +483,30 @@ async def list_members(
     user: CurrentUserDep,
     session: SessionDep,
 ) -> ApiResponse:
-    from src.app.services import payroll as payroll_service
-    from src.app.services.common import AccessError, ensure_admin_or_owner
-
     members = await org_service.get_members(session, org_id, user.id)
-
-    # Ставки видят только owner/admin/super_admin (ТЗ payroll);
-    # для employee current_rate всегда null.
-    current_rates: dict[uuid.UUID, Any] = {}
     org = await org_service.get_organization(session, org_id)
-    try:
-        await ensure_admin_or_owner(session, org, user.id)
-    except AccessError:
-        pass
-    else:
-        current_rates = await payroll_service.get_current_rates(
-            session,
-            [m.id for m in members],
-        )
+    current_rates = await _current_rates_if_allowed(session, org, user.id, members)
 
     return ApiResponse.success(
         MemberListResponse(
             items=[_member_to_response(m, current_rates.get(m.id)) for m in members],
         ).model_dump(mode="json")
     )
+
+
+async def _current_rates_if_allowed(
+    session: AsyncSession,
+    org: "Organization",
+    user_id: uuid.UUID,
+    members: list["OrganizationMember"],
+) -> dict[uuid.UUID, Any]:
+    """Ставки видит полный админ или обладатель `payroll:view` (ТЗ payroll,
+    access_profiles); остальным `current_rate` всегда null."""
+    from src.app.services import payroll as payroll_service
+
+    if not await has_permission(session, org, user_id, "payroll", "view"):
+        return {}
+    return await payroll_service.get_current_rates(session, [m.id for m in members])
 
 
 @router.delete(
@@ -620,16 +659,17 @@ async def update_member(
     session: SessionDep,
     request: Request,
 ) -> ApiResponse:
-    from src.app.services.common import ensure_admin_or_owner
-
     # Единая точка авторизации + загрузки участника на весь partial-запрос:
     # тело может менять и display_name, и login одновременно (или ни одного —
     # пустой body), поэтому и права, и сам участник достаются один раз, а не
     # по разу на каждое поле (apply_* ниже работают с уже готовым `member`).
+    # access_profiles: полный админ или `members:manage` (последний — только
+    # участников-employee).
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id)
-    await entitlements.require_active_subscription(session, org, user.id)
+    await ensure_permission(session, org, user.id, "members", "manage")
     member = await org_service.get_member(session, org_id, member_user_id)
+    await ensure_can_manage_member(session, org, user.id, member)
+    await entitlements.require_active_subscription(session, org, user.id)
 
     if "display_name" in body.model_fields_set:
         member, old_value, new_value = await org_service.apply_display_name_update(
@@ -671,8 +711,56 @@ async def update_member(
 
     await session.commit()
 
-    # Эндпоинт доступен только owner/admin/super_admin — ставку показываем всегда
-    # (то же правило видимости current_rate, что и в list_members/update_member_role).
+    # То же правило видимости current_rate, что и в list_members.
+    current_rates = await _current_rates_if_allowed(session, org, user.id, [member])
+    return ApiResponse.success(_member_to_response(member, current_rates.get(member.id)))
+
+
+@router.patch(
+    "/{org_id}/members/{member_user_id}/access-profile",
+    summary="Выдать или снять профиль доступа участнику",
+    description=(
+        "Назначает участнику с ролью employee профиль доступа к веб-кабинету "
+        "(access_profiles) или снимает его (access_profile_id=null). Только полный "
+        "администратор (owner / admin / super_admin). Профиль чужой организации "
+        "или удалённый → 404 ACCESS_PROFILE_NOT_FOUND; участник-admin → 409 "
+        "ACCESS_PROFILE_REQUIRES_EMPLOYEE; себе — 403 FORBIDDEN (кроме super_admin)."
+    ),
+)
+async def update_member_access_profile(
+    org_id: uuid.UUID,
+    member_user_id: uuid.UUID,
+    body: MemberAccessProfileUpdate,
+    user: CurrentUserDep,
+    session: SessionDep,
+    request: Request,
+) -> ApiResponse:
+    member = await access_profile_service.assign_profile_to_member(
+        session,
+        org_id,
+        member_user_id,
+        body.access_profile_id,
+        user.id,
+        is_super_admin=user.role == UserRole.super_admin,
+    )
+    profile = member.access_profile
+    await audit_service.record(
+        session,
+        action=AuditAction.member_access_profile_update,
+        resource_type=AuditResource.member,
+        organization_id=org_id,
+        actor_user_id=user.id,
+        resource_id=member.id,
+        summary={
+            "user_id": str(member_user_id),
+            "access_profile_id": str(profile.id) if profile is not None else None,
+            "access_profile_name": profile.name if profile is not None else None,
+        },
+        ip_address=get_client_ip(request),
+    )
+    await session.commit()
+
+    # Эндпоинт только для полного админа — ставку показываем всегда.
     from src.app.services import payroll as payroll_service
 
     current_rates = await payroll_service.get_current_rates(session, [member.id])
@@ -798,11 +886,8 @@ async def list_org_shifts(
     sort: str = Query("started_at", description="Поле сортировки: started_at, finished_at"),
     order: str = Query("desc", description="Направление: asc или desc"),
 ) -> ApiResponse:
-    # Only owner or admin can view org shifts
-    from src.app.services.work_location import _check_admin_or_owner
-
     org = await org_service.get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "shifts", "view")
 
     from src.app.models.shift import ShiftStatus as ShiftStatusEnum
     from src.app.services.shift import ShiftError
@@ -904,10 +989,8 @@ async def get_org_shift(
         "(404 SHIFT_NOT_FOUND). Только owner/admin (manual_time_entry)",
     ),
 ) -> ApiResponse:
-    from src.app.services.work_location import _check_admin_or_owner
-
     org = await org_service.get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "shifts", "view")
 
     shift = await shift_service.get_org_shift_detail(
         session, org_id, shift_id, include_deleted=include_deleted
@@ -1036,10 +1119,8 @@ async def org_stats(
         None, description="Верхняя граница окна по started_at, включительно (UTC)"
     ),
 ) -> ApiResponse:
-    from src.app.services.work_location import _check_admin_or_owner
-
     org = await org_service.get_organization(session, org_id)
-    await _check_admin_or_owner(session, org, user.id)
+    await ensure_permission(session, org, user.id, "stats", "view")
 
     stats = await shift_service.get_org_stats(
         session,
@@ -1092,10 +1173,8 @@ async def list_org_audit_logs(
     limit: int = Query(50, ge=1, le=200, description="Размер страницы (1–200)"),
     offset: int = Query(0, ge=0, description="Смещение для пагинации"),
 ) -> ApiResponse:
-    from src.app.services.common import ensure_admin_or_owner
-
     org = await org_service.get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, user.id, message="Нет прав на просмотр аудита")
+    await ensure_permission(session, org, user.id, "audit", "view")
     shift_service.validate_date_range(date_from, date_to)
 
     items, total, names = await audit_service.list_audit_logs(

@@ -20,8 +20,14 @@ from src.app.core.security import generate_password, hash_password
 from src.app.models.organization import MemberRole, OrganizationMember
 from src.app.models.user import RefreshToken, User
 from src.app.services import entitlements, lockout
+from src.app.services.access_profile import AccessProfileError, get_active_profile
 from src.app.services.auth import get_user_by_email
-from src.app.services.common import ensure_admin_or_owner
+from src.app.services.common import (
+    AccessError,
+    ensure_can_manage_member,
+    ensure_permission,
+    is_full_admin,
+)
 from src.app.services.organization import (
     OrgError,
     get_member,
@@ -75,6 +81,7 @@ async def create_member(
     role: str,
     role_id: uuid.UUID | None,
     display_name: str | None,
+    access_profile_id: uuid.UUID | None = None,
 ) -> tuple[OrganizationMember, str]:
     """Завести сотрудника целиком со стороны организации.
 
@@ -84,14 +91,31 @@ async def create_member(
     """
     org = await get_organization(session, org_id)
     # Владелец, admin-участник организации и super_admin (admin_grants_admin_
-    # role) — все, кто прошёл эту проверку, могут завести сотрудника с любой
-    # ролью, включая role=admin: отдельного запрета на выбор роли больше нет
-    # (зеркалит правило update_member_role).
-    await ensure_admin_or_owner(session, org, actor_id)
+    # role) могут завести сотрудника с любой ролью, включая role=admin, и сразу
+    # выдать профиль доступа. Обладатель профиля с `members:manage`
+    # (access_profiles, п.7) заводит только employee без профиля.
+    await ensure_permission(session, org, actor_id, "members", "manage")
+    role_enum = MemberRole(role)
+    if (role_enum == MemberRole.admin or access_profile_id is not None) and not (
+        await is_full_admin(session, org, actor_id)
+    ):
+        raise AccessError(
+            "FORBIDDEN",
+            "Назначить роль admin или профиль доступа может только полный администратор",
+            403,
+        )
     await entitlements.require_active_subscription(session, org, actor_id)
     await entitlements.require_capacity(session, org, entitlements.LimitKind.employees)
 
-    role_enum = MemberRole(role)
+    access_profile = None
+    if access_profile_id is not None:
+        if role_enum != MemberRole.employee:
+            raise AccessProfileError(
+                "ACCESS_PROFILE_REQUIRES_EMPLOYEE",
+                "Профиль доступа назначается только сотруднику с ролью employee",
+                409,
+            )
+        access_profile = await get_active_profile(session, org_id, access_profile_id)
 
     if login is not None:
         await _ensure_login_free(session, login)
@@ -133,6 +157,7 @@ async def create_member(
         user_id=user.id,
         role=role_enum,
         role_id=role_obj.id if role_obj is not None else None,
+        access_profile_id=access_profile.id if access_profile is not None else None,
         display_name=normalize_display_name(display_name),
     )
     session.add(member)
@@ -142,6 +167,7 @@ async def create_member(
     # добавил бы лишний round-trip в БД за тем, что уже известно.
     member.user = user
     member.custom_role = role_obj
+    member.access_profile = access_profile
 
     logger.info(
         "member_created_by_org",
@@ -168,10 +194,10 @@ async def reset_password(
     счётчик lockout по его идентификаторам (login/email).
     """
     org = await get_organization(session, org_id)
-    await ensure_admin_or_owner(session, org, actor_id)
-    await entitlements.require_active_subscription(session, org, actor_id)
-
+    await ensure_permission(session, org, actor_id, "members", "manage")
     member = await get_member(session, org_id, target_user_id)
+    await ensure_can_manage_member(session, org, actor_id, member)
+    await entitlements.require_active_subscription(session, org, actor_id)
     user = member.user
     _ensure_managed_by_org(user, org_id)
 
