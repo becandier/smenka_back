@@ -6,6 +6,16 @@
 
 ---
 
+## Фича — Личные настройки пользователя (`table_column_settings`) `[~]`
+ТЗ: `../../docs/tasks/table_column_settings/backend.md`  STATUS: `../../docs/tasks/table_column_settings/STATUS.md`
+- [x] Таблица `user_preferences` (PK `(user_id, key)`, value JSONB, FK users CASCADE); миграция `c7d8e9f00014` (аддитивная, обратима)
+- [x] `GET /users/me/preferences` (опц. `prefix`), `PUT`/`DELETE /users/me/preferences/{key}`; upsert `ON CONFLICT`, лимит 200 ключей → `409 PREFERENCES_LIMIT_REACHED`, значение — объект ≤ 8192 байт
+- [x] Тесты `tests/test_user_preferences.py`: CRUD, `prefix`, изоляция, валидация, лимит, read-only организация
+- [x] `docs/openapi.json` — новые пути и компоненты добавлены точечно
+- [ ] Мердж в `main` — за оркестратором (см. `STATUS.md`)
+
+---
+
 ## Фича — Профили доступа к веб-кабинету (`access_profiles`) `[~]`
 ТЗ: `../../docs/tasks/access_profiles/backend.md`  STATUS: `../../docs/tasks/access_profiles/STATUS.md`  ADR: `../../docs/decisions/006-access-profiles.md`
 - [x] Каталог разделов `core/access_catalog.py` + `GET /access-permissions`

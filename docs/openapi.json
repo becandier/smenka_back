@@ -3400,6 +3400,176 @@
           }
         }
       }
+    },
+    "/api/v1/users/me/preferences": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Личные настройки",
+        "description": "Все настройки текущего пользователя; с `prefix` — только ключи, начинающиеся с него. Пустой результат — `{\"preferences\": {}}`.",
+        "operationId": "list_my_preferences_api_v1_users_me_preferences_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "prefix",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[a-z0-9._-]{1,120}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Начало ключа, 1..120 символов из алфавита ключа",
+              "title": "Prefix"
+            },
+            "description": "Начало ключа, 1..120 символов из алфавита ключа"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PreferencesResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/users/me/preferences/{key}": {
+      "put": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Сохранить личную настройку",
+        "description": "Создаёт или целиком заменяет значение по ключу. 409 `PREFERENCES_LIMIT_REACHED`, если у пользователя уже 200 настроек, а ключ новый; перезапись существующего проходит всегда.",
+        "operationId": "put_my_preference_api_v1_users_me_preferences__key__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 120,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$",
+              "description": "Ключ настройки, например `admin.table.org-shifts`",
+              "title": "Key"
+            },
+            "description": "Ключ настройки, например `admin.table.org-shifts`"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferenceUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PreferenceResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Удалить личную настройку",
+        "description": "Идемпотентно: отсутствующий ключ — `{\"deleted\": 0}` с HTTP 200.",
+        "operationId": "delete_my_preference_api_v1_users_me_preferences__key__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 120,
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$",
+              "description": "Ключ настройки, например `admin.table.org-shifts`",
+              "title": "Key"
+            },
+            "description": "Ключ настройки, например `admin.table.org-shifts`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PreferenceDeleteResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5633,6 +5803,163 @@
         },
         "type": "object",
         "title": "ApiResponse[WorkLocationNearbyResponse]"
+      },
+      "ApiResponse_PreferenceDeleteResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreferenceDeleteResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[PreferenceDeleteResponse]"
+      },
+      "PreferenceUpdate": {
+        "properties": {
+          "value": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Value",
+            "description": "JSON-объект (не массив, не скаляр, не null), не больше 8192 байт в сериализованном виде. Содержимое сервер не разбирает."
+          }
+        },
+        "type": "object",
+        "required": [
+          "value"
+        ],
+        "title": "PreferenceUpdate"
+      },
+      "ApiResponse_PreferenceResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreferenceResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[PreferenceResponse]"
+      },
+      "PreferencesResponse": {
+        "properties": {
+          "preferences": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Preferences",
+            "description": "Настройки текущего пользователя: ключ → значение"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preferences"
+        ],
+        "title": "PreferencesResponse"
+      },
+      "ApiResponse_PreferencesResponse_": {
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreferencesResponse"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Полезная нагрузка ответа (null при ошибке)"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Описание ошибки (null при успехе)"
+          }
+        },
+        "type": "object",
+        "title": "ApiResponse[PreferencesResponse]"
+      },
+      "PreferenceResponse": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "value": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Value"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At",
+            "description": "Время записи на сервере, UTC"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "updated_at"
+        ],
+        "title": "PreferenceResponse"
+      },
+      "PreferenceDeleteResponse": {
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "title": "Deleted",
+            "description": "1 — ключ удалён, 0 — ключа не было"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deleted"
+        ],
+        "title": "PreferenceDeleteResponse"
       }
     },
     "securitySchemes": {
