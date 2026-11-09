@@ -15,8 +15,13 @@ PREFERENCE_VALUE_MAX_BYTES = 8192
 
 
 def serialized_size(value: dict[str, Any]) -> int:
-    """Размер значения в байтах UTF-8 компактного JSON (без пробелов-разделителей)."""
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    """Размер значения в байтах UTF-8 компактного JSON (без пробелов-разделителей).
+
+    `allow_nan=False`: парсер тела запроса принимает `NaN`/`Infinity`, но это не
+    JSON и PostgreSQL JSONB их отвергает — поднимается `ValueError` (→ 422).
+    """
+    serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return len(serialized.encode("utf-8"))
 
 
 class PreferenceUpdate(BaseModel):
@@ -30,7 +35,11 @@ class PreferenceUpdate(BaseModel):
     @field_validator("value")
     @classmethod
     def _check_size(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if serialized_size(value) > PREFERENCE_VALUE_MAX_BYTES:
+        try:
+            size = serialized_size(value)
+        except ValueError as exc:
+            raise ValueError("Значение должно быть корректным JSON (без NaN/Infinity)") from exc
+        if size > PREFERENCE_VALUE_MAX_BYTES:
             raise ValueError(
                 f"Значение больше {PREFERENCE_VALUE_MAX_BYTES} байт в сериализованном виде"
             )

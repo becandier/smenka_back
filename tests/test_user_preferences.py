@@ -224,6 +224,16 @@ class TestValidation:
         resp = await _put(client, auth_headers, "a.ru", {"s": "я" * 4100})
         assert _validation_fields(resp) == ["body.value"]
 
+    async def test_value_nan_rejected(self, client: AsyncClient, auth_headers: dict[str, str]):
+        """`NaN` пропускает парсер тела, но это не JSON и JSONB его отвергает: 422, не 500."""
+        for raw in (b'{"value": {"x": NaN}}', b'{"value": {"x": [Infinity]}}'):
+            resp = await client.put(
+                f"{BASE}/admin.nan",
+                headers={**auth_headers, "content-type": "application/json"},
+                content=raw,
+            )
+            assert _validation_fields(resp) == ["body.value"], raw
+
     async def test_invalid_prefix(self, client: AsyncClient, auth_headers: dict[str, str]):
         for bad_prefix in ("", "Admin", "a" * 121, "a b", "a%"):
             resp = await client.get(BASE, headers=auth_headers, params={"prefix": bad_prefix})
