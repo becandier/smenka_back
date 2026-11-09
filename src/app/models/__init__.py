@@ -64,6 +64,7 @@ from src.app.models.subscription import (
     SubscriptionStatus,
 )
 from src.app.models.user import RefreshToken, User, VerificationCode
+from src.app.models.user_preference import UserPreference
 from src.app.models.work_location import WorkLocation
 from src.app.models.work_schedule import (
     ScheduleOverrideType,
@@ -145,6 +146,7 @@ __all__ = [
     "TestQuestionType",
     "TestTemplate",
     "User",
+    "UserPreference",
     "VerificationCode",
     "WorkLocation",
     "WorkSchedule",

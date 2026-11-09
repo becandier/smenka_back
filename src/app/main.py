@@ -36,6 +36,7 @@ from src.app.services.overtime import OvertimeError
 from src.app.services.payroll import PayrollError
 from src.app.services.penalty import PenaltyError
 from src.app.services.shift import ShiftError
+from src.app.services.user_preference import PreferenceError
 from src.app.services.work_schedule import WorkScheduleError
 
 settings = get_settings()
@@ -517,6 +518,14 @@ async def adjustment_error_handler(request: Request, exc: AdjustmentError) -> JS
 
 @app.exception_handler(PaymentError)
 async def payment_error_handler(request: Request, exc: PaymentError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=ApiResponse.fail(exc.code, exc.message).model_dump(),
+    )
+
+
+@app.exception_handler(PreferenceError)
+async def preference_error_handler(request: Request, exc: PreferenceError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=ApiResponse.fail(exc.code, exc.message).model_dump(),
