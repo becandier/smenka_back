@@ -815,7 +815,9 @@ async def _compute_org_payroll(
 
     # Штрафы периода: атрибутируются сотруднику (member → user), вычитаются из net.
     # Сотрудник только со штрафами (без завершённых смен) тоже попадает в items —
-    # иначе штраф «потеряется» (см. backend.md).
+    # иначе штраф «потеряется» (см. backend.md). Фильтр по точке — как у смен,
+    # по точке привязанной смены (payroll_location_filter_extras): без этого
+    # в отчёт по точке попадали чужие штрафы/начисления и их сотрудники.
     penalty_rows: list[PenaltyReportRow] = []
     if include_penalties:
         from src.app.services import penalty as penalty_service
@@ -826,6 +828,8 @@ async def _compute_org_payroll(
             date_from=norm_from,
             date_to=norm_to,
             user_ids=parsed_user_ids or None,
+            location_ids=loc_ids or None,
+            include_no_location=include_no_location,
         )
     penalties_by_user: dict[uuid.UUID, list[PenaltyReportRow]] = defaultdict(list)
     for penalty_row in penalty_rows:
@@ -845,6 +849,8 @@ async def _compute_org_payroll(
             date_from=norm_from,
             date_to=norm_to,
             user_ids=parsed_user_ids or None,
+            location_ids=loc_ids or None,
+            include_no_location=include_no_location,
         )
     adjustments_by_user: dict[uuid.UUID, list[AdjustmentReportRow]] = defaultdict(list)
     created_at_by_category: dict[str, datetime] = {}

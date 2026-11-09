@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.core.logging import get_logger
@@ -536,12 +536,20 @@ async def fetch_report_penalties(
     date_from: datetime | None,
     date_to: datetime | None,
     user_ids: list[uuid.UUID] | None = None,
+    location_ids: list[uuid.UUID] | None = None,
+    include_no_location: bool = False,
 ) -> list[PenaltyReportRow]:
     """Неснятые штрафы организации за период для отчёта payroll.
 
     Атрибуция к сотруднику — через member_id → organization_members.user_id.
     Период — по `occurred_at`, `date_to` включительно (UTC). `user_ids` —
     фильтр сотрудников отчёта (пусто/None — все).
+
+    `location_ids`/`include_no_location` — фильтр отчёта по точке (как у смен):
+    запись учитывается по точке привязанной смены (`shift_id` →
+    `shifts.work_location_id`, удалённость смены не важна). Запись без смены
+    или по смене без точки попадает только при `include_no_location`. Оба
+    пусты — фильтра нет (все записи периода).
     """
     conditions = [Penalty.organization_id == org_id, Penalty.is_deleted.is_(False)]
     if date_from is not None:
@@ -550,6 +558,15 @@ async def fetch_report_penalties(
         conditions.append(Penalty.occurred_at <= date_to)
     if user_ids:
         conditions.append(OrganizationMember.user_id.in_(user_ids))
+    if location_ids or include_no_location:
+        # Shift — outer join без фильтра is_deleted: при отсутствии смены
+        # (shift_id IS NULL) work_location_id тоже NULL → «без точки».
+        loc_clauses = []
+        if location_ids:
+            loc_clauses.append(Shift.work_location_id.in_(location_ids))
+        if include_no_location:
+            loc_clauses.append(Shift.work_location_id.is_(None))
+        conditions.append(or_(*loc_clauses))
 
     result = await session.execute(
         select(
