@@ -14,7 +14,11 @@ from src.app.models.organization_settings import OrganizationSettings
 from src.app.models.subscription import Subscription
 from src.app.models.user import User
 from src.app.models.user_preference import UserPreference
-from src.app.schemas.user_preference import PREFERENCE_VALUE_MAX_BYTES, serialized_size
+from src.app.schemas.user_preference import (
+    PREFERENCE_VALUE_MAX_BYTES,
+    PREFERENCE_VALUE_MAX_DEPTH,
+    serialized_size,
+)
 from src.app.services.entitlements import GRACE_DAYS
 from src.app.services.user_preference import PREFERENCES_LIMIT
 
@@ -53,6 +57,14 @@ def _validation_fields(resp: Response) -> list[str]:
     validation = body["error"]["validation"]
     assert validation
     return [item["field"] for item in validation]
+
+
+def _nested(depth: int) -> dict[str, Any]:
+    """Объект глубиной `depth` уровней: сам `value` — уровень 1, далее вложенные массивы."""
+    inner: Any = []
+    for _ in range(depth - 2):
+        inner = [inner]
+    return {"a": inner} if depth > 1 else {}
 
 
 async def _put(client: AsyncClient, headers: dict[str, str], key: str, value: Any) -> Response:
@@ -138,6 +150,23 @@ class TestCrud:
         resp = await _put(client, auth_headers, "admin.empty", {})
         assert resp.status_code == 200
         assert _data(resp)["value"] == {}
+
+    async def test_overwrite_keeps_created_at(
+        self, client: AsyncClient, auth_headers: dict[str, str], db_session: AsyncSession
+    ):
+        key = "admin.table.created"
+        assert (await _put(client, auth_headers, key, {"a": 1})).status_code == 200
+        stmt = (
+            select(UserPreference.created_at, UserPreference.updated_at)
+            .where(UserPreference.key == key)
+            .execution_options(populate_existing=True)
+        )
+        created_before, updated_before = (await db_session.execute(stmt)).one()
+        assert (await _put(client, auth_headers, key, {"a": 2})).status_code == 200
+        created_after, updated_after = (await db_session.execute(stmt)).one()
+        assert created_after == created_before
+        assert updated_after != updated_before
+        assert updated_after > updated_before
 
 
 class TestIsolation:
@@ -233,6 +262,63 @@ class TestValidation:
                 content=raw,
             )
             assert _validation_fields(resp) == ["body.value"], raw
+
+    async def test_too_deep_value_rejected_and_not_saved(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        """~300 уровней (~600 байт) раньше коммитились и ломали ответ и все последующие GET."""
+        for depth in (256, 300, 5000):
+            resp = await _put(client, auth_headers, "admin.deep", _nested(depth))
+            assert _validation_fields(resp) == ["body.value"], depth
+            assert "Вложенность" in resp.json()["error"]["validation"][0]["message"]
+        listed = await client.get(BASE, headers=auth_headers)
+        assert listed.status_code == 200, listed.text
+        assert _data(listed) == {"preferences": {}}
+
+    async def test_depth_boundary(self, client: AsyncClient, auth_headers: dict[str, str]):
+        ok = await _put(client, auth_headers, "admin.deep", _nested(PREFERENCE_VALUE_MAX_DEPTH))
+        assert ok.status_code == 200, ok.text
+        assert _data(ok)["value"] == _nested(PREFERENCE_VALUE_MAX_DEPTH)
+        too_deep = _nested(PREFERENCE_VALUE_MAX_DEPTH + 1)
+        resp = await _put(client, auth_headers, "admin.deep2", too_deep)
+        assert _validation_fields(resp) == ["body.value"]
+
+    async def test_nul_char_rejected_and_not_saved(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        for bad_value in (
+            {"x": "a\u0000b"},
+            {"a\u0000b": 1},
+            {"x": [{"y": ["ok", "\u0000"]}]},
+            {"x": {"y": {"z\u0000": True}}},
+        ):
+            resp = await _put(client, auth_headers, "admin.nul", bad_value)
+            assert _validation_fields(resp) == ["body.value"], bad_value
+            assert "нулевой символ" in resp.json()["error"]["validation"][0]["message"]
+        listed = await client.get(BASE, headers=auth_headers)
+        assert listed.status_code == 200, listed.text
+        assert _data(listed) == {"preferences": {}}
+
+    async def test_literal_backslash_u0000_allowed(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        literal = {"x": "a\\u0000b", "a\\u0000": 1}
+        resp = await _put(client, auth_headers, "admin.literal", literal)
+        assert resp.status_code == 200, resp.text
+        listed = _data(await client.get(BASE, headers=auth_headers))
+        assert listed == {"preferences": {"admin.literal": literal}}
+
+    async def test_lone_surrogate_rejected(
+        self, client: AsyncClient, auth_headers: dict[str, str]
+    ):
+        resp = await client.put(
+            f"{BASE}/admin.surrogate",
+            headers={**auth_headers, "content-type": "application/json"},
+            content=b'{"value": {"x": "\\ud800"}}',
+        )
+        assert _validation_fields(resp) == ["body.value"]
+        message = resp.json()["error"]["validation"][0]["message"]
+        assert message == "Value error, Значение должно быть корректным JSON"
 
     async def test_invalid_prefix(self, client: AsyncClient, auth_headers: dict[str, str]):
         for bad_prefix in ("", "Admin", "a" * 121, "a b", "a%"):
